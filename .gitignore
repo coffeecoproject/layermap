@@ -1,2 +1,4 @@
 node_modules/
 .pack/
+# Build approvals are local: the plugin directory blocks package-manager config in the repository.
+pnpm-workspace.yaml

@@ -175,7 +175,14 @@ npx layermap refs src/billing/tax.ts calculateTax
 
 需要 pnpm、Go 1.24 和 JDK 21 或更高；缺哪个工具链，对应的语言就不做分析。
 
-先运行 `pnpm install`，之后按需运行：
+先运行 `pnpm install`。第一次安装时 pnpm 会询问允许哪些依赖运行构建脚本；只允许 esbuild，SQLite 包自带预编译
+文件：
+
+```
+pnpm approve-builds esbuild '!@photostructure/sqlite'
+```
+
+之后按需运行：
 
 - `pnpm test`：运行测试；
 - `pnpm typecheck`：类型检查；

@@ -178,7 +178,14 @@ relationship does not prove absence.
 
 You need pnpm, Go 1.24 and a JDK 21+. A missing toolchain leaves its language unanalyzed.
 
-Run `pnpm install`, then `pnpm test`, `pnpm typecheck` or `pnpm lint`.
+Run `pnpm install`. On the first install pnpm asks which dependencies may run build scripts; allow
+esbuild only, since the SQLite package ships prebuilt binaries:
+
+```
+pnpm approve-builds esbuild '!@photostructure/sqlite'
+```
+
+Then run `pnpm test`, `pnpm typecheck` or `pnpm lint`.
 
 `pnpm package` builds the npm package.
 
