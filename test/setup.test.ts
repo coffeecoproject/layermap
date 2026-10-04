@@ -63,6 +63,61 @@ test("allow lets the plugin's tools run unprompted, and remove takes that back t
   assert.equal(await allowAgent({ ...options, agent: "codex" }), true);
 });
 
+test("DeepSeek Harness gets LayerMap's server in its home layer, and remove restores the layer", async () => {
+  const home = path.join(await sandbox(), "dsh");
+  await mkdir(home, { recursive: true });
+  const layer = path.join(home, "cordis.patch.yml");
+  const stub = "# machine-local preferences\n[]\n";
+  await writeFile(layer, stub);
+  const options = {
+    agent: "dsh" as const,
+    scope: "user" as const,
+    project: home,
+    version: "0.0.0",
+    dryRun: false,
+    env: { ...process.env, DSH_HOME: home },
+    log: () => {},
+  };
+  assert.equal(await setupAgent(options), true);
+  const patch = await readFile(layer, "utf8");
+  assert.match(patch, /^# machine-local preferences\n# layermap:begin/u);
+  assert.match(
+    patch,
+    /name: '@deepseek-ai\/dsh-mcp-client'\n {6}config:\n {8}serverName: layermap/u,
+  );
+  assert.doesNotMatch(patch, /^\[\]$/mu);
+  assert.equal(await setupAgent(options), true);
+  assert.equal(await readFile(layer, "utf8"), patch);
+  assert.match(await readFile(path.join(home, "AGENTS.md"), "utf8"), /layermap:begin/u);
+  assert.equal(await removeAgent(options), true);
+  assert.equal(await readFile(layer, "utf8"), stub);
+  // The note's file was setup's own, so it goes too.
+  await assert.rejects(readFile(path.join(home, "AGENTS.md"), "utf8"));
+  assert.equal(await setupAgent({ ...options, scope: "project" }), false);
+});
+
+test("a missing dsh layer is created and removed whole; a flow-style list is left to the user", async () => {
+  const home = path.join(await sandbox(), "dsh");
+  const layer = path.join(home, "cordis.patch.yml");
+  const options = {
+    agent: "dsh" as const,
+    scope: "user" as const,
+    project: home,
+    version: "0.0.0",
+    dryRun: false,
+    instructions: false,
+    env: { ...process.env, DSH_HOME: home },
+    log: () => {},
+  };
+  assert.equal(await setupAgent(options), true);
+  assert.match(await readFile(layer, "utf8"), /^# layermap:begin/u);
+  await removeAgent(options);
+  await assert.rejects(readFile(layer, "utf8"));
+  await writeFile(layer, "[{ id: mine, name: other }]\n");
+  await assert.rejects(setupAgent(options), /flow-style YAML list/u);
+  assert.equal(await readFile(layer, "utf8"), "[{ id: mine, name: other }]\n");
+});
+
 test("the Codex server table gains approval and timeout keys once, other lines untouched", async () => {
   const file = path.join(await sandbox(), "config.toml");
   const before = [

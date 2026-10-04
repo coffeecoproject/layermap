@@ -16,10 +16,10 @@ import { MAP_TOOL_NAMES } from "./tools";
 const USAGE = `LayerMap — a layered map of a codebase for coding agents.
 
 Usage:
-  layermap setup claude|codex [--scope user|project|local] [--no-instructions] [--dry-run]
+  layermap setup claude|codex|dsh [--scope user|project|local] [--no-instructions] [--dry-run]
   layermap allow claude [--scope user|project|local] [--dry-run]
                                           let the plugin's read-only tools run without a prompt
-  layermap remove claude|codex [--scope user|project|local] [--dry-run]
+  layermap remove claude|codex|dsh [--scope user|project|local] [--dry-run]
   layermap mcp [--project DIR]            serve the map tools over MCP (stdio)
   layermap index [--project DIR]          build or update the map now
   layermap explore [PATH] [--name NAME] [--line N] [--direction INCOMING|OUTGOING|BOTH]
@@ -84,7 +84,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "setup" || command === "allow" || command === "remove") {
     const agent = rest[0];
-    if (agent !== "claude" && agent !== "codex") return usage(1);
+    if (agent !== "claude" && agent !== "codex" && agent !== "dsh") return usage(1);
     if (!["user", "project", "local"].includes(values.scope)) return usage(1);
     const done = await { setup: setupAgent, allow: allowAgent, remove: removeAgent }[command]({
       agent: agent as SetupAgent,

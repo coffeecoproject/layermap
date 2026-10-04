@@ -126,6 +126,25 @@ test("a tool call says the map is still building instead of waiting past the age
   }
 });
 
+test("a client that disconnects during the first build stops it instead of waiting for it", async () => {
+  let aborted = false;
+  const building = {
+    refresh: (signal: AbortSignal) =>
+      new Promise<string>((_, reject) =>
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }),
+      ),
+    close: async () => {},
+  } as unknown as LayerMap;
+  const client = session(async () => building);
+  await client.request("initialize", { protocolVersion: "2025-06-18" });
+  client.notify("notifications/initialized");
+  await client.close();
+  assert.equal(aborted, true);
+});
+
 test("outside a Git repository the tools say so instead of mapping the directory", async () => {
   const { ProjectEvidenceError } = await import("../src/core");
   const client = session(async () => {

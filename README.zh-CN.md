@@ -7,7 +7,7 @@
 [![npm](https://img.shields.io/npm/v/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
-给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex 和其他 MCP 客户端提供三个只读工具，一次调用
+给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、DeepSeek Harness 和其他 MCP 客户端提供三个只读工具，一次调用
 就能回答 agent 平时要搜几十次才弄清的问题：
 
 - **谁调用了它，改它会影响什么？** 调用方最多追 8 层，一直追到作为起点的 HTTP 路由、处理函数、定时任务和
@@ -96,8 +96,19 @@ codex plugin marketplace add coffeecoproject/layermap
 codex plugin add layermap@layermap
 ```
 
-装好后，在 Git 仓库里新开会话，照常提问即可。插件会告诉 agent 什么时候该用地图。第一次启动时，npx 会从 npm
-下载锁定版本的 `layermap`。Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；
+**DeepSeek Harness**
+
+```
+npx layermap setup dsh
+```
+
+这条命令会把 LayerMap 加到 dsh 的所有配置里。每个会话分析的是启动 dsh 时所在的项目。`npx layermap remove dsh`
+可以撤销。
+
+不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。第一次
+启动时，npx 会从 npm 下载锁定版本的 `layermap`。
+
+Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；
 也可以运行一次 `npx layermap allow claude`，在所有项目里放行这三个只读工具。
 
 **不用插件**：运行 `npx layermap setup claude` 或 `npx layermap setup codex`，它会：

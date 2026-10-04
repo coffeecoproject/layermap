@@ -7,8 +7,8 @@
 [![npm](https://img.shields.io/npm/v/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
-A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex and other MCP
-clients three read-only tools that answer, in one call, what an agent otherwise works out with
+A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex, DeepSeek
+Harness and other MCP clients three read-only tools that answer, in one call, what an agent otherwise works out with
 dozens of searches:
 
 - **What calls this, and what does changing it affect?** Callers traced up to 8 levels, to the
@@ -98,10 +98,20 @@ codex plugin marketplace add coffeecoproject/layermap
 codex plugin add layermap@layermap
 ```
 
-Start a new session in a Git repository and ask as usual. The plugin tells the agent when the map
-helps. On first launch, npx downloads the pinned `layermap` package from npm. Claude Code asks once
-before each map tool runs in a project; choose "don't ask again", or run `npx layermap allow claude`
-to allow the plugin's read-only tools everywhere.
+**DeepSeek Harness**
+
+```
+npx layermap setup dsh
+```
+
+This adds LayerMap to every dsh profile. Each session maps the project dsh was started in, and
+`npx layermap remove dsh` undoes it.
+
+In every agent, start a new session in a Git repository and ask as usual. LayerMap tells the agent
+when the map helps. On first launch, npx downloads the pinned `layermap` package from npm.
+
+Claude Code asks once before each map tool runs in a project. Choose "don't ask again", or run
+`npx layermap allow claude` to allow the plugin's read-only tools everywhere.
 
 **Without plugins:** run `npx layermap setup claude` or `npx layermap setup codex`. Setup does three
 things:

@@ -43,12 +43,16 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
     opened ??= options.open();
     return opened;
   };
-  // The map build that starts with the session; tool calls wait for it, up to buildWaitMs.
+  // The map build that starts with the session; tool calls wait for it, up to buildWaitMs. It ends
+  // with the session, so a client that connects only to probe the server is not kept waiting.
+  const session = new AbortController();
   let warm: Promise<unknown> | undefined;
   const warmUp = () => {
     warm ??= map()
-      .then((layermap) => layermap.refresh(new AbortController().signal))
-      .catch((error: unknown) => log(`LayerMap could not build the map: ${String(error)}`));
+      .then((layermap) => layermap.refresh(session.signal))
+      .catch((error: unknown) => {
+        if (!session.signal.aborted) log(`LayerMap could not build the map: ${String(error)}`);
+      });
     return warm;
   };
 
@@ -159,6 +163,7 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
       }
     });
     lines.on("close", async () => {
+      session.abort();
       for (const controller of calls.values()) controller.abort();
       if (opened) await (await opened.catch(() => undefined))?.close().catch(() => undefined);
       resolve();
