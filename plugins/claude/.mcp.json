@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "layermap": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "layermap@0.1.0",
+        "mcp"
+      ]
+    }
+  }
+}

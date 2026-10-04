@@ -1,0 +1,37 @@
+{
+  "name": "layermap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A layered map of a codebase for coding agents: directories, modules and call chains across TypeScript, Go, Python and Java.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=22.22"
+  },
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "plugins": "node --import tsx scripts/plugins.ts",
+    "package": "node --import tsx scripts/pack.ts"
+  },
+  "dependencies": {
+    "esbuild": "0.28.1",
+    "pyright-root": "github:microsoft/pyright#a28cce4077d87b80bead12de809f79845e39c8ba",
+    "typescript": "7.0.2",
+    "vscode-jsonrpc": "9.0.3",
+    "vscode-languageserver": "10.1.2",
+    "vscode-languageserver-textdocument": "1.0.15",
+    "vscode-uri": "3.2.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@types/node": "26.2.0",
+    "tsx": "4.23.11"
+  }
+}

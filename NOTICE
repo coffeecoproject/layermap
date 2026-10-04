@@ -1,0 +1,11 @@
+LayerMap
+Copyright 2026 The LayerMap Authors
+
+This product includes software developed by others:
+
+- Project Lombok (MIT License), vendored in java-map/lib with its license
+  (java-map/lib/LICENSE-lombok).
+- Pyright (MIT License), bundled into the Python analyzer worker at build time; its
+  license is copied beside the worker as LICENSE-pyright.txt.
+- The TypeScript compiler (Apache License 2.0), whose native executable and library files
+  are copied into the TypeScript analyzer at build time.

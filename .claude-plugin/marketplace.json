@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "layermap",
+  "description": "LayerMap for Claude Code.",
+  "owner": {
+    "name": "The LayerMap Authors",
+    "url": "https://github.com/coffeecoproject/layermap"
+  },
+  "plugins": [
+    {
+      "name": "layermap",
+      "source": "./plugins/claude",
+      "description": "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.",
+      "category": "development"
+    }
+  ]
+}

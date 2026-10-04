@@ -1,0 +1,20 @@
+{
+  "name": "layermap",
+  "interface": {
+    "displayName": "LayerMap"
+  },
+  "plugins": [
+    {
+      "name": "layermap",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

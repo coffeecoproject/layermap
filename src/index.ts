@@ -1,0 +1,21 @@
+// The engine's API for hosts that embed it; agents use the CLI and MCP server (src/cli.ts).
+export * from "./capture-policy";
+export * from "./code-index";
+export * from "./code-index-store";
+export * from "./code-index-types";
+export * from "./core";
+export * from "./git-runner";
+export * from "./layermap";
+export * from "./project-map-analyzer";
+export * from "./project-map-archived-navigation";
+export * from "./project-map-failure";
+export { PROJECT_MAP_ANALYZER } from "./project-map-language";
+export * from "./project-map-navigation";
+export * from "./project-map-process";
+export * from "./project-map-query-page";
+export * from "./project-map-reference-types";
+export * from "./project-map-search-view";
+export * from "./project-map-types";
+export * from "./project-map-view";
+export * from "./source-scope";
+export * from "./tools";
