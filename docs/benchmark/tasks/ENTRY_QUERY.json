@@ -1,0 +1,292 @@
+{
+  "id": "ENTRY_QUERY",
+  "language": "Go",
+  "project": {
+    "name": "Miniflux",
+    "repository": "https://github.com/miniflux/v2",
+    "version": "v2.2.17",
+    "commit": "d3a1e7dbec5a726bf47734352dcfda8514406169"
+  },
+  "question": {
+    "zh": "Miniflux 中 internal/storage/entry_query_builder.go 的 EntryQueryBuilder.GetEntries 执行文章列表查询。如果修改它（例如调整查询的字段、排序或过滤方式），哪些 HTTP 接口会受影响？Web 界面页面和各类 API 路由都算 HTTP 接口。请列出每个受影响的接口（HTTP 方法和路径，或对应的处理函数），说明它经由哪条调用链到达这里，并指出你没能确认的地方。",
+    "en": "In Miniflux, EntryQueryBuilder.GetEntries in internal/storage/entry_query_builder.go runs the entry list query. If it changes (for example, the fields it queries, its ordering or its filtering), which HTTP endpoints are affected? Web UI pages and all API routes count as HTTP endpoints. List every affected endpoint (HTTP method and path, or its handler), explain the call chain through which it reaches this code, and point out anything you could not confirm."
+  },
+  "target": "internal/storage/entry_query_builder.go EntryQueryBuilder.GetEntries",
+  "reference": {
+    "en": "Static call chains computed with the full Go toolchain and the VTA call graph of golang.org/x/tools, cross-checked route for route against the LayerMap index (they agree); templates, conditional branches and asynchronous entries verified in source.",
+    "zh": "用完整 Go 工具链和 golang.org/x/tools 的 VTA 调用图算出的静态调用链，与 LayerMap 索引的调用链逐条比对（两者一致）；模板、条件分支和异步入口回源码逐一核实。"
+  },
+  "truthSet": [
+    {
+      "http": "GET /category/{categoryID}/entries",
+      "handler": "ui.showCategoryEntriesPage",
+      "chain": "ui.showCategoryEntriesPage → target",
+      "via": "static call",
+      "id": "E1"
+    },
+    {
+      "http": "GET /category/{categoryID}/entries/all",
+      "handler": "ui.showCategoryEntriesAllPage",
+      "chain": "ui.showCategoryEntriesAllPage → target",
+      "via": "static call",
+      "id": "E2"
+    },
+    {
+      "http": "GET /category/{categoryID}/entries/starred",
+      "handler": "ui.showCategoryEntriesStarredPage",
+      "chain": "ui.showCategoryEntriesStarredPage → target",
+      "via": "static call",
+      "id": "E3"
+    },
+    {
+      "http": "GET /feed/{feedID}/entries",
+      "handler": "ui.showFeedEntriesPage",
+      "chain": "ui.showFeedEntriesPage → target",
+      "via": "static call",
+      "id": "E4"
+    },
+    {
+      "http": "GET /feed/{feedID}/entries/all",
+      "handler": "ui.showFeedEntriesAllPage",
+      "chain": "ui.showFeedEntriesAllPage → target",
+      "via": "static call",
+      "id": "E5"
+    },
+    {
+      "http": "GET /history",
+      "handler": "ui.showHistoryPage",
+      "chain": "ui.showHistoryPage → target",
+      "via": "static call",
+      "id": "E6"
+    },
+    {
+      "http": "POST /reader/api/0/edit-tag",
+      "handler": "googlereader.editTagHandler",
+      "chain": "googlereader.editTagHandler → target",
+      "via": "static call",
+      "id": "E7"
+    },
+    {
+      "http": "POST /reader/api/0/stream/items/contents",
+      "handler": "googlereader.streamItemContentsHandler",
+      "chain": "googlereader.streamItemContentsHandler → target",
+      "via": "static call",
+      "id": "E8"
+    },
+    {
+      "http": "GET /search",
+      "handler": "ui.showSearchPage",
+      "chain": "ui.showSearchPage → target",
+      "via": "static call",
+      "id": "E9"
+    },
+    {
+      "http": "GET /shares",
+      "handler": "ui.sharedEntries",
+      "chain": "ui.sharedEntries → target",
+      "via": "static call",
+      "id": "E10"
+    },
+    {
+      "http": "GET /starred",
+      "handler": "ui.showStarredPage",
+      "chain": "ui.showStarredPage → target",
+      "via": "static call",
+      "id": "E11"
+    },
+    {
+      "http": "GET /tags/{tagName}/entries/all",
+      "handler": "ui.showTagEntriesAllPage",
+      "chain": "ui.showTagEntriesAllPage → target",
+      "via": "static call",
+      "id": "E12"
+    },
+    {
+      "http": "GET /unread",
+      "handler": "ui.showUnreadPage",
+      "chain": "ui.showUnreadPage → target",
+      "via": "static call",
+      "id": "E13"
+    },
+    {
+      "http": "GET /category/{categoryID}/entry/{entryID}",
+      "handler": "ui.showCategoryEntryPage",
+      "chain": "ui.showCategoryEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E14"
+    },
+    {
+      "http": "POST /entry/download/{entryID}",
+      "handler": "ui.fetchContent",
+      "chain": "ui.fetchContent → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E15"
+    },
+    {
+      "http": "POST /entry/save/{entryID}",
+      "handler": "ui.saveEntry",
+      "chain": "ui.saveEntry → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E16"
+    },
+    {
+      "http": "GET /feed/{feedID}/entry/{entryID}",
+      "handler": "ui.showFeedEntryPage",
+      "chain": "ui.showFeedEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E17"
+    },
+    {
+      "http": "ANY /fever/",
+      "handler": "fever.serve",
+      "chain": "fever.serve → handler.handleItems → target",
+      "via": "static call",
+      "id": "E18"
+    },
+    {
+      "http": "GET /history/entry/{entryID}",
+      "handler": "ui.showReadEntryPage",
+      "chain": "ui.showReadEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E19"
+    },
+    {
+      "http": "GET /search/entry/{entryID}",
+      "handler": "ui.showSearchEntryPage",
+      "chain": "ui.showSearchEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E20"
+    },
+    {
+      "http": "GET /share/{shareCode}",
+      "handler": "ui.sharedEntry",
+      "chain": "ui.sharedEntry → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E21"
+    },
+    {
+      "http": "GET /starred/category/{categoryID}/entry/{entryID}",
+      "handler": "ui.showStarredCategoryEntryPage",
+      "chain": "ui.showStarredCategoryEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E22"
+    },
+    {
+      "http": "GET /starred/entry/{entryID}",
+      "handler": "ui.showStarredEntryPage",
+      "chain": "ui.showStarredEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E23"
+    },
+    {
+      "http": "GET /tags/{tagName}/entry/{entryID}",
+      "handler": "ui.showTagEntryPage",
+      "chain": "ui.showTagEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E24"
+    },
+    {
+      "http": "GET /unread/category/{categoryID}/entry/{entryID}",
+      "handler": "ui.showUnreadCategoryEntryPage",
+      "chain": "ui.showUnreadCategoryEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E25"
+    },
+    {
+      "http": "GET /unread/entry/{entryID}",
+      "handler": "ui.showUnreadEntryPage",
+      "chain": "ui.showUnreadEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E26"
+    },
+    {
+      "http": "GET /unread/feed/{feedID}/entry/{entryID}",
+      "handler": "ui.showUnreadFeedEntryPage",
+      "chain": "ui.showUnreadFeedEntryPage → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E27"
+    },
+    {
+      "http": "GET /v1/categories/{categoryID}/entries",
+      "handler": "api.getCategoryEntries",
+      "chain": "api.getCategoryEntries → handler.findEntries → target",
+      "via": "static call",
+      "id": "E28"
+    },
+    {
+      "http": "GET /v1/entries",
+      "handler": "api.getEntries",
+      "chain": "api.getEntries → handler.findEntries → target",
+      "via": "static call",
+      "id": "E29"
+    },
+    {
+      "http": "PUT /v1/entries/{entryID}",
+      "handler": "api.updateEntry",
+      "chain": "api.updateEntry → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E30"
+    },
+    {
+      "http": "GET /v1/entries/{entryID}/fetch-content",
+      "handler": "api.fetchContent",
+      "chain": "api.fetchContent → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E31"
+    },
+    {
+      "http": "POST /v1/entries/{entryID}/save",
+      "handler": "api.saveEntry",
+      "chain": "api.saveEntry → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E32"
+    },
+    {
+      "http": "GET /v1/feeds/{feedID}/entries",
+      "handler": "api.getFeedEntries",
+      "chain": "api.getFeedEntries → handler.findEntries → target",
+      "via": "static call",
+      "id": "E33"
+    },
+    {
+      "http": "GET /v1/categories/{categoryID}/entries/{entryID}",
+      "handler": "api.getCategoryEntry",
+      "chain": "api.getCategoryEntry → handler.getEntryFromBuilder → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E34"
+    },
+    {
+      "http": "GET /v1/entries/{entryID}",
+      "handler": "api.getEntry",
+      "chain": "api.getEntry → handler.getEntryFromBuilder → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E35"
+    },
+    {
+      "http": "GET /v1/feeds/{feedID}/entries/{entryID}",
+      "handler": "api.getFeedEntry",
+      "chain": "api.getFeedEntry → handler.getEntryFromBuilder → EntryQueryBuilder.GetEntry → target",
+      "via": "static call",
+      "id": "E36"
+    }
+  ],
+  "revision": null,
+  "neutral": [],
+  "notAffected": [
+    "只显示未读计数的页面与操作（/feeds、/categories、/settings、/about、/integrations 等导航计数）：调用 Storage.CountUnreadEntries / EntryQueryBuilder.CountEntries，不调用 GetEntries",
+    "GET /reader/api/0/stream/items/ids（googlereader.streamItemIDsHandler）：调用 EntryQueryBuilder.GetEntryIDs，不调用 GetEntries",
+    "标记已读、加星等状态修改接口（如 PUT /v1/entries、POST /entry/status）：直接更新状态，不调用 GetEntries"
+  ],
+  "grading": {
+    "perEndpoint": "覆盖：答案明确把该接口列为受影响（HTTP 方法+路径或处理函数任一可识别即可），调用链与标准一致或等价（允许省略中间的简单转发）；部分：列出了接口，但标为不确定、调用链缺失或明显错误；缺失：没有列为受影响。错误：答案明确判断该接口不受影响（计为未覆盖，并单独记录）。",
+    "falsePositives": "答案把标准清单以外的接口说成确定受影响，每个计一处错误，写入 extraErrors；若回源码核实确有到达目标的调用链、属于标准遗漏，请写入 extraFindings，不计错误。标为'可能/待确认'的清单外接口不计错误。",
+    "excluded": [
+      "路由前缀（/v1、/reader/api/0、/fever、配置的 BASE_URL 路径）是否写出不计分",
+      "只写了路由路径、没写 HTTP 方法，或反之，只要能唯一对应到标准中的接口即算识别",
+      "非 HTTP 入口（后台调度器、worker、CLI、数据库迁移、测试）不计分，写了也不扣分",
+      "错误码、状态码、返回字段等细节不单独计分，除非与源码相反"
+    ],
+    "conditional": "只在特定配置或数据条件下才执行到目标（如媒体代理模式不是 none、只对已登录用户、只在内容含 srcset 时）的接口仍算受影响；答案注明条件不扣分。",
+    "neutral": "review.neutral 中的接口：答案列出或不列出、判为受影响或不受影响都不计分，也不写入 extraErrors。"
+  }
+}

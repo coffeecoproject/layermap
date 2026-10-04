@@ -1,0 +1,204 @@
+{
+  "id": "TAX_SERVICE",
+  "language": "Python",
+  "project": {
+    "name": "Polar (server/)",
+    "repository": "https://github.com/polarsource/polar",
+    "version": null,
+    "commit": "71bd203e5bb2e29351de76b4425a9940fc2279e6"
+  },
+  "question": {
+    "zh": "Polar 服务端项目中 polar/tax/calculation/__init__.py 的 _get_tax_service 根据税务处理方（Stripe 或 Numeral）返回具体的税务服务实现。如果修改它的选择逻辑（例如调整某个处理方对应的实现，或增加默认分支），哪些 HTTP 接口会受影响？只算处理 HTTP 请求时同步执行到的代码；通过 enqueue_job 等交给后台 worker 异步执行的任务不算。公开 API、客户门户（customer portal）接口和后台管理（backoffice）页面都算 HTTP 接口。请列出每个受影响的接口（HTTP 方法和路径，或对应的处理函数），说明它经由哪条调用链到达这里，并指出你没能确认的地方。",
+    "en": "In the Polar server, _get_tax_service in polar/tax/calculation/__init__.py returns the tax service implementation for a tax processor (Stripe or Numeral). If its selection logic changes (for example, the implementation chosen for a processor, or a new default branch), which HTTP endpoints are affected? Count only code executed synchronously while an HTTP request is handled; tasks handed to background workers through enqueue_job and the like do not count. The public API, customer portal endpoints and backoffice pages all count as HTTP endpoints. List every affected endpoint (HTTP method and path, or its handler), explain the call chain through which it reaches this code, and point out anything you could not confirm."
+  },
+  "target": "polar/tax/calculation/__init__.py _get_tax_service",
+  "reference": {
+    "en": "Calls resolved by mypy 2.3.1 with the real dependencies installed, attributed to their enclosing functions with Python's ast and completed with FastAPI Depends dependencies, cross-checked against the LayerMap index (identical where the map connects); asynchronous task boundaries, conditional branches and map breaks verified in source.",
+    "zh": "mypy 2.3.1（装有真实依赖）解析出的调用，用 Python ast 归到所在函数并补上 FastAPI Depends 依赖，与 LayerMap 索引的调用链逐条比对（地图能连通的部分两者完全一致）；异步任务边界、条件分支和地图断点处回源码核实。"
+  },
+  "truthSet": [
+    {
+      "level": 3,
+      "http": "POST /v1/wallets/{id}/top-up",
+      "handler": "polar/wallet/endpoints.py:top_up",
+      "chain": "top_up → WalletService.top_up → TaxCalculationService.calculate → target",
+      "id": "E1"
+    },
+    {
+      "level": 4,
+      "http": "PATCH /v1/checkouts/client/{client_secret}",
+      "handler": "polar/checkout/endpoints.py:client_update",
+      "chain": "client_update → CheckoutService.update → CheckoutService._update_checkout_tax → TaxCalculationService.calculate → target",
+      "id": "E2"
+    },
+    {
+      "level": 4,
+      "http": "POST /v1/checkouts/",
+      "handler": "polar/checkout/endpoints.py:create（另有同路径的版本化处理函数 create_v2027_01）",
+      "chain": "create → CheckoutService.create → CheckoutService._update_checkout_tax → TaxCalculationService.calculate → target",
+      "id": "E3"
+    },
+    {
+      "level": 4,
+      "http": "PATCH /v1/checkouts/{id}",
+      "handler": "polar/checkout/endpoints.py:update",
+      "chain": "update → CheckoutService.update → CheckoutService._update_checkout_tax → TaxCalculationService.calculate → target",
+      "id": "E4"
+    },
+    {
+      "level": 4,
+      "http": "GET /v1/checkout-links/{client_secret}/redirect",
+      "handler": "polar/checkout_link/endpoints.py:redirect",
+      "chain": "redirect → CheckoutService.checkout_link_create → CheckoutService._update_checkout_tax → TaxCalculationService.calculate → target",
+      "id": "E5"
+    },
+    {
+      "level": 4,
+      "http": "POST /v1/orders/",
+      "handler": "polar/order/endpoints.py:create",
+      "chain": "create → OrderService.create_draft_order → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E6"
+    },
+    {
+      "level": 5,
+      "http": "GET/POST /backoffice/orders/{id}/refund",
+      "handler": "polar/backoffice/orders/endpoints.py:refund",
+      "chain": "refund → RefundService.create → RefundService._on_created → RefundService._on_succeeded → TaxCalculationService.revert → target",
+      "id": "E7"
+    },
+    {
+      "level": 5,
+      "http": "POST /v1/checkouts/client/{client_secret}/confirm",
+      "handler": "polar/checkout/endpoints.py:client_confirm",
+      "chain": "client_confirm → CheckoutService.confirm → CheckoutService._confirm_inner → CheckoutService._update_checkout_tax → TaxCalculationService.calculate → target",
+      "id": "E8"
+    },
+    {
+      "level": 5,
+      "http": "POST /v1/orders/{id}/finalize",
+      "handler": "polar/order/endpoints.py:finalize",
+      "chain": "finalize → OrderService.finalize_order → OrderService.handle_payment → OrderService._record_tax_transaction → TaxCalculationService.record → target",
+      "id": "E9"
+    },
+    {
+      "level": 6,
+      "http": "POST /v1/refunds/",
+      "handler": "polar/refund/endpoints.py:create",
+      "chain": "create → RefundService.user_create → RefundService.create → RefundService._on_created → RefundService._on_succeeded → TaxCalculationService.revert → target",
+      "id": "E10"
+    },
+    {
+      "level": 7,
+      "http": "POST /v1/disputes/{id}/accept",
+      "handler": "polar/dispute/endpoints.py:accept",
+      "chain": "accept → DisputeService.accept → DisputeService.upsert_from_stripe → RefundService.create_from_dispute → RefundService._on_created → RefundService._on_succeeded → TaxCalculationService.revert → target",
+      "id": "E11"
+    },
+    {
+      "level": 8,
+      "http": "GET /v1/customer-portal/subscriptions/{id}/charge-preview",
+      "handler": "polar/customer_portal/endpoints/subscription.py:get_charge_preview",
+      "chain": "get_charge_preview → SubscriptionService.calculate_charge_preview → SubscriptionService._compute_charge_preview → SubscriptionService._build_preview → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E12"
+    },
+    {
+      "level": 8,
+      "http": "GET /v1/subscriptions/{id}/charge-preview",
+      "handler": "polar/subscription/endpoints.py:get_charge_preview",
+      "chain": "get_charge_preview → SubscriptionService.calculate_charge_preview → SubscriptionService._compute_charge_preview → SubscriptionService._build_preview → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E13"
+    },
+    {
+      "level": 8,
+      "http": "POST /v1/subscriptions/{id}/change-preview",
+      "handler": "polar/subscription/endpoints.py:preview_change",
+      "chain": "preview_change → SubscriptionService.calculate_change_preview → SubscriptionService._compute_change_preview → SubscriptionService._build_preview → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E14"
+    },
+    {
+      "level": 9,
+      "http": "GET/POST /backoffice/subscriptions/{id}/cancel",
+      "handler": "polar/backoffice/subscriptions/endpoints.py:cancel",
+      "chain": "cancel → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E15"
+    },
+    {
+      "level": 9,
+      "http": "GET/POST /backoffice/subscriptions/{id}/update_status",
+      "handler": "polar/backoffice/subscriptions/endpoints.py:update_status",
+      "chain": "update_status → SubscriptionService.mark_active → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E16"
+    },
+    {
+      "level": 9,
+      "http": "POST /v1/customer-portal/subscriptions/{id}/change-preview",
+      "handler": "polar/customer_portal/endpoints/subscription.py:preview_change",
+      "chain": "preview_change → CustomerSubscriptionService.preview_change → SubscriptionService.calculate_change_preview → SubscriptionService._compute_change_preview → SubscriptionService._build_preview → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E17"
+    },
+    {
+      "level": 10,
+      "http": "DELETE /v1/subscriptions/{id}",
+      "handler": "polar/subscription/endpoints.py:revoke",
+      "chain": "revoke → SubscriptionService.revoke → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E18"
+    },
+    {
+      "level": 10,
+      "http": "PATCH /v1/subscriptions/{id}",
+      "handler": "polar/subscription/endpoints.py:update",
+      "chain": "update → SubscriptionService.update → SubscriptionService.update_product → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E19"
+    },
+    {
+      "level": 11,
+      "http": "DELETE /v1/customer-portal/subscriptions/{id}",
+      "handler": "polar/customer_portal/endpoints/subscription.py:cancel",
+      "chain": "cancel → CustomerSubscriptionService.cancel → SubscriptionService.cancel → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E20"
+    },
+    {
+      "level": 11,
+      "http": "POST /v1/customer-portal/subscriptions/{id}/revoke",
+      "handler": "polar/customer_portal/endpoints/subscription.py:revoke",
+      "chain": "revoke → CustomerSubscriptionService.revoke → SubscriptionService.revoke → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E21"
+    },
+    {
+      "level": 11,
+      "http": "PATCH /v1/customer-portal/subscriptions/{id}",
+      "handler": "polar/customer_portal/endpoints/subscription.py:update",
+      "chain": "update → CustomerSubscriptionService.update → CustomerSubscriptionService.update_product → SubscriptionService.update_product → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService.build_subscription_order → compute_order_amounts → calculate_tax → TaxCalculationService.calculate → target",
+      "id": "E22"
+    }
+  ],
+  "revision": {
+    "scoredEndpoints": 21,
+    "remove": ["E20"],
+    "reason": {
+      "en": "E20 is statically connected (cancel → _perform_cancellation → _settle_meter_cycle) but unreachable: SubscriptionService.cancel does not pass immediately (default False) and settlement runs only on immediate cancellation (polar/subscription/service.py:2738-2753, 2981-2984). Answers listing it gain or lose nothing. The frozen file was not edited; the revision is applied when scoring.",
+      "zh": "E20 的静态链 cancel → _perform_cancellation → _settle_meter_cycle 存在，但 SubscriptionService.cancel 不传 immediately（默认 False），结算只在立即取消时执行（polar/subscription/service.py:2738-2753、2981-2984），实际不可达。列出它的答案不加分也不扣分。冻结的标准答案文件未改动，修订在计分时应用。"
+    }
+  },
+  "neutral": [
+    "Stripe webhook 接口（polar/integrations/stripe/endpoints.py，按事件类型 enqueue_job(\"stripe.webhook.<type>\")）：支付成功等事件在 worker 中经 OrderService.create_from_checkout_one_time / create_from_checkout_subscription / create_wallet_order → TaxCalculationService.record → target，属异步路径",
+    "其他只 enqueue 任务、由 worker 执行订单创建或续费结算的接口：异步路径"
+  ],
+  "notAffected": [
+    "GET /v1/taxes/jurisdictions 与 GET /v1/taxes/summary（polar/tax/endpoints.py，tax_service.list_jurisdictions / get_summary）：只查询税务数据，不经过 TaxCalculationService",
+    "GET /v1/checkouts/{id}、GET /v1/checkouts/client/{client_secret}（checkout get / client_get）：只读取结账会话，不重算税额",
+    "POST /v1/checkouts/client/{client_secret}/cancel-payment 与 /opened：不调用税务计算"
+  ],
+  "grading": {
+    "perEndpoint": "覆盖：答案明确把该接口列为受影响（HTTP 方法+路径或处理函数任一可识别即可），调用链与标准一致或等价（允许省略中间的简单转发，也允许经另一条同样成立的调用链）；部分：列出了接口，但标为不确定、调用链缺失或明显错误；缺失：没有列为受影响。错误：答案明确判断该接口不受影响（计为未覆盖，并单独记录）。",
+    "falsePositives": "答案把标准清单以外的接口说成确定受影响，每个计一处错误，写入 extraErrors；若回源码核实确有在请求内同步到达目标的调用链、属于标准遗漏，请写入 extraFindings，不计错误。标为'可能/待确认'的清单外接口不计错误。",
+    "excluded": [
+      "路由前缀（/api、/v1、/backoffice、/customer-portal 等）是否写出、写得是否完整不计分",
+      "只写了路由路径、没写 HTTP 方法，或反之，只要能唯一对应到标准中的接口即算识别",
+      "非 HTTP 入口（后台 worker 任务、CLI、脚本、数据库迁移、测试）不计分，写了也不扣分",
+      "checkout 路由同时挂在 /v1/checkouts 和隐藏的 /v1/checkouts/custom 下，写出其中任一即可"
+    ],
+    "conditional": "只在特定数据或配置条件下才执行到目标（如只对某种税务处理方、只在有计量价格或计量器时、只在 POST 提交时）的接口仍算受影响；答案注明条件不扣分。",
+    "neutral": "review.neutral 中的接口：答案列出或不列出、判为受影响或不受影响都不计分，也不写入 extraErrors。"
+  }
+}

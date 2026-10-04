@@ -1,7 +1,7 @@
 {
   "name": "layermap",
   "displayName": "LayerMap",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.",
   "author": {
     "name": "The LayerMap Authors",
@@ -19,5 +19,9 @@
     "go",
     "python",
     "java"
-  ]
+  ],
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://github.com/coffeecoproject/layermap#readme",
+  "supportUrl": "https://github.com/coffeecoproject/layermap/issues",
+  "privacyPolicyUrl": "https://github.com/coffeecoproject/layermap/blob/main/PRIVACY.md"
 }

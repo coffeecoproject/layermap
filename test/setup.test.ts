@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  allowAgent,
   allowInClaudeSettings,
   configureCodexServer,
   disallowInClaudeSettings,
@@ -39,6 +40,27 @@ test("removing the allow rule leaves no empty permissions behind", async () => {
   await allowInClaudeSettings(file);
   await disallowInClaudeSettings(file);
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { model: "x" });
+});
+
+test("allow lets the plugin's tools run unprompted, and remove takes that back too", async () => {
+  const home = path.join(await sandbox(), "claude");
+  const options = {
+    agent: "claude" as const,
+    scope: "user" as const,
+    project: home,
+    version: "0.0.0",
+    dryRun: false,
+    env: { ...process.env, PATH: "", CLAUDE_CONFIG_DIR: home },
+    log: () => {},
+  };
+  assert.equal(await allowAgent(options), true);
+  const settings = path.join(home, "settings.json");
+  assert.deepEqual(JSON.parse(await readFile(settings, "utf8")), {
+    permissions: { allow: ["mcp__plugin_layermap_layermap"] },
+  });
+  await removeAgent(options);
+  assert.deepEqual(JSON.parse(await readFile(settings, "utf8")), {});
+  assert.equal(await allowAgent({ ...options, agent: "codex" }), true);
 });
 
 test("the Codex server table gains approval and timeout keys once, other lines untouched", async () => {

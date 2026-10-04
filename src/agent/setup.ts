@@ -21,6 +21,9 @@ export type SetupOptions = Readonly<{
 import { AGENT_MAP_NOTE } from "./tools";
 
 const SERVER = "layermap";
+/** Claude Code names a server's tools mcp__<server>__*, and a plugin's server plugin_<plugin>_<server>. */
+const SETUP_RULE = `mcp__${SERVER}`;
+const PLUGIN_RULE = `mcp__plugin_${SERVER}_${SERVER}`;
 const BEGIN = "<!-- layermap:begin -->";
 const END = "<!-- layermap:end -->";
 
@@ -49,9 +52,8 @@ const run = (command: string, args: string[], env: NodeJS.ProcessEnv) =>
     ),
   );
 
-/** Adds an allow rule for every LayerMap tool to a Claude Code settings file, keeping the rest. */
-export async function allowInClaudeSettings(file: string): Promise<boolean> {
-  const rule = `mcp__${SERVER}`;
+/** Adds an allow rule for LayerMap's tools to a Claude Code settings file, keeping the rest. */
+export async function allowInClaudeSettings(file: string, rule = SETUP_RULE): Promise<boolean> {
   const settings = existsSync(file) ? JSON.parse(await readFile(file, "utf8")) : {};
   if (typeof settings !== "object" || settings === null || Array.isArray(settings))
     throw new Error(`${file} is not a settings object.`);
@@ -118,13 +120,14 @@ export async function removeInstructionNote(file: string): Promise<void> {
   await writeFile(file, `${before}${text.slice(end + END.length).replace(/^\n/u, "")}`);
 }
 
-/** Removes the allow rule setup added, keeping every other setting. */
+/** Removes the allow rules setup and allow added, keeping every other setting. */
 export async function disallowInClaudeSettings(file: string): Promise<void> {
   if (!existsSync(file)) return;
   const settings = JSON.parse(await readFile(file, "utf8"));
   const allow = settings?.permissions?.allow;
-  if (!Array.isArray(allow) || !allow.includes(`mcp__${SERVER}`)) return;
-  settings.permissions.allow = allow.filter((rule: unknown) => rule !== `mcp__${SERVER}`);
+  const ours = (rule: unknown) => rule === SETUP_RULE || rule === PLUGIN_RULE;
+  if (!Array.isArray(allow) || !allow.some(ours)) return;
+  settings.permissions.allow = allow.filter((rule: unknown) => !ours(rule));
   // Setup may have created the list and the permissions around it; none is left empty.
   if (!settings.permissions.allow.length) delete settings.permissions.allow;
   if (!Object.keys(settings.permissions).length) delete settings.permissions;
@@ -168,7 +171,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
   if (options.agent === "claude") {
     const scope = ["--scope", options.scope];
     log(`claude mcp add ${scope.join(" ")} ${SERVER} -- ${quoted.join(" ")}`);
-    log(`allow mcp__${SERVER} in ${settings}`);
+    log(`allow ${SETUP_RULE} in ${settings}`);
   } else {
     log(`codex mcp add ${SERVER} -- ${quoted.join(" ")}`);
     log(`set default_tools_approval_mode = "approve" and tool_timeout_sec = 120 in ${settings}`);
@@ -196,7 +199,24 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
   return true;
 }
 
-/** Undoes setup: the server, its approval and the note. */
+/**
+ * Lets the Claude Code plugin's read-only map tools run without a prompt, as the user chooses to:
+ * the plugin itself asks before each tool's first use in a project.
+ */
+export async function allowAgent(options: SetupOptions): Promise<boolean> {
+  if (options.agent !== "claude") {
+    options.log("The Codex plugin already runs LayerMap's read-only tools without a prompt.");
+    return true;
+  }
+  const { settings } = agentFiles(options);
+  options.log(`allow ${PLUGIN_RULE} in ${settings}`);
+  if (options.dryRun) return true;
+  await allowInClaudeSettings(settings, PLUGIN_RULE);
+  options.log("Done. Claude Code runs the LayerMap plugin's map tools without asking.");
+  return true;
+}
+
+/** Undoes setup and allow: the server, its approvals and the note. */
 export async function removeAgent(options: SetupOptions): Promise<boolean> {
   const env = options.env ?? process.env;
   const { settings, instructions } = agentFiles(options);

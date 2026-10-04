@@ -1,5 +1,5 @@
 {
-  "description": "Tells Claude when the map helps, and lets its read-only tools run without a prompt.",
+  "description": "Tells Claude when the map helps.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,17 +7,6 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\""
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "mcp__plugin_layermap_layermap__.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/allow-map-tools.mjs\""
           }
         ]
       }

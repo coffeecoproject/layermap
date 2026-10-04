@@ -124,7 +124,13 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
               title,
               description,
               inputSchema,
-              annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+              annotations: {
+                title,
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
+              },
             })),
           },
         });

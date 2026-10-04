@@ -1,0 +1,190 @@
+{
+  "id": "METER_FILTER",
+  "language": "Python",
+  "project": {
+    "name": "Polar (server/)",
+    "repository": "https://github.com/polarsource/polar",
+    "version": null,
+    "commit": "71bd203e5bb2e29351de76b4425a9940fc2279e6"
+  },
+  "question": {
+    "zh": "Polar 服务端项目中 polar/meter/filter.py 的 FilterClause.matches 判断一条事件是否满足计量器（meter）过滤条件中的单个子句。如果修改它的匹配行为（例如调整某种属性或比较运算的匹配规则），哪些 HTTP 接口会受影响？只算处理 HTTP 请求时同步执行到的代码；通过 enqueue_job 等交给后台 worker 异步执行的任务不算。公开 API、客户门户（customer portal）接口和后台管理（backoffice）页面都算 HTTP 接口。请列出每个受影响的接口（HTTP 方法和路径，或对应的处理函数），说明它经由哪条调用链到达这里，并指出你没能确认的地方。",
+    "en": "In the Polar server, FilterClause.matches in polar/meter/filter.py decides whether an event satisfies one clause of a meter's filter. If its matching behavior changes (for example, the matching rule for a property or a comparison operator), which HTTP endpoints are affected? Count only code executed synchronously while an HTTP request is handled; tasks handed to background workers through enqueue_job and the like do not count. The public API, customer portal endpoints and backoffice pages all count as HTTP endpoints. List every affected endpoint (HTTP method and path, or its handler), explain the call chain through which it reaches this code, and point out anything you could not confirm."
+  },
+  "target": "polar/meter/filter.py FilterClause.matches",
+  "reference": {
+    "en": "Calls resolved by mypy 2.3.1 with the real dependencies installed, attributed to their enclosing functions with Python's ast and completed with FastAPI Depends dependencies, cross-checked against the LayerMap index (identical where the map connects); asynchronous task boundaries, conditional branches and map breaks verified in source.",
+    "zh": "mypy 2.3.1（装有真实依赖）解析出的调用，用 Python ast 归到所在函数并补上 FastAPI Depends 依赖，与 LayerMap 索引的调用链逐条比对（地图能连通的部分两者完全一致）；异步任务边界、条件分支和地图断点处回源码核实。"
+  },
+  "truthSet": [
+    {
+      "level": 5,
+      "http": "POST /v1/events/ingest",
+      "handler": "polar/event/endpoints.py:ingest",
+      "chain": "ingest → EventService.ingest → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E1"
+    },
+    {
+      "level": 6,
+      "http": "GET/POST /backoffice/orders/{id}/unvoid",
+      "handler": "polar/backoffice/orders/endpoints.py:unvoid",
+      "chain": "unvoid → OrderService.unvoid → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E2"
+    },
+    {
+      "level": 6,
+      "http": "GET/POST /backoffice/orders/{id}/void",
+      "handler": "polar/backoffice/orders/endpoints.py:void",
+      "chain": "void → OrderService.void → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E3"
+    },
+    {
+      "level": 6,
+      "http": "GET/POST /backoffice/subscriptions/{id}/update_billing_period_end",
+      "handler": "polar/backoffice/subscriptions/endpoints.py:update_billing_period_end",
+      "chain": "update_billing_period_end → SubscriptionService.update_currrent_billing_period_end → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E4"
+    },
+    {
+      "level": 7,
+      "http": "GET/POST /backoffice/subscriptions/{id}/reinstate",
+      "handler": "polar/backoffice/subscriptions/endpoints.py:reinstate",
+      "chain": "reinstate → SubscriptionService.reinstate → SubscriptionService.clear_pending_update → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E5"
+    },
+    {
+      "level": 7,
+      "http": "GET/POST /backoffice/subscriptions/{id}/update_status",
+      "handler": "polar/backoffice/subscriptions/endpoints.py:update_status",
+      "chain": "update_status → OrderService.void_pending_orders_for_subscription → OrderService.void → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E6"
+    },
+    {
+      "level": 7,
+      "http": "POST /v1/checkouts/",
+      "handler": "polar/checkout/endpoints.py:create（另有同路径的版本化处理函数 create_v2027_01）",
+      "chain": "create → CheckoutService.create → CheckoutService._after_checkout_created → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E7"
+    },
+    {
+      "level": 7,
+      "http": "GET /v1/checkout-links/{client_secret}/redirect",
+      "handler": "polar/checkout_link/endpoints.py:redirect",
+      "chain": "redirect → CheckoutService.checkout_link_create → CheckoutService._after_checkout_created → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E8"
+    },
+    {
+      "level": 7,
+      "http": "PATCH /v1/customer-portal/subscriptions/{id}",
+      "handler": "polar/customer_portal/endpoints/subscription.py:update",
+      "chain": "update → CustomerSubscriptionService.update → SubscriptionService.clear_pending_update → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E9"
+    },
+    {
+      "level": 7,
+      "http": "POST /v1/subscriptions/",
+      "handler": "polar/subscription/endpoints.py:create",
+      "chain": "create → SubscriptionService.create → SubscriptionService._after_subscription_created → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E10"
+    },
+    {
+      "level": 7,
+      "http": "PATCH /v1/subscriptions/{id}",
+      "handler": "polar/subscription/endpoints.py:update",
+      "chain": "update → SubscriptionService.update → SubscriptionService.update_product → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E11"
+    },
+    {
+      "level": 8,
+      "http": "GET/POST /backoffice/orders/{id}/refund",
+      "handler": "polar/backoffice/orders/endpoints.py:refund",
+      "chain": "refund → RefundService.create → RefundService._on_created → RefundService._on_succeeded → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E12"
+    },
+    {
+      "level": 8,
+      "http": "POST /v1/disputes/{id}/accept",
+      "handler": "polar/dispute/endpoints.py:accept",
+      "chain": "accept → DisputeService.accept → DisputeService.upsert_from_stripe → DisputeTransactionService.create_dispute → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E13"
+    },
+    {
+      "level": 8,
+      "http": "POST /v1/orders/{id}/finalize",
+      "handler": "polar/order/endpoints.py:finalize",
+      "chain": "finalize → OrderService.finalize_order → OrderService.trigger_payment → OrderService._emit_balance_credit_order_event → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E14"
+    },
+    {
+      "level": 9,
+      "http": "POST /v1/refunds/",
+      "handler": "polar/refund/endpoints.py:create",
+      "chain": "create → RefundService.user_create → RefundService.create → RefundService._on_created → RefundService._on_succeeded → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E15"
+    },
+    {
+      "level": 10,
+      "http": "GET/POST /backoffice/subscriptions/{id}/cancel",
+      "handler": "polar/backoffice/subscriptions/endpoints.py:cancel",
+      "chain": "cancel → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService._emit_balance_credit_order_event → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E16"
+    },
+    {
+      "level": 11,
+      "http": "DELETE /v1/subscriptions/{id}",
+      "handler": "polar/subscription/endpoints.py:revoke",
+      "chain": "revoke → SubscriptionService.revoke → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService._emit_balance_credit_order_event → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E17"
+    },
+    {
+      "level": 12,
+      "http": "DELETE /v1/customer-portal/subscriptions/{id}",
+      "handler": "polar/customer_portal/endpoints/subscription.py:cancel",
+      "chain": "cancel → CustomerSubscriptionService.cancel → SubscriptionService.cancel → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService._emit_balance_credit_order_event → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E18"
+    },
+    {
+      "level": 12,
+      "http": "POST /v1/customer-portal/subscriptions/{id}/revoke",
+      "handler": "polar/customer_portal/endpoints/subscription.py:revoke",
+      "chain": "revoke → CustomerSubscriptionService.revoke → SubscriptionService.revoke → SubscriptionService._perform_cancellation → SubscriptionService._settle_meter_cycle → OrderService.settle_meter_cycle_order → OrderService._create_order → OrderService._emit_balance_credit_order_event → EventService.create_event → EventService._create_meter_events → EventService._event_matches_meter → Filter.matches → target",
+      "id": "E19"
+    }
+  ],
+  "revision": {
+    "scoredEndpoints": 20,
+    "add": [
+      {
+        "id": "E20",
+        "http": "GET/POST /backoffice/subscriptions/{id}/uncancel",
+        "handler": "polar/backoffice/subscriptions/endpoints.py:uncancel",
+        "chain": "uncancel → SubscriptionService.uncancel → SubscriptionUpdateContext.__aexit__ (implicit, async with) → _after_subscription_updated → _on_subscription_uncanceled → create_event → … → target"
+      }
+    ],
+    "reason": {
+      "en": "Leaving async with SubscriptionUpdateContext(...) calls __aexit__ implicitly, which reaches the target (verified in source). Neither the mypy reference nor the map recorded implicit context-manager calls. Reached only on the POST branch. The frozen file was not edited; the revision is applied when scoring.",
+      "zh": "async with SubscriptionUpdateContext(...) 退出时隐式调用 __aexit__ → _after_subscription_updated → _on_subscription_uncanceled → create_event → … → 目标（评审沿源码核实）。mypy 参考和地图都只记录显式调用，没有上下文管理器的隐式调用。只在 POST 分支执行到。冻结的标准答案文件未改动，修订在计分时应用。"
+    }
+  },
+  "neutral": [
+    "POST /v1/meters（meter create）：MeterService.create 只 enqueue_job(\"meter.backfill_events\")，由 worker 中 meter_backfill_events → EventService._event_matches_meter → Filter.matches → target 异步执行",
+    "事件写入后 enqueue_events 触发的 event.ingested 等任务，以及其他只在 worker 中创建事件的路径：异步路径"
+  ],
+  "notAffected": [
+    "GET /v1/meters/{id}/quantities（meter quantities）：用 Filter.get_sql_clause / FilterClause.get_sql_clause 生成 SQL 条件，不调用 matches",
+    "PATCH /v1/meters/{id}（meter update）：不 enqueue 回填任务，也不调用 matches",
+    "GET /v1/events/ 与 /v1/events/statistics/*：按计量器过滤时走 SQL 条件，不调用 matches"
+  ],
+  "grading": {
+    "perEndpoint": "覆盖：答案明确把该接口列为受影响（HTTP 方法+路径或处理函数任一可识别即可），调用链与标准一致或等价（允许省略中间的简单转发，也允许经另一条同样成立的调用链）；部分：列出了接口，但标为不确定、调用链缺失或明显错误；缺失：没有列为受影响。错误：答案明确判断该接口不受影响（计为未覆盖，并单独记录）。",
+    "falsePositives": "答案把标准清单以外的接口说成确定受影响，每个计一处错误，写入 extraErrors；若回源码核实确有在请求内同步到达目标的调用链、属于标准遗漏，请写入 extraFindings，不计错误。标为'可能/待确认'的清单外接口不计错误。",
+    "excluded": [
+      "路由前缀（/api、/v1、/backoffice、/customer-portal 等）是否写出、写得是否完整不计分",
+      "只写了路由路径、没写 HTTP 方法，或反之，只要能唯一对应到标准中的接口即算识别",
+      "非 HTTP 入口（后台 worker 任务、CLI、脚本、数据库迁移、测试）不计分，写了也不扣分",
+      "checkout 路由同时挂在 /v1/checkouts 和隐藏的 /v1/checkouts/custom 下，写出其中任一即可"
+    ],
+    "conditional": "只在特定数据或配置条件下才执行到目标（如只对某种税务处理方、只在有计量价格或计量器时、只在 POST 提交时）的接口仍算受影响；答案注明条件不扣分。",
+    "neutral": "review.neutral 中的接口：答案列出或不列出、判为受影响或不受影响都不计分，也不写入 extraErrors。"
+  }
+}

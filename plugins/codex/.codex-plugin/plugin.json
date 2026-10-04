@@ -1,6 +1,6 @@
 {
   "name": "layermap",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.",
   "author": {
     "name": "The LayerMap Authors",
@@ -23,7 +23,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "LayerMap",
-    "shortDescription": "Callers, callees and the impact of a change, from a local map of your code",
+    "shortDescription": "Call chains and change impact",
     "longDescription": "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.",
     "developerName": "The LayerMap Authors",
     "category": "Developer Tools",
@@ -31,8 +31,14 @@
       "Read"
     ],
     "websiteURL": "https://github.com/coffeecoproject/layermap",
+    "supportURL": "https://github.com/coffeecoproject/layermap/issues",
+    "privacyPolicyURL": "https://github.com/coffeecoproject/layermap/blob/main/PRIVACY.md",
+    "logo": "./assets/icon.png",
+    "composerIcon": "./assets/icon.png",
     "defaultPrompt": [
-      "What would changing this function affect? Trace its callers to the entry points."
+      "What would changing this function affect? Trace its callers to the entry points.",
+      "Where is this function used across the codebase?",
+      "Give me a map of how this repository is organized."
     ]
   }
 }

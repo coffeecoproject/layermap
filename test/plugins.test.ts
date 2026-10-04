@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { pluginFiles } from "../scripts/plugins";
+import { PLUGIN_ASSETS, pluginFiles } from "../scripts/plugins";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
@@ -18,4 +18,10 @@ test("the committed plugins and marketplaces match the generator for this versio
   for (const [file, content] of Object.entries(files))
     assert.equal(await readFile(path.join(root, file), "utf8"), content, file);
   assert.match(files["plugins/claude/.mcp.json"] ?? "", /"layermap@\d+\.\d+\.\d+"/u);
+  for (const [file, source] of Object.entries(PLUGIN_ASSETS))
+    assert.deepEqual(
+      await readFile(path.join(root, file)),
+      await readFile(path.join(root, source)),
+      file,
+    );
 });
