@@ -1,6 +1,6 @@
 {
   "name": "layermap",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A layered map of a codebase for coding agents: directories, modules and call chains across TypeScript, Go, Python and Java.",
   "license": "Apache-2.0",
@@ -20,6 +20,7 @@
     "package": "node --import tsx scripts/pack.ts"
   },
   "dependencies": {
+    "@photostructure/sqlite": "2.6.0",
     "esbuild": "0.28.1",
     "pyright-root": "github:microsoft/pyright#a28cce4077d87b80bead12de809f79845e39c8ba",
     "typescript": "7.0.2",

@@ -8,7 +8,7 @@ import {
 } from "./agent/environment";
 import { serveMcp } from "./agent/mcp";
 import { removeAgent, type SetupAgent, setupAgent } from "./agent/setup";
-import { runMapTool } from "./agent/tools";
+import { describeMapError, runMapTool } from "./agent/tools";
 import { ProjectEvidenceError } from "./core";
 import { LayerMap } from "./layermap";
 import { MAP_TOOL_NAMES } from "./tools";
@@ -169,6 +169,8 @@ async function main(argv: string[]): Promise<number> {
 }
 
 process.exitCode = await main(process.argv.slice(2)).catch((error: unknown) => {
-  log(`layermap: ${error instanceof Error ? error.message : String(error)}`);
+  log(
+    `layermap: ${describeMapError(error) ?? (error instanceof Error ? error.message : String(error))}`,
+  );
   return 1;
 });

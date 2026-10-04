@@ -63,8 +63,6 @@ const HINTS: Readonly<Record<string, string>> = {
     "References are not available for this declaration; use its callers in project_explore_map.",
   LAYERMAP_NOT_A_GIT_REPOSITORY:
     "LayerMap maps Git repositories, and the agent was started outside one. Start it in a repository, or run layermap with --project naming one.",
-  LAYERMAP_SQLITE_WITHOUT_FTS5:
-    "This Node.js build has SQLite without FTS5 (as some package managers build it). Run LayerMap with the official Node.js 22.22 or later.",
 };
 
 /** A failure as an agent should read it: the code, and what to do about it when known. */

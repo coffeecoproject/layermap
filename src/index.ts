@@ -1,11 +1,11 @@
-// The engine's API for hosts that embed it; agents use the CLI and MCP server (src/cli.ts).
+// The engine's API for hosts that embed it in their own SQLite database. Agents use the CLI and
+// MCP server (src/cli.ts), which keep their maps with LayerMap's own SQLite (src/layermap.ts).
 export * from "./capture-policy";
 export * from "./code-index";
 export * from "./code-index-store";
 export * from "./code-index-types";
 export * from "./core";
 export * from "./git-runner";
-export * from "./layermap";
 export * from "./project-map-analyzer";
 export * from "./project-map-archived-navigation";
 export * from "./project-map-failure";

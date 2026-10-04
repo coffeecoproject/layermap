@@ -28,11 +28,11 @@ const env = {
 };
 const node = (args) =>
   new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      ["--disable-warning=ExperimentalWarning", "--import", "tsx", ...args],
-      { cwd: packageRoot, env, stdio: "inherit" },
-    );
+    const child = spawn(process.execPath, ["--import", "tsx", ...args], {
+      cwd: packageRoot,
+      env,
+      stdio: "inherit",
+    });
     child.on("error", reject);
     child.on("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
   });

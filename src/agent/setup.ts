@@ -125,6 +125,9 @@ export async function disallowInClaudeSettings(file: string): Promise<void> {
   const allow = settings?.permissions?.allow;
   if (!Array.isArray(allow) || !allow.includes(`mcp__${SERVER}`)) return;
   settings.permissions.allow = allow.filter((rule: unknown) => rule !== `mcp__${SERVER}`);
+  // Setup may have created the list and the permissions around it; none is left empty.
+  if (!settings.permissions.allow.length) delete settings.permissions.allow;
+  if (!Object.keys(settings.permissions).length) delete settings.permissions;
   await writeFile(file, `${JSON.stringify(settings, null, 2)}\n`);
 }
 

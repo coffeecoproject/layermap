@@ -48,8 +48,7 @@ For any other MCP client, run `npx -y layermap mcp` as a stdio server in the rep
 
 ## Requirements
 
-- **Node.js 22.22 or later**, an official build: LayerMap keeps its maps in the SQLite that Node
-  ships, and needs its full-text search (some package managers build Node without it).
+- **Node.js 22.22 or later.**
 - **macOS or Linux** (x64 or arm64).
 - **Git**: LayerMap maps a Git work tree, the one around the directory the agent starts in.
 - **Java projects only:** a JDK 21 or later (found through `LAYERMAP_JAVA_HOME`, `JAVA_HOME`, `PATH`,

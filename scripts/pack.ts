@@ -36,11 +36,11 @@ await build({
   format: "esm",
   platform: "node",
   target: "node22",
-  // The typescript dependency brings the compiler for the user's platform; its API stays outside.
-  external: ["typescript", "typescript/*"],
+  // The typescript dependency brings the compiler for the user's platform, and the SQLite package
+  // its prebuilt binary; both stay outside.
+  external: ["typescript", "typescript/*", "@photostructure/sqlite"],
   banner: {
-    // Node warns that its SQLite is experimental while loading it, before any of this code runs.
-    js: '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning\nimport { createRequire as layermapCreateRequire } from "node:module"; const require = layermapCreateRequire(import.meta.url);',
+    js: '#!/usr/bin/env node\nimport { createRequire as layermapCreateRequire } from "node:module"; const require = layermapCreateRequire(import.meta.url);',
   },
   logLevel: "warning",
 });
@@ -98,7 +98,10 @@ await writeFile(
       files: ["dist", "analyzers", "LICENSE", "NOTICE", "README.md"],
       engines: { node: ">=22.22" },
       os: ["darwin", "linux"],
-      dependencies: { typescript: source.dependencies.typescript },
+      dependencies: {
+        "@photostructure/sqlite": source.dependencies["@photostructure/sqlite"],
+        typescript: source.dependencies.typescript,
+      },
       homepage: "https://github.com/coffeecoproject/layermap",
       repository: { type: "git", url: "git+https://github.com/coffeecoproject/layermap.git" },
       keywords: ["code-map", "call-graph", "impact-analysis", "mcp", "claude-code", "codex"],

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   allowInClaudeSettings,
   configureCodexServer,
+  disallowInClaudeSettings,
   mcpLaunchCommand,
   removeAgent,
   removeInstructionNote,
@@ -30,6 +31,14 @@ test("Claude Code settings gain one allow rule for the map tools and keep everyt
     model: "x",
     permissions: { allow: ["Bash(ls)", "mcp__layermap"], deny: ["Read(.env)"] },
   });
+});
+
+test("removing the allow rule leaves no empty permissions behind", async () => {
+  const file = path.join(await sandbox(), "settings.json");
+  await writeFile(file, JSON.stringify({ model: "x" }));
+  await allowInClaudeSettings(file);
+  await disallowInClaudeSettings(file);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { model: "x" });
 });
 
 test("the Codex server table gains approval and timeout keys once, other lines untouched", async () => {

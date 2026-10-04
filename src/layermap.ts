@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type DatabaseSyncInstance } from "@photostructure/sqlite";
 import { CodeIndex } from "./code-index";
 import {
   CODE_INDEX_CONTEXT_RESULTS_MIGRATION,
@@ -41,10 +41,11 @@ const SCHEMA_VERSION = 2;
 const KEEP_VERSIONS = 3;
 
 /**
- * Opens a map database owned by LayerMap alone. A new file gets the whole schema at once; the
- * same statements, applied one by one, are the migrations of a host that embeds the store.
+ * Opens a map database owned by LayerMap alone, with the SQLite LayerMap ships (Node's own may lack
+ * FTS5). A new file gets the whole schema at once; the same statements, applied one by one, are the
+ * migrations of a host that embeds the store.
  */
-export function openMapDatabase(file: string): DatabaseSync {
+export function openMapDatabase(file: string): DatabaseSyncInstance {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const database = new DatabaseSync(file);
   try {
@@ -70,9 +71,7 @@ export function openMapDatabase(file: string): DatabaseSync {
         database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT;`);
       } catch (error) {
         database.exec("ROLLBACK");
-        throw /no such module: fts5/u.test(String(error))
-          ? new ProjectEvidenceError("LAYERMAP_SQLITE_WITHOUT_FTS5", false)
-          : error;
+        throw error;
       }
     } else if (version === 1) {
       database.exec(
@@ -129,8 +128,12 @@ export class LayerMap {
       projectRef: `layermap:${createHash("sha256").update(project).digest("hex").slice(0, 24)}`,
       directory: { canonicalPath: project, device: String(stat.dev), inode: String(stat.ino) },
     };
+    // LayerMap's SQLite implements node:sqlite's API; the two declare a few members the store does
+    // not use (expandedSQL, serialize) differently.
     const store = new CodeIndexStore(
-      openMapDatabase(mapDatabasePath(options.cacheDirectory, project)),
+      openMapDatabase(
+        mapDatabasePath(options.cacheDirectory, project),
+      ) as unknown as CodeIndexStore["database"],
     );
     const { typescript, go, python, java } = options.analyzers;
     const index = new CodeIndex(

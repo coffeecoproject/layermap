@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { DatabaseSync } from "@photostructure/sqlite";
 import { pruneCache } from "../src/agent/environment";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { FILES, openMap, project, sandbox, signal } from "./support";
