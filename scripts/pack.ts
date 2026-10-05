@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
 import { buildGoMap, buildProjectMapParser } from "./build.mjs";
+import { MCP_NAME } from "./plugins";
 
 const run = promisify(execFile);
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -91,6 +92,7 @@ await writeFile(
     {
       name: "layermap",
       version: source.version,
+      mcpName: MCP_NAME,
       description: source.description,
       license: "Apache-2.0",
       type: "module",
