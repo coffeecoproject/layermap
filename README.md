@@ -7,6 +7,9 @@
 [![npm](https://img.shields.io/npm/v/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
+<p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code asks which HTTP endpoints changing Storage.MarkFeedAsRead affects; one LayerMap call returns all four callers with their routes" width="100%"></p>
+<p align="center"><sub>A real Claude Code session on <a href="https://github.com/miniflux/v2">Miniflux</a>, replayed: one map call finds every endpoint, then the agent confirms them in source.</sub></p>
+
 A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex, DeepSeek
 Harness and other MCP clients three read-only tools that answer, in one call, what an agent otherwise works out with
 dozens of searches:

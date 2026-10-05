@@ -7,6 +7,9 @@
 [![npm](https://img.shields.io/npm/v/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
+<p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code 询问改动 Storage.MarkFeedAsRead 会影响哪些 HTTP 接口，一次 LayerMap 调用返回全部 4 个调用方和路由" width="100%"></p>
+<p align="center"><sub>在 <a href="https://github.com/miniflux/v2">Miniflux</a> 上的一次真实 Claude Code 会话回放：一次地图调用找全接口，agent 再到源码里逐一确认。</sub></p>
+
 给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、DeepSeek Harness 和其他 MCP 客户端提供三个只读工具，一次调用
 就能回答 agent 平时要搜几十次才弄清的问题：
 
