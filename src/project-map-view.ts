@@ -78,8 +78,12 @@ const invalid = (): never => {
 const notFound = (): never => {
   throw new ProjectEvidenceError("PROJECT_MAP_OBJECT_NOT_FOUND", false);
 };
-const LEGEND =
-  "Kinds: f function, c class, m method, p property, v variable, t type, i interface, e enum; numbers are 1-based source lines.";
+/** How views abbreviate declarations; tool descriptions carry it so each view need not. */
+export const MAP_KINDS_LEGEND =
+  "kinds f function, c class, m method, p property, v variable, t type, i interface, e enum; numbers are 1-based source lines";
+/** How a declaration view reads, for tool descriptions: views print only what varies. */
+export const MAP_DECLARATION_LEGEND =
+  "@n marks where a relationship occurs and +n counts further sites, which project_find_references lists; a quoted path after the sites is what the call or value is registered under there, such as a route. Static relationships are grouped by the declaration that owns them. Callers are direct calls, uses as a value (stored, passed, returned or selected, then usually invoked through that value) and calls through an interface, type or base member that a declaration implements (dispatched from); dispatches to lists the members that implement an interface, type or base member, which a call through it may reach; trace stops names calls whose target is a function value, a member without a mapped implementation or a computed key, which only source reading can follow; possible callers by name are calls elsewhere, in the same language, of a member with a method's name on a receiver of unknown type (an untyped value, or one an unloaded package produced); they may or may not reach that method.";
 const within = (path: string, directory: string) =>
   directory === "." || path.startsWith(`${directory}/`);
 const parentDirectory = (path: string) => {
@@ -161,8 +165,9 @@ function pageBlocks(
     return {
       format: MAP_VIEW_FORMAT,
       view,
+      // Later pages continue a view the agent has already read, so only its title repeats.
       text: [
-        ...head,
+        ...(offset ? head.slice(0, 1) : head),
         ...blocks.slice(offset, end),
         ...(more ? [`… ${blocks.length - end} more entries; continue with offset ${end}.`] : []),
       ].join("\n"),
@@ -718,7 +723,7 @@ function directoryView(
       prefixes.includes(".") ? "" : " · limited to authorized paths"
     }`,
     tier === "DETAILED"
-      ? `${LEGEND} Code files list line count and exported declarations; other files show size.`
+      ? "Code files list line count and exported declarations; other files show size."
       : tier === "COMPACT"
         ? "File lines give a directory, then its files with line counts; join them for a path. Declarations are omitted to keep this overview small: open a file, or a directory with fewer files, to see them."
         : "Files are omitted because this directory is large: open a module directory to list its files.",
@@ -760,11 +765,10 @@ const INCOMING: Readonly<Partial<Record<MapRelation["kind"], string>>> = {
   DECORATED_BY: "decorates",
 };
 const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
-// A last page means the view is complete, not that every runtime caller is mapped.
+// A last page means the view is complete, not that every runtime caller is mapped: each view with
+// callers says so, so a complete page is not read as proof.
 const callerCoverage = (textSearch: string) =>
-  `Callers are direct calls, uses as a value (stored, passed, returned or selected, then usually invoked through that value) and calls through an interface, type or base member that a declaration here implements (dispatched from). Calls through dependency injection, framework routing, reflection or computed names are not mapped, so a complete view is not a complete caller list; confirm impact with project_find_references or ${textSearch}. Possible callers by name are calls elsewhere, in the same language, of a member with a method's name on a receiver of unknown type (an untyped value, or one an unloaded package produced); they may or may not reach that method.`;
-const DISPATCH_LEGEND =
-  "dispatches to lists the members that implement an interface, type or base member, which a call through it may reach; trace stops names calls whose target is a function value, a member without a mapped implementation or a computed key, which only source reading can follow.";
+  `Calls through dependency injection, framework routing, reflection or computed names are not mapped, so a complete view is not a complete caller list; confirm impact with project_find_references or ${textSearch}.`;
 // Python's special methods run through the language's protocols, not by name.
 const SPECIAL_METHOD = /^__\w+__$/u;
 // Calls whose target is only known at runtime, so a static trace cannot continue past them.
@@ -1121,7 +1125,6 @@ function fileView(
             : `${module.anchor.endLine} lines${gaps.length ? ` · ${gaps.join("; ")}` : ""}`
           : `${entry.byteLength} bytes, not analyzed; read it as text`
     }`,
-    LEGEND,
   ];
   if (!module || entry.state !== "TEXT")
     return pageBlocks("FILE", head, [], input.offset ?? 0, input.outputBudget);
@@ -1323,9 +1326,7 @@ function declarationView(
     } · direction ${input.direction ?? "BOTH"} · depth ${depth}${
       depth < requested ? ` (BOTH is limited to ${MAP_VIEW_LIMITS.bothDepth})` : ""
     }${prefixes.includes(".") ? "" : " · limited to authorized paths"}`,
-    `${LEGEND} @n marks where a relationship occurs and +n counts further sites, which project_find_references lists; a quoted path after the sites is what the call or value is registered under there, such as a route. Static relationships are grouped by the declaration that owns them; closures and locals belong to their container; ${DISPATCH_LEGEND}${
-      truncated ? ` Expansion stopped at ${MAP_VIEW_LIMITS.declarations} declarations.` : ""
-    }`,
+    ...(truncated ? [`Expansion stopped at ${MAP_VIEW_LIMITS.declarations} declarations.`] : []),
     ...((input.direction ?? "BOTH") === "OUTGOING"
       ? []
       : [callerCoverage(input.textSearch ?? DEFAULT_TEXT_SEARCH)]),

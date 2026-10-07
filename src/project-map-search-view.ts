@@ -63,7 +63,6 @@ export function mapSearchView(
         } · ${
           count ? `results ${offset + 1}-${offset + count}` : "no matching declarations or files"
         }${more ? ` · continue with offset ${offset + count}` : ""}`,
-        "Ranked by relevance; kinds f function, c class, m method, p property, v variable, t type, i interface, e enum, followed by 1-based source lines and the matched fields.",
         ...lines,
       ].join("\n"),
       ...(more ? { nextOffset: offset + count } : {}),
