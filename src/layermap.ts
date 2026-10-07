@@ -14,6 +14,7 @@ import {
 import type { CodeIndexSource, CodeIndexVersion } from "./code-index-types";
 import { ProjectEvidenceError } from "./core";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
+import { mapChangeImpact, mapChangesText, readMapChanges } from "./project-map-changes";
 import { GoMapAnalyzer } from "./project-map-language-go";
 import { JavaMapAnalyzer } from "./project-map-language-java";
 import { PythonMapAnalyzer } from "./project-map-language-python";
@@ -154,17 +155,28 @@ export class LayerMap {
 
   /** The map version of the directory as it is now, built or updated if needed. */
   refresh(signal: AbortSignal): Promise<string> {
-    // One capture at a time; a query waiting behind one captures again, since files may change.
-    const previous = this.refreshing ?? Promise.resolve("");
-    const next = previous
-      .catch(() => "")
-      .then(async () => {
-        const version = await this.index.prepare(this.source, signal, {
-          initialScope: DEFAULT_INITIAL_EVIDENCE_SCOPE,
-        });
-        this.prune(version);
-        return version.version;
+    return this.serialized(async () => {
+      const version = await this.index.prepare(this.source, signal, {
+        initialScope: DEFAULT_INITIAL_EVIDENCE_SCOPE,
       });
+      this.prune(version);
+      return version.version;
+    });
+  }
+
+  /** The map version of a commit of the directory; files it shares with other versions are reused. */
+  private versionAt(commit: string, signal: AbortSignal): Promise<string> {
+    return this.serialized(async () => {
+      const version = await this.index.prepare({ ...this.source, kind: "COMMIT", commit }, signal, {
+        initialScope: DEFAULT_INITIAL_EVIDENCE_SCOPE,
+      });
+      return version.version;
+    });
+  }
+
+  // One capture at a time; a query waiting behind one captures again, since files may change.
+  private serialized(capture: () => Promise<string>): Promise<string> {
+    const next = (this.refreshing ?? Promise.resolve("")).catch(() => "").then(capture);
     this.refreshing = next;
     return next;
   }
@@ -222,6 +234,25 @@ export class LayerMap {
         signal,
       ),
     );
+  }
+
+  /**
+   * What the working tree's changes against a commit (HEAD by default) affect: the changed and
+   * removed declarations, the entry points and tests their callers reach, and what the map cannot
+   * see. The base commit's map is built only when the diff removes or changes lines there.
+   */
+  async checkChanges(input: { base?: string }, signal: AbortSignal): Promise<{ text: string }> {
+    const changes = await readMapChanges(this.project, input.base ?? "HEAD", signal);
+    const working = await this.refresh(signal);
+    const base = changes.files.some((file) => file.basePath !== undefined && file.baseLines.length)
+      ? await this.versionAt(changes.commit, signal)
+      : undefined;
+    return {
+      text: mapChangesText(
+        changes,
+        mapChangeImpact(this.store, working, base, changes, this.project),
+      ),
+    };
   }
 
   async close(): Promise<void> {

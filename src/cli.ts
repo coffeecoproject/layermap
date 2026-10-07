@@ -26,6 +26,7 @@ Usage:
                    [--depth N] [--tests] [--unresolved] [--offset N]
   layermap search QUERY [--path DIR] [--mode ANY|ALL|LITERAL] [--max N] [--offset N]
   layermap refs PATH NAME [--line N] [--path DIR] [--max N] [--cursor C]
+  layermap check [--base REF]             what the uncommitted changes (or those since REF) affect
 
 The project is the Git work tree around the current directory unless --project names one.
 Maps are kept in ${cacheDirectory()}.`;
@@ -42,6 +43,7 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: true,
     options: {
       project: { type: "string" },
+      base: { type: "string" },
       scope: { type: "string", default: "user" },
       "dry-run": { type: "boolean", default: false },
       "no-instructions": { type: "boolean", default: false },
@@ -138,6 +140,7 @@ async function main(argv: string[]): Promise<number> {
           offset: number(values.offset),
         },
       ],
+      check: [MAP_TOOL_NAMES.check, { base: values.base }],
       refs: [
         MAP_TOOL_NAMES.references,
         {

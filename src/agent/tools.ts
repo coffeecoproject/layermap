@@ -7,6 +7,7 @@ import {
   mapDirectoryPath,
   mapReferencesInputSchema,
   mapToolDescriptions,
+  ProjectMapCheckInputSchema,
   ProjectMapExploreInputSchema,
   ProjectMapSearchInputSchema,
 } from "../tools";
@@ -33,6 +34,12 @@ export const agentMapTools = [
     title: "All usages of a declaration (LayerMap)",
     description: descriptions.references,
     schema: ReferencesInputSchema,
+  },
+  {
+    name: MAP_TOOL_NAMES.check,
+    title: "What uncommitted changes affect (LayerMap)",
+    description: descriptions.check,
+    schema: ProjectMapCheckInputSchema,
   },
 ].map(({ schema, ...tool }) => {
   const { $schema: _dialect, ...inputSchema } = z.toJSONSchema(schema, { io: "input" });
@@ -61,6 +68,9 @@ const HINTS: Readonly<Record<string, string>> = {
     "Paths are relative to the project root, use / and contain no . or .. parts.",
   PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE:
     "References are not available for this declaration; use its callers in project_explore_map.",
+  LAYERMAP_BASE_NOT_FOUND:
+    "No such commit, branch or tag. Leave base out to compare with HEAD, or name an existing one such as main.",
+  LAYERMAP_BASE_INVALID: "base names a commit, branch or tag, such as HEAD or main.",
   LAYERMAP_NOT_A_GIT_REPOSITORY:
     "LayerMap maps Git repositories, and the agent was started outside one. Start it in a repository, or run layermap with --project naming one.",
 };
@@ -103,6 +113,10 @@ export async function runMapTool(
       );
       return { text: page.text + more(page.nextOffset), isError: false };
     }
+    if (name === MAP_TOOL_NAMES.check) {
+      const input = parsed.data as z.infer<typeof ProjectMapCheckInputSchema>;
+      return { text: (await map.checkChanges(input, signal)).text, isError: false };
+    }
     if (name === MAP_TOOL_NAMES.search) {
       const input = parsed.data as z.infer<typeof ProjectMapSearchInputSchema>;
       const page = await map.search({ ...input, path: mapDirectoryPath(input.path) }, signal);
@@ -119,7 +133,7 @@ export async function runMapTool(
 
 /** What an agent is told about the map once, when it connects. */
 export const AGENT_MAP_INSTRUCTIONS =
-  "Use the LayerMap tools before grep or reading files whenever a task asks what calls something, what a change affects, where something is used, or how the code is organized: project_explore_map on a declaration with direction INCOMING and depth up to 8 traces its callers up to the entry points (HTTP routes, handlers, jobs, commands) in one call, which grep can only approximate one name at a time. LayerMap is a static, layered map of this repository for TypeScript/JavaScript, Go, Python and Java: directories and modules, each file's declarations, and each declaration's callers and callees up to 8 hops. path \".\" shows what exists. Continue from any NOT EXPANDED declarations a view names, then confirm entry points in source. The map is static: dynamic dispatch, framework wiring and unresolved targets need source reading, and a missing relationship does not prove absence. The first call on a project builds its map, which can take minutes on a large repository; later calls update only what changed.";
+  "Use the LayerMap tools before grep or reading files whenever a task asks what calls something, what a change affects, where something is used, or how the code is organized: project_explore_map on a declaration with direction INCOMING and depth up to 8 traces its callers up to the entry points (HTTP routes, handlers, jobs, commands) in one call, which grep can only approximate one name at a time. LayerMap is a static, layered map of this repository for TypeScript/JavaScript, Go, Python and Java: directories and modules, each file's declarations, and each declaration's callers and callees up to 8 hops. path \".\" shows what exists. Continue from any NOT EXPANDED declarations a view names, then confirm entry points in source. After editing code, call project_check_changes before reporting the work done: it lists the entry points and existing tests the changes reach. The map is static: dynamic dispatch, framework wiring and unresolved targets need source reading, and a missing relationship does not prove absence. The first call on a project builds its map, which can take minutes on a large repository; later calls update only what changed.";
 
 /**
  * One sentence for an agent's own instructions file. Codex shows MCP tools only when it searches for

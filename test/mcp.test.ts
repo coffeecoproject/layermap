@@ -63,7 +63,12 @@ test("an MCP client lists the read-only map tools and explores the project", asy
     };
     assert.deepEqual(
       listed.result.tools.map((tool) => tool.name),
-      ["project_explore_map", "project_search_map", "project_find_references"],
+      [
+        "project_explore_map",
+        "project_search_map",
+        "project_find_references",
+        "project_check_changes",
+      ],
     );
     for (const tool of listed.result.tools) {
       assert.equal(tool.inputSchema.type, "object");
