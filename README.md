@@ -62,14 +62,17 @@ projects, graded blind against truth sets cross-checked with each language's own
 | | With LayerMap | Without |
 |---|---|---|
 | Endpoints found, at most 15 requests (`gpt-5.5`, 6 tasks × 3 runs) | **97.9%** | 58.8% |
-| Used unprompted by Claude Code / Codex (plugin installed) | **6 of 6 / 6 of 6** | — |
-| Endpoints found, no request limit (Claude Code / Codex) | 99.3% / 98.0% | 99.0% / 98.6% |
-| Cost, no request limit (Claude Code in USD / Codex in input tokens) | **−32% / −55%** | |
-| Time, no request limit | +24% / +17% | |
+| Used unprompted by Claude Code / Codex (plugin installed, two rounds) | **12 of 12 / 12 of 12** | — |
+| Endpoints found, no request limit (Claude Code / Codex, 0.1.5) | 100% / 100% | 99.0% / 100% |
+| Claude Code cost, no request limit | **−33%** | |
+| Codex input tokens, no request limit (current defaults) | +14% | |
+| Time, no request limit (Claude Code / Codex) | +25% / +20% | |
 
 With a tight budget, the map finds far more of the affected code, at about 24% more tokens. With
-no limit, both agents get there either way. The map makes the run cheaper, and the agents explore
-more widely, which takes longer. These are small samples on tasks written by LayerMap's authors.
+no limit, both agents find nearly everything either way. Claude Code costs a third less with the
+map. Codex's current defaults already search lean, so the map no longer saves it tokens; at
+reasoning effort max, in the first round, it saved 55%. Agents with the map explore more widely,
+which takes longer. These are small samples on tasks written by LayerMap's authors.
 The [report](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.md) has the
 setup, the published tasks and the limitations.
 

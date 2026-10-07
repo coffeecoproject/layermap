@@ -8,10 +8,13 @@ Does a code map help a coding agent answer "what does changing this affect?" Two
    LayerMap. With the map it found **97.9%** of the affected HTTP endpoints across six public tasks;
    without it, **58.8%**.
 2. **Natural use.** Claude Code and Codex were not told about the map. With the plugin installed,
-   both used it on their own in **12 of 12** runs. With no request limit:
-   - accuracy was the same with or without the map (98–99%);
-   - Claude Code cost **32% less** and Codex used **55% fewer** input tokens;
-   - runs took 17–24% longer.
+   both used it on their own in **12 of 12** runs, and again in 12 of 12 when rerun with 0.1.5.
+   With no request limit:
+   - accuracy was the same with or without the map (98–100%);
+   - Claude Code cost **about a third less**;
+   - Codex used **55% fewer** input tokens at reasoning effort max, but 14% more with its current,
+     leaner defaults ([rerun](#rerun-with-015));
+   - runs took 17–25% longer.
 
 Samples are small and LayerMap's authors wrote the tasks; see [Limitations](#limitations). The
 questions, truth sets and scoring rules are in [`benchmark/tasks`](benchmark/tasks).
@@ -166,10 +169,42 @@ all four answers also found the 20th.
   84 tool calls, 23 of them map calls. The map's change check costs about 1 s per call on these
   projects.
 
+### Rerun with 0.1.5
+
+0.1.5 shows each handler's HTTP methods and full path, and drops the explanations views repeated
+on every call. The same six tasks were rerun on 2026-10-07, run and graded the same way:
+
+- **Claude Code** 2.1.278 with the same model, with the map only. The first round's runs without
+  the map are the baseline.
+- **Codex CLI** 0.160.1 with the owner's current defaults (model `gpt-6-astra`, reasoning effort
+  xhigh; the first round used effort max), with and without the map. Codex is compared within this
+  round only. With the map, the installed plugin's server was replaced by the version under test;
+  without it, plugins were turned off.
+
+| | Claude Code with map | Codex with map | Codex without |
+|---|---|---|---|
+| Endpoints found (of 147) | 147 (100%) | 147 (100%) | 147 (100%) |
+| False positives | 1 | 0 | 0 |
+| Map calls / other tool calls | 41 / 142 | 36 / 103 | 0 / 159 |
+| Time | 2,329 s | 2,264 s | 1,883 s |
+| Cost | $12.32 | 5.55M input tokens | 4.86M input tokens |
+
+Claude Code's false positive is the Miniflux share page from Experiment 1.
+
+**What changed:**
+
+- **Claude Code** made fewer other tool calls than with 0.1.4 (142 against 185) and more map calls
+  (41 against 27). Time and cost were about the same as the first round (2,313 s, $12.60). Against
+  its runs without the map it cost 33% less and took 25% longer.
+- **Codex** with its current defaults searches far less on its own: 4.86M input tokens without the
+  map, against 23.48M at effort max. With the map it made 35% fewer other tool calls, but used 14%
+  more input tokens and 20% more time.
+
 ## Limitations
 
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has
-  one run per cell, run at different times, mostly with the map first.
+  one run per cell, run at different times, mostly with the map first. Single runs of one task
+  vary widely: in the rerun, one Claude Code answer took 665 s against 359 s in the first round.
 - **One kind of task.** Every task is impact analysis up to HTTP endpoints, which is what LayerMap
   is built for.
 - **Authorship.** LayerMap's authors wrote the tasks, and LayerMap's index is one of the two
@@ -179,7 +214,8 @@ all four answers also found the 20th.
   unprompted use.
 - **Shared environment.** In Experiment 2 agents inherited the owner's environment, including
   global instruction files and the projects' own `AGENTS.md`/`CLAUDE.md`, the same in both
-  conditions. Codex's model name was not recorded.
+  conditions. Codex's model name was not recorded in the first round, and its default reasoning
+  effort changed before the rerun.
 - **No dollar cost** was recorded for Experiment 1.
 - **TypeScript.** The TypeScript tasks use a private codebase, so only aggregates are reported. A
   public TypeScript benchmark is planned.

@@ -59,15 +59,18 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 | | 用 LayerMap | 不用 |
 |---|---|---|
 | 找到的接口，每次最多 15 次请求（`gpt-5.5`，6 道题各 3 次） | **97.9%** | 58.8% |
-| Claude Code / Codex 主动使用（装了插件） | **6 次中 6 次 / 6 次中 6 次** | — |
-| 找到的接口，不限次数（Claude Code / Codex） | 99.3% / 98.0% | 99.0% / 98.6% |
-| 花费，不限次数（Claude Code 按美元 / Codex 按输入 token） | **−32% / −55%** | |
-| 用时，不限次数 | +24% / +17% | |
+| Claude Code / Codex 主动使用（装了插件，两轮） | **12 次中 12 次 / 12 次中 12 次** | — |
+| 找到的接口，不限次数（Claude Code / Codex，0.1.5） | 100% / 100% | 99.0% / 100% |
+| Claude Code 花费，不限次数 | **−33%** | |
+| Codex 输入 token，不限次数（当前默认设置） | +14% | |
+| 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
 
 **怎么理解这些结果：**
 
 - 预算紧时，用地图能找到多得多的受影响代码，代价是多用约 24% 的 token。
-- 不限次数时，两个 agent 有没有地图最终都能找全。用地图更省钱；但 agent 会查得更广，所以用时更长。
+- 不限次数时，两个 agent 有没有地图最终都能找全。Claude Code 用地图花费少三分之一。
+- Codex 现在的默认设置本来就查得很省，地图不再帮它省 token；第一轮用最高推理强度时，它省了 55%。
+- 有地图时 agent 会查得更广，所以用时更长。
 
 样本量小，题目也由 LayerMap 作者编写。实验条件、公开的题目和局限说明见
 [报告](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)。
