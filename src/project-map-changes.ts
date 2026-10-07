@@ -44,12 +44,12 @@ const gitOptions = (cwd: string, signal: AbortSignal) => ({
 });
 const EVERYTHING: readonly [number, number] = [1, Number.MAX_SAFE_INTEGER];
 
-/** The working tree's changes against a commit: tracked files from git diff, plus untracked files. */
-export async function readMapChanges(
+/** The commit a base (a commit, branch or tag) names. */
+export async function resolveMapBase(
   project: string,
   base: string,
   signal: AbortSignal,
-): Promise<MapChanges> {
+): Promise<string> {
   if (!/^[\w./@^~-]{1,200}$/u.test(base) || base.startsWith("-"))
     throw new ProjectEvidenceError("LAYERMAP_BASE_INVALID", false);
   let commit: string;
@@ -67,6 +67,16 @@ export async function readMapChanges(
   }
   if (!/^[a-f0-9]{40,64}$/u.test(commit))
     throw new ProjectEvidenceError("LAYERMAP_BASE_NOT_FOUND", false);
+  return commit;
+}
+
+/** The working tree's changes against a commit: tracked files from git diff, plus untracked files. */
+export async function readMapChanges(
+  project: string,
+  base: string,
+  signal: AbortSignal,
+): Promise<MapChanges> {
+  const commit = await resolveMapBase(project, base, signal);
   const diff = (
     await git.run(
       [

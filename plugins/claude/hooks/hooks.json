@@ -1,5 +1,5 @@
 {
-  "description": "Tells Claude when the map helps.",
+  "description": "Tells Claude when the map helps, and to check what its code changes affect.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,17 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-check.sh\"",
+            "timeout": 30
           }
         ]
       }

@@ -23,10 +23,13 @@ Start a session in a Git repository and ask as usual, for example:
 - LayerMap itself makes no network requests. Maps stay in your user cache, never in the repository.
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
+- When Claude is about to finish after changing code, a stop hook asks it once to run
+  `project_check_changes` and check what the changes affect. It only asks git whether code
+  changed and never runs tests or edits anything. Set `LAYERMAP_STOP_CHECK=0` to turn it off.
 
 ## Permissions
 
-The three tools only read the project and its map. Claude Code asks before each one's first use in a
+The four tools only read the project and its map. Claude Code asks before each one's first use in a
 project. Answer "Yes, and don't ask again", or run `npx layermap allow claude` once to allow them
 everywhere (`npx layermap remove claude` takes it back).
 

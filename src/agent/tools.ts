@@ -141,4 +141,12 @@ export const AGENT_MAP_INSTRUCTIONS =
  * reach for it (natural-adoption runs, 2026-10-04).
  */
 export const AGENT_MAP_NOTE =
-  "The layermap MCP server is available here. For questions about what calls a function, what a change affects or where code is used, start with its project_explore_map tool (direction INCOMING, depth up to 8) before grep, then confirm in source.";
+  "The layermap MCP server is available here. For questions about what calls a function, what a change affects or where code is used, start with its project_explore_map tool (direction INCOMING, depth up to 8) before grep, then confirm in source. After editing code, call its project_check_changes tool before reporting the work done.";
+
+/**
+ * What the Claude Code plugin's stop hook tells the agent, once per set of code changes made in a
+ * session: check what they affect before finishing. The check itself is the map tool, so the hook
+ * stays a shell script that only asks git whether code changed.
+ */
+export const AGENT_STOP_CHECK =
+  "Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If you already checked these changes, say so briefly and finish.";

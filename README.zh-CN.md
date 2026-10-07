@@ -16,13 +16,14 @@
 <p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code 询问改动 Storage.MarkFeedAsRead 会影响哪些 HTTP 接口，一次 LayerMap 调用返回全部 4 个调用方和路由" width="100%"></p>
 <p align="center"><sub>在 <a href="https://github.com/miniflux/v2">Miniflux</a> 上的一次真实 Claude Code 会话回放：一次地图调用找全接口，agent 再到源码里逐一确认。</sub></p>
 
-给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、DeepSeek Harness 和其他 MCP 客户端提供三个只读工具，一次调用
+给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、DeepSeek Harness 和其他 MCP 客户端提供几个只读工具，一次调用
 就能回答 agent 平时要搜几十次才弄清的问题：
 
 - **谁调用了它，改它会影响什么？** 调用方最多追 8 层，一直追到作为起点的 HTTP 路由、处理函数、定时任务和
   命令。
 - **它调用了什么？** 被调用方，往下最多 8 层。
 - **这里有什么？** 模块、每个文件的声明，以及某个符号的所有用法。
+- **我刚改的影响到哪里？** 未提交的改动经过哪些路由、定时任务和命令，以及相关的已有测试。
 
 支持 **TypeScript、JavaScript、Go、Python 和 Java**，用每种语言自己的编译器分析。所以经由接口、基类、模板
 和装饰器的调用，都和编译器解析得一样，包括文本搜索会漏掉的那些。
@@ -123,12 +124,17 @@ npx layermap setup dsh
 启动时，npx 会从 npm 下载锁定版本的 `layermap`。
 
 Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；
-也可以运行一次 `npx layermap allow claude`，在所有项目里放行这三个只读工具。
+也可以运行一次 `npx layermap allow claude`，在所有项目里放行这些只读工具。
+
+**改完自检**：agent 改完代码后，`project_check_changes` 会列出这次改动影响到哪里：经过改动函数的路由、
+定时任务和命令，地图看不到、需要人工核对的地方，以及相关的已有测试。它不会写测试，也不会运行测试。在
+Claude Code 里，如果 agent 还没做这个检查，插件会在它结束前提醒一次；设置 `LAYERMAP_STOP_CHECK=0`
+可以关掉。Codex 和 DeepSeek Harness 通过说明文字提示 agent 去做。
 
 **不用插件**：运行 `npx layermap setup claude` 或 `npx layermap setup codex`，它会：
 
 - 注册地图服务；
-- 让三个只读工具不再弹确认；
+- 让这些只读工具不再弹确认；
 - 在 agent 的说明文件里加一句带标记的话。
 
 加 `--scope project` 可以给整个团队配置；`npx layermap remove …` 撤销。其他 MCP 客户端，在仓库里把
@@ -156,6 +162,7 @@ Claude Code 在每个项目里第一次用到某个地图工具时会问一次�
 | `project_explore_map` | 查看目录、文件，或一个声明的调用方和被调用方（`direction` 为 INCOMING 或 OUTGOING，`depth` 最多 8）。 |
 | `project_search_map` | 按名称、路径或文档里的词查找声明。 |
 | `project_find_references` | 一个声明的所有用法，基于当前源码编译得出。 |
+| `project_check_changes` | 未提交的改动（或自 `base` 以来的改动）影响到哪里：改动和删除的声明、经过它们的路由、定时任务和命令、需要人工核对的地方，以及相关测试。 |
 
 命令行用法：
 
@@ -163,6 +170,7 @@ Claude Code 在每个项目里第一次用到某个地图工具时会问一次�
 npx layermap explore src/api/users.ts --name createUser --direction INCOMING --depth 8
 npx layermap search "invoice total"
 npx layermap refs src/billing/tax.ts calculateTax
+npx layermap check --base main
 ```
 
 ## 常见问题

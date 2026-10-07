@@ -14,7 +14,12 @@ import {
 import type { CodeIndexSource, CodeIndexVersion } from "./code-index-types";
 import { ProjectEvidenceError } from "./core";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
-import { mapChangeImpact, mapChangesText, readMapChanges } from "./project-map-changes";
+import {
+  mapChangeImpact,
+  mapChangesText,
+  readMapChanges,
+  resolveMapBase,
+} from "./project-map-changes";
 import { GoMapAnalyzer } from "./project-map-language-go";
 import { JavaMapAnalyzer } from "./project-map-language-java";
 import { PythonMapAnalyzer } from "./project-map-language-python";
@@ -253,6 +258,14 @@ export class LayerMap {
         mapChangeImpact(this.store, working, base, changes, this.project),
       ),
     };
+  }
+
+  /**
+   * Builds the map of a base commit (HEAD by default) ahead of a change check, so the check after an
+   * edit does not wait for it. A clean working tree's base shares every file with its map.
+   */
+  async prepareBase(signal: AbortSignal, base = "HEAD"): Promise<void> {
+    await this.versionAt(await resolveMapBase(this.project, base, signal), signal);
   }
 
   async close(): Promise<void> {

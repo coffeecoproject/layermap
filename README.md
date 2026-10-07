@@ -17,13 +17,15 @@
 <p align="center"><sub>A real Claude Code session on <a href="https://github.com/miniflux/v2">Miniflux</a>, replayed: one map call finds every endpoint, then the agent confirms them in source.</sub></p>
 
 A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex, DeepSeek
-Harness and other MCP clients three read-only tools that answer, in one call, what an agent otherwise works out with
-dozens of searches:
+Harness and other MCP clients read-only tools that answer, in one call, what an agent otherwise works out
+with dozens of searches:
 
 - **What calls this, and what does changing it affect?** Callers traced up to 8 levels, to the
   HTTP routes, handlers, jobs and commands they start from.
 - **What does it call?** Callees down to 8 levels.
 - **What is here?** Modules, each file's declarations, and every usage of a symbol.
+- **What did my edit affect?** The routes, jobs and commands the uncommitted changes reach, and the
+  existing tests related to them.
 
 It maps **TypeScript, JavaScript, Go, Python and Java** with each language's own compiler, so calls
 through interfaces, base classes, templates and decorators resolve as the compiler resolves them,
@@ -127,6 +129,12 @@ when the map helps. On first launch, npx downloads the pinned `layermap` package
 Claude Code asks once before each map tool runs in a project. Choose "don't ask again", or run
 `npx layermap allow claude` to allow the plugin's read-only tools everywhere.
 
+**After an edit.** When the agent changes code, `project_check_changes` lists what the change
+affects: the routes, jobs and commands that reach the changed functions, what the map cannot see,
+and the existing tests related to the change. It never writes or runs tests. In Claude Code the
+plugin asks the agent once, before it finishes, to run this check if it has not; set
+`LAYERMAP_STOP_CHECK=0` to turn that off. Codex and DeepSeek Harness are told to run it.
+
 **Without plugins:** run `npx layermap setup claude` or `npx layermap setup codex`. Setup does three
 things:
 
@@ -159,6 +167,7 @@ nothing anywhere ([privacy](https://github.com/coffeecoproject/layermap/blob/mai
 | `project_explore_map` | A directory, a file, or a declaration's callers and callees (`direction` INCOMING or OUTGOING, `depth` up to 8). |
 | `project_search_map` | Find declarations by words in their names, paths or documentation. |
 | `project_find_references` | Every usage of a declaration, compiled from current source. |
+| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, what to check by hand, and related tests. |
 
 The same from the command line:
 
@@ -166,6 +175,7 @@ The same from the command line:
 npx layermap explore src/api/users.ts --name createUser --direction INCOMING --depth 8
 npx layermap search "invoice total"
 npx layermap refs src/billing/tax.ts calculateTax
+npx layermap check --base main
 ```
 
 ## FAQ

@@ -49,7 +49,12 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
   let warm: Promise<unknown> | undefined;
   const warmUp = () => {
     warm ??= map()
-      .then((layermap) => layermap.refresh(session.signal))
+      .then(async (layermap) => {
+        await layermap.refresh(session.signal);
+        // The commit a change check compares with, built while the agent reads and edits; a
+        // repository without commits has none.
+        void layermap.prepareBase(session.signal).catch(() => {});
+      })
       .catch((error: unknown) => {
         if (!session.signal.aborted) log(`LayerMap could not build the map: ${String(error)}`);
       });
