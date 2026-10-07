@@ -5,7 +5,13 @@
 **English** · [中文](https://github.com/coffeecoproject/layermap/blob/main/README.zh-CN.md)
 
 [![npm](https://img.shields.io/npm/v/layermap)](https://www.npmjs.com/package/layermap)
+[![GitHub stars](https://img.shields.io/github/stars/coffeecoproject/layermap?style=social)](https://github.com/coffeecoproject/layermap/stargazers)
+[![npm downloads](https://img.shields.io/npm/dm/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
+
+**LayerMap tells your coding agent what calls a function and what changing it affects, up to the HTTP routes, in one call.** With at most 15 requests, agents found **97.9%** of affected endpoints with LayerMap vs 58.8% without; with no limit, Claude Code cost **32% less** ([benchmark](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.md)).
+
+**Resolved by each language's compiler or type checker, not guessed from names by tree-sitter:** calls through interfaces, base classes, templates and decorators link as the compiler links them, for TypeScript, JavaScript, Go, Python and Java.
 
 <p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code asks which HTTP endpoints changing Storage.MarkFeedAsRead affects; one LayerMap call returns all four callers with their routes" width="100%"></p>
 <p align="center"><sub>A real Claude Code session on <a href="https://github.com/miniflux/v2">Miniflux</a>, replayed: one map call finds every endpoint, then the agent confirms them in source.</sub></p>
