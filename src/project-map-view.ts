@@ -83,7 +83,7 @@ export const MAP_KINDS_LEGEND =
   "kinds f function, c class, m method, p property, v variable, t type, i interface, e enum; numbers are 1-based source lines";
 /** How a declaration view reads, for tool descriptions: views print only what varies. */
 export const MAP_DECLARATION_LEGEND =
-  "@n marks where a relationship occurs and +n counts further sites, which project_find_references lists; a quoted path after the sites is what the call or value is registered under there, such as a route. Static relationships are grouped by the declaration that owns them. Callers are direct calls, uses as a value (stored, passed, returned or selected, then usually invoked through that value) and calls through an interface, type or base member that a declaration implements (dispatched from); dispatches to lists the members that implement an interface, type or base member, which a call through it may reach; trace stops names calls whose target is a function value, a member without a mapped implementation or a computed key, which only source reading can follow; possible callers by name are calls elsewhere, in the same language, of a member with a method's name on a receiver of unknown type (an untyped value, or one an unloaded package produced); they may or may not reach that method.";
+  "@n marks where a relationship occurs and +n counts further sites, which project_find_references lists; a quoted path after the sites is the route the call or value is registered under there: its HTTP methods when the registration names them, then its path joined with the prefixes of the routers it is registered on, as far as the same function or file sets them (a prefix added where a router is mounted or passed in is not included); route \"…\" after a decorator is the full route the decorator maps, its class's path joined with its own. Static relationships are grouped by the declaration that owns them. Callers are direct calls, uses as a value (stored, passed, returned or selected, then usually invoked through that value) and calls through an interface, type or base member that a declaration implements (dispatched from); dispatches to lists the members that implement an interface, type or base member, which a call through it may reach; trace stops names calls whose target is a function value, a member without a mapped implementation or a computed key, which only source reading can follow; possible callers by name are calls elsewhere, in the same language, of a member with a method's name on a receiver of unknown type (an untyped value, or one an unloaded package produced); they may or may not reach that method.";
 const within = (path: string, directory: string) =>
   directory === "." || path.startsWith(`${directory}/`);
 const parentDirectory = (path: string) => {
@@ -95,8 +95,10 @@ const byCount = ([leftName, left]: [string, number], [rightName, right]: [string
   right - left || compareText(leftName, rightName);
 const increment = (counts: Map<string, number>, key: string, count = 1) =>
   counts.set(key, (counts.get(key) ?? 0) + count);
-const decoratorTag = (name: string, argument?: string) =>
-  `@${name}${argument === undefined ? "" : `(${JSON.stringify(argument)})`}`;
+const decoratorTag = (name: string, argument?: string, route?: string) =>
+  `@${name}${argument === undefined ? "" : `(${JSON.stringify(argument)})`}${
+    route === undefined ? "" : ` route ${JSON.stringify(route)}`
+  }`;
 const targetText = (target: string) => {
   const limit = MAP_VIEW_LIMITS.targetText;
   if (target.length <= limit) return target;
@@ -305,7 +307,8 @@ function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFa
   const classes = declarations.filter((item) => item.kind === "CLASS").map((item) => item.ref);
   const decoratorQuery = store.database.prepare(`SELECT from_ref,
       json_extract(relation_json, '$.target') AS target,
-      json_extract(relation_json, '$.argument') AS argument
+      json_extract(relation_json, '$.argument') AS argument,
+      json_extract(relation_json, '$.route') AS route
     FROM project_map_relations WHERE version_ref = ?
       AND from_ref IN (SELECT value FROM json_each(?))
       AND json_extract(relation_json, '$.kind') = 'DECORATED_BY'`);
@@ -316,7 +319,11 @@ function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFa
     ))
       decorators.set(String(row.from_ref), [
         ...(decorators.get(String(row.from_ref)) ?? []),
-        decoratorTag(String(row.target), row.argument === null ? undefined : String(row.argument)),
+        decoratorTag(
+          String(row.target),
+          row.argument === null ? undefined : String(row.argument),
+          row.route === null ? undefined : String(row.route),
+        ),
       ]);
   const exported = new Map<string, { text: string; start: number }[]>();
   for (const item of declarations) {
@@ -884,6 +891,16 @@ class DeclarationGroups {
         }
         continue;
       }
+      // Decorators describe the declaration itself, often with the route it serves, so caller
+      // traces show them too.
+      if (!outgoing && relation.kind === "DECORATED_BY") {
+        const name =
+          relation.to === undefined
+            ? relation.target
+            : graph.qualifiedName(graph.owner(relation.to));
+        tags.push(decoratorTag(name, relation.argument, relation.route));
+        continue;
+      }
       if (!outgoing || relation.kind === "CONTAINS") continue;
       const reason = relation.kind === "CALLS" ? this.stop(relation) : undefined;
       if (reason) {
@@ -898,7 +915,7 @@ class DeclarationGroups {
       if (IMPORT_KINDS.has(relation.kind) && mapIsModule(graph.object(relation.from))) continue;
       if (relation.to === undefined) {
         if (relation.kind === "DECORATED_BY")
-          tags.push(decoratorTag(relation.target, relation.argument));
+          tags.push(decoratorTag(relation.target, relation.argument, relation.route));
         else if (relation.kind === "EXTENDS" || relation.kind === "IMPLEMENTS")
           tags.push(`${relation.kind.toLowerCase()} ${relation.target}`);
         else {
@@ -919,7 +936,7 @@ class DeclarationGroups {
         continue;
       }
       if (relation.kind === "DECORATED_BY")
-        tags.push(decoratorTag(graph.qualifiedName(other.id), relation.argument));
+        tags.push(decoratorTag(graph.qualifiedName(other.id), relation.argument, relation.route));
       else if (relation.kind === "EXTENDS" || relation.kind === "IMPLEMENTS")
         tags.push(`${relation.kind.toLowerCase()} ${graph.qualifiedName(other.id)}`);
       else
@@ -1142,7 +1159,7 @@ function fileView(
     const list = tags.get(relation.from) ?? [];
     list.push(
       relation.kind === "DECORATED_BY"
-        ? decoratorTag(relation.target, relation.argument)
+        ? decoratorTag(relation.target, relation.argument, relation.route)
         : `${relation.kind.toLowerCase()} ${relation.target}`,
     );
     tags.set(relation.from, list);

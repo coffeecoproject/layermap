@@ -103,8 +103,11 @@ export const MapRelationSchema = z
     anchor: MapAnchorSchema,
     target: z.string(),
     // A literal the relation carries: a decorator's first argument on the declaration itself, or
-    // the path a call or value is registered under; both are usually routes.
+    // the route a call or value is registered under (its methods, if named, then its path).
     argument: z.string().min(1).max(256).optional(),
+    // The full route a decorator registers its declaration under, when it says more than the
+    // argument: the HTTP methods, then the class's path joined with the member's.
+    route: z.string().min(1).max(256).optional(),
     basis: z.enum(["TYPE_RESOLVED", "SYNTAX_DECLARED", "UNRESOLVED"]),
     unresolvedReason: z
       .enum([

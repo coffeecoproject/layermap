@@ -39,15 +39,17 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
   ← called by internal/googlereader/handler.go: handler.markAllAsReadHandler m1261-1338 @1311
   ← called by internal/ui/feed_mark_as_read.go: handler.markFeedAsRead m14-30 @24
 [1] internal/api/feed.go: handler.markFeedAsRead m140-155
-  ← used as value by internal/api/api.go: Serve f25-84 @61 "/feeds/{feedID}/mark-all-as-read"
+  ← used as value by internal/api/api.go: Serve f25-84 @61 "PUT /v1/feeds/{feedID}/mark-all-as-read"
 [1] internal/googlereader/handler.go: handler.markAllAsReadHandler m1261-1338
-  ← used as value by internal/googlereader/handler.go: Serve f44-64 @62 "/mark-all-as-read"
+  ← used as value by internal/googlereader/handler.go: Serve f44-64 @62 "POST /reader/api/0/mark-all-as-read"
 [1] internal/ui/feed_mark_as_read.go: handler.markFeedAsRead m14-30
-  ← used as value by internal/ui/ui.go: Serve f18-180 @77 "/feed/{feedID}/mark-all-as-read"
+  ← used as value by internal/ui/ui.go: Serve f18-180 @77 "POST /feed/{feedID}/mark-all-as-read"
 … (the Fever API, then on down to main.go: main)
 ```
 
-`m`、`f` 表示方法和函数，后面的数字是行号；`@` 后面是调用发生的那一行，引号里是注册的路由。
+`m`、`f` 表示方法和函数，后面的数字是行号；`@` 后面是调用发生的那一行，引号里是注册的路由：HTTP 方法和
+完整路径，包括子路由加上的 `/v1` 前缀。Java、Python 和 TypeScript 的路由直接标在处理函数上，例如
+`@GetMapping("/{id}") route "GET /api/tasks/{id}"`。
 
 ## 实验结果
 

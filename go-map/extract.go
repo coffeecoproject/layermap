@@ -36,7 +36,7 @@ type relationFact struct {
 	Target string `json:"target"`
 	Basis  string `json:"basis"`
 	Reason string `json:"reason,omitempty"`
-	// The path a call or value is registered under, such as a route pattern.
+	// The route a call or value is registered under: its methods, if named, then its path.
 	Argument string `json:"argument,omitempty"`
 }
 
@@ -615,10 +615,14 @@ type walker struct {
 	declared  []int
 	// Expressions registered under a path constant in this file.
 	routes []routeSpan
+	// HTTP methods chained onto a registration call, recorded before the call is visited.
+	methods map[*ast.CallExpr][]string
+	// Each local variable's single assigned value (nil when assigned otherwise), built on demand.
+	assigned map[*types.Var]ast.Expr
 }
 
 func (x *extractor) relate(file *sourceFile, u *unit, fileObject int) {
-	w := &walker{x: x, u: u, file: file, executing: []int{fileObject}, declared: []int{fileObject}}
+	w := &walker{x: x, u: u, file: file, executing: []int{fileObject}, declared: []int{fileObject}, methods: map[*ast.CallExpr][]string{}}
 	for _, spec := range file.ast.Imports {
 		w.importSpec(spec, fileObject)
 	}
@@ -685,7 +689,7 @@ func (w *walker) pop() {
 func (w *walker) relation(fact relationFact) {
 	if fact.Kind == "REFERENCES" {
 		if span := w.routeOf(fact.Start, fact.End); span != nil {
-			fact.Argument = span.path
+			fact.Argument = span.label
 		}
 	}
 	w.x.out.Relations = append(w.x.out.Relations, fact)

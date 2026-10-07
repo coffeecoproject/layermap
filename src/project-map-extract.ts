@@ -39,6 +39,7 @@ import {
 import type { MapParserTrace } from "./project-map-failure";
 import { MapOutputCollector } from "./project-map-output";
 import { MapTargetResolver } from "./project-map-resolution";
+import { decoratorRoute, registeredRoute } from "./project-map-routes";
 import { mapSourceFiles } from "./project-map-source-files";
 import { MapSourcePositions } from "./project-map-source-positions";
 import {
@@ -76,6 +77,7 @@ type Pending = {
   anchor: MapAnchor;
   holder?: Node;
   argument?: string;
+  route?: string;
 };
 
 export async function extractProjectMap(
@@ -282,11 +284,13 @@ export async function extractProjectMap(
           target: moduleSpecifier.text,
         };
       } else if (isCallExpression(node) || isNewExpression(node)) {
+        const route = registeredRoute(node, "CALLS");
         reference = {
           node,
           lookup: node.expression,
           kind: "CALLS",
           target: label(node.expression),
+          ...(route ? { argument: route } : {}),
         };
       } else if (isDecorator(node)) {
         const call = isCallExpression(node.expression) ? node.expression : undefined;
@@ -302,12 +306,15 @@ export async function extractProjectMap(
           first.text.length <= 256
             ? first.text
             : undefined;
+        const route =
+          node.parent.kind !== SyntaxKind.Parameter ? decoratorRoute(node, argument) : undefined;
         reference = {
           node,
           lookup: expression,
           kind: "DECORATED_BY",
           target: label(expression),
           ...(argument ? { argument } : {}),
+          ...(route && route !== argument ? { route } : {}),
         };
       } else if (isPropertyAccessExpression(node) || isElementAccessExpression(node)) {
         const writes = isMapWrite(node);
@@ -323,12 +330,14 @@ export async function extractProjectMap(
             target: label(node),
           };
         } else if (isPropertyAccessExpression(node) && mapValueUse(node)) {
+          const route = registeredRoute(node, "REFERENCES");
           reference = {
             node,
             lookup: node.name,
             kind: "REFERENCES",
             target: node.name.text,
             holder: mapValueProperty(node),
+            ...(route ? { argument: route } : {}),
           };
         }
       } else if (isIdentifier(node) && named(node.parent) !== node) {
@@ -338,14 +347,17 @@ export async function extractProjectMap(
         ) {
           const writes = isMapWrite(node);
           if (writes) reference = { node, lookup: node, kind: "WRITES", target: label(node) };
-          else if (mapValueUse(node))
+          else if (mapValueUse(node)) {
+            const route = registeredRoute(node, "REFERENCES");
             reference = {
               node,
               lookup: node,
               kind: "REFERENCES",
               target: node.text,
               holder: mapValueProperty(node),
+              ...(route ? { argument: route } : {}),
             };
+          }
         }
       } else if (isShorthandPropertyAssignment(node)) {
         reference = {
@@ -517,6 +529,7 @@ export async function extractProjectMap(
             kind: item.kind,
             anchor: item.anchor,
             target: item.target,
+            ...(item.argument ? { argument: item.argument } : {}),
             basis: "TYPE_RESOLVED",
           });
         continue;
@@ -535,6 +548,7 @@ export async function extractProjectMap(
           anchor: item.anchor,
           target: item.target,
           ...(item.argument ? { argument: item.argument } : {}),
+          ...(item.route ? { route: item.route } : {}),
           basis: directObject ? "SYNTAX_DECLARED" : destination ? "TYPE_RESOLVED" : "UNRESOLVED",
           ...(!destination ? { unresolvedReason: resolved.unresolvedReason } : {}),
         });

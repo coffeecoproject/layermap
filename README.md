@@ -41,16 +41,18 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
   ← called by internal/googlereader/handler.go: handler.markAllAsReadHandler m1261-1338 @1311
   ← called by internal/ui/feed_mark_as_read.go: handler.markFeedAsRead m14-30 @24
 [1] internal/api/feed.go: handler.markFeedAsRead m140-155
-  ← used as value by internal/api/api.go: Serve f25-84 @61 "/feeds/{feedID}/mark-all-as-read"
+  ← used as value by internal/api/api.go: Serve f25-84 @61 "PUT /v1/feeds/{feedID}/mark-all-as-read"
 [1] internal/googlereader/handler.go: handler.markAllAsReadHandler m1261-1338
-  ← used as value by internal/googlereader/handler.go: Serve f44-64 @62 "/mark-all-as-read"
+  ← used as value by internal/googlereader/handler.go: Serve f44-64 @62 "POST /reader/api/0/mark-all-as-read"
 [1] internal/ui/feed_mark_as_read.go: handler.markFeedAsRead m14-30
-  ← used as value by internal/ui/ui.go: Serve f18-180 @77 "/feed/{feedID}/mark-all-as-read"
+  ← used as value by internal/ui/ui.go: Serve f18-180 @77 "POST /feed/{feedID}/mark-all-as-read"
 … (the Fever API, then on down to main.go: main)
 ```
 
 `m` and `f` mark methods and functions with their lines; `@` is the line of the call, and the quoted
-path is the route it is registered under.
+route is what it is registered under: the HTTP method and the full path, with the `/v1` prefix its
+subrouter adds. In Java, Python and TypeScript the route shows on the handler itself, as in
+`@GetMapping("/{id}") route "GET /api/tasks/{id}"`.
 
 ## Results
 

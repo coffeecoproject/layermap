@@ -75,6 +75,7 @@ export const MapFactsSchema = z
           basis: MapRelationSchema.shape.basis,
           reason: MapRelationSchema.shape.unresolvedReason,
           argument: MapRelationSchema.shape.argument,
+          route: MapRelationSchema.shape.route,
         })
         .strict(),
     ),
@@ -297,6 +298,7 @@ export function mapFactsAnalysis(
       basis: fact.basis,
       ...(fact.reason ? { unresolvedReason: fact.reason } : {}),
       ...(fact.argument ? { argument: fact.argument } : {}),
+      ...(fact.route ? { route: fact.route } : {}),
     });
     if (fact.kind === "WRITES")
       collect.note({

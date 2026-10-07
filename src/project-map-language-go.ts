@@ -29,7 +29,7 @@ const goModule = /(?:^|\/)go\.mod$/u;
 const codeHosts = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
 
 export const GO_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "go-1.24-map-v6",
+  id: "go-1.24-map-v7",
   claims: (path: string) => path.endsWith(".go"),
   reads: (path: string) => goModule.test(path),
   // A module path, or the standard library, whose first path element has no dot.

@@ -64,6 +64,11 @@ import javax.tools.Diagnostic;
 final class Extract {
   // Compiler hints that say nothing about behavior; every override would carry @Override.
   private static final Set<String> HINTS = Set.of("java.lang.Override", "java.lang.SuppressWarnings");
+  private static final Set<String> HTTP_METHODS =
+      Set.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE");
+  // An annotation named for the HTTP method it maps, as GetMapping is (not PostConstruct).
+  private static final java.util.regex.Pattern NAMED_METHOD =
+      java.util.regex.Pattern.compile("^(Get|Head|Post|Put|Patch|Delete|Options|Trace)Mapping$");
 
   private final Program p;
   private final List<Map<String, Object>> files = new ArrayList<>();
@@ -494,6 +499,8 @@ final class Extract {
     private final CompilationUnitTree unit;
     private final Deque<Integer> declaredStack = new ArrayDeque<>();
     private final Deque<Integer> executing = new ArrayDeque<>();
+    // The path each enclosing class maps its methods' routes under.
+    private final Deque<String> routePrefixes = new ArrayDeque<>();
     /** The project types this file's code used: every element and type javac attributed. */
     final Set<String> used = new HashSet<>();
 
@@ -595,9 +602,15 @@ final class Extract {
       else unresolved(relation, reason(element, selectPath));
     }
 
-    private void decorations(ModifiersTree modifiers, int owner) {
+    // Decorations of a declaration; a method's (prefix not null) also name the routes they map,
+    // joined with the path its class maps under that prefix.
+    private void decorations(ModifiersTree modifiers, int owner, String prefix) {
       if (modifiers == null) return;
       TreePath modifiersPath = child(modifiers);
+      // JAX-RS names a method's HTTP method in an annotation of its own: @GET beside @Path("{id}").
+      List<String> sibling = new ArrayList<>();
+      for (AnnotationTree annotation : modifiers.getAnnotations())
+        if (HTTP_METHODS.contains(simpleName(annotation))) sibling.add(simpleName(annotation));
       for (AnnotationTree annotation : modifiers.getAnnotations()) {
         if (!p.written(unit, annotation)) continue;
         TreePath annotationPath = new TreePath(modifiersPath, annotation);
@@ -609,8 +622,70 @@ final class Extract {
             site("DECORATED_BY", owner, annotation, label(annotation.getAnnotationType()));
         String argument = argument(annotationPath, annotation);
         if (argument != null) relation.put("argument", argument);
+        String route = prefix == null ? null : route(annotationPath, annotation, argument, prefix, sibling);
+        if (route != null && !route.equals(argument)) relation.put("route", route);
         link(relation, type, typePath);
       }
+    }
+
+    private static String simpleName(AnnotationTree annotation) {
+      String name = label(annotation.getAnnotationType());
+      return name.substring(name.lastIndexOf('.') + 1);
+    }
+
+    // Route annotations by convention: named for a method (GetMapping), a mapping, or a path.
+    private static boolean routeAnnotation(String name) {
+      return NAMED_METHOD.matcher(name).find() || name.endsWith("Mapping") || name.equals("Path");
+    }
+
+    // The path a class's route annotation maps its methods under, or "" without one.
+    private String routePrefix(ModifiersTree modifiers) {
+      if (modifiers == null) return "";
+      TreePath modifiersPath = child(modifiers);
+      for (AnnotationTree annotation : modifiers.getAnnotations()) {
+        String argument = argument(new TreePath(modifiersPath, annotation), annotation);
+        if (argument != null && (routeAnnotation(simpleName(annotation)) || argument.startsWith("/")))
+          return argument;
+      }
+      return "";
+    }
+
+    // The route a method's annotation maps: its HTTP methods, if named, then the class's path
+    // joined with its own. Null for annotations that map no route.
+    private String route(
+        TreePath annotationPath, AnnotationTree annotation, String argument, String prefix, List<String> sibling) {
+      String name = simpleName(annotation);
+      if (!routeAnnotation(name)) return null;
+      List<String> methods = new ArrayList<>();
+      java.util.regex.Matcher named = NAMED_METHOD.matcher(name);
+      if (named.find()) methods.add(named.group(1).toUpperCase(java.util.Locale.ROOT));
+      for (ExpressionTree element : annotation.getArguments())
+        if (element instanceof AssignmentTree assignment && label(assignment.getVariable()).equals("method")) {
+          ExpressionTree value = assignment.getExpression();
+          List<? extends ExpressionTree> values =
+              value instanceof NewArrayTree array && array.getInitializers() != null
+                  ? array.getInitializers()
+                  : List.of(value);
+          for (ExpressionTree item : values) {
+            String constant = label(item);
+            constant = constant.substring(constant.lastIndexOf('.') + 1);
+            if (HTTP_METHODS.contains(constant)) methods.add(constant);
+          }
+        }
+      if (methods.isEmpty()) methods.addAll(sibling);
+      if (argument == null && prefix.isEmpty() && methods.isEmpty()) return null;
+      String path = joinRoute(prefix, argument == null ? "" : argument);
+      String route = methods.isEmpty() ? path : String.join("|", methods) + " " + path;
+      return route.length() <= 256 ? route : null;
+    }
+
+    private static String joinRoute(String prefix, String path) {
+      String joined =
+          prefix.isEmpty()
+              ? path
+              : path.isEmpty() ? prefix : prefix.replaceAll("/+$", "") + "/" + path.replaceAll("^/+", "");
+      // A property placeholder (${api.base:/api}) is left as written.
+      return joined.startsWith("/") || joined.startsWith("$") ? joined : "/" + joined;
     }
 
     // The literal an annotation is about, usually a route: its value or path, or the first of them.
@@ -731,15 +806,17 @@ final class Extract {
     public Void visitClass(ClassTree node, Void unused) {
       Integer id = trees.get(node);
       if (id == null) return null;
-      decorations(node.getModifiers(), id);
+      decorations(node.getModifiers(), id, null);
       heritage(node, id);
       declaredStack.push(id);
       executing.push(id);
+      routePrefixes.push(routePrefix(node.getModifiers()));
       try {
         return super.visitClass(node, unused);
       } finally {
         declaredStack.pop();
         executing.pop();
+        routePrefixes.pop();
       }
     }
 
@@ -747,7 +824,7 @@ final class Extract {
     public Void visitMethod(MethodTree node, Void unused) {
       Integer id = trees.get(node);
       if (id == null) return null;
-      decorations(node.getModifiers(), id);
+      decorations(node.getModifiers(), id, routePrefixes.isEmpty() ? "" : routePrefixes.peek());
       declaredStack.push(id);
       executing.push(id);
       try {
@@ -765,7 +842,7 @@ final class Extract {
         if (getCurrentPath().getParentPath().getLeaf() instanceof ClassTree) return null;
         return super.visitVariable(node, unused);
       }
-      decorations(node.getModifiers(), id);
+      decorations(node.getModifiers(), id, null);
       declaredStack.push(id);
       executing.push(id);
       try {

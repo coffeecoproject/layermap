@@ -28,6 +28,7 @@ import {
   type ListNode,
   type MemberAccessNode,
   type ModuleNameNode,
+  type ModuleNode,
   type NameNode,
   type ParseNode,
   ParseNodeType,
@@ -86,6 +87,7 @@ export type PythonRelationFact = {
   basis: "TYPE_RESOLVED" | "SYNTAX_DECLARED" | "UNRESOLVED";
   reason?: Reason;
   argument?: string;
+  route?: string;
 };
 export type PythonFacts = {
   files: { path: string; object?: number; excluded?: "SYNTAX_ERROR" }[];
@@ -131,6 +133,27 @@ function literal(node: ParseNode | undefined): string | undefined {
   if (!parts.every((part) => part.nodeType === ParseNodeType.String)) return undefined;
   const value = parts.map((part) => (part as StringNode).d.value).join("");
   return value.length > 0 && value.length <= 256 ? value : undefined;
+}
+
+const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]);
+
+// A route path: a string literal, including the empty path a route at its router's prefix uses.
+function routeText(node: ParseNode | undefined): string | undefined {
+  if (node?.nodeType !== ParseNodeType.StringList) return undefined;
+  const parts = (node as StringListNode).d.strings;
+  if (!parts.every((part) => part.nodeType === ParseNodeType.String)) return undefined;
+  const value = parts.map((part) => (part as StringNode).d.value).join("");
+  return value.length <= 256 ? value : undefined;
+}
+
+// A path joined to the prefix it is registered under, with one slash between them.
+function joinRoute(prefix: string, path: string): string {
+  const joined = !prefix
+    ? path
+    : !path
+      ? prefix
+      : `${prefix.replace(/\/+$/u, "")}/${path.replace(/^\/+/u, "")}`;
+  return joined.startsWith("/") || joined.startsWith("$") ? joined : `/${joined}`;
 }
 
 // A docstring: the first statement of a body when it is a lone string literal.
@@ -728,6 +751,74 @@ class Relater extends ParseTreeWalker {
     this.x.relation({ ...fact, path: this.path });
   }
 
+  // Module-level names assigned once to a router made with a path prefix, as
+  // APIRouter(prefix="/v1") or Blueprint("admin", __name__, url_prefix="/admin") are.
+  private routers?: Map<string, string>;
+  private routerPrefix(name: string): string {
+    if (!this.routers) {
+      const prefixes = new Map<string, string>();
+      const assigned = new Map<string, number>();
+      for (const statement of (this.scopes[0] as ModuleNode).d.statements) {
+        if (statement.nodeType !== ParseNodeType.StatementList) continue;
+        for (const inner of (statement as StatementListNode).d.statements) {
+          if (inner.nodeType !== ParseNodeType.Assignment) continue;
+          const { leftExpr, rightExpr } = (inner as AssignmentNode).d;
+          const target =
+            leftExpr.nodeType === ParseNodeType.TypeAnnotation
+              ? (leftExpr as TypeAnnotationNode).d.valueExpr
+              : leftExpr;
+          if (target.nodeType !== ParseNodeType.Name) continue;
+          const name = (target as NameNode).d.value;
+          assigned.set(name, (assigned.get(name) ?? 0) + 1);
+          if (rightExpr.nodeType !== ParseNodeType.Call) continue;
+          for (const argument of (rightExpr as CallNode).d.args) {
+            const keyword = argument.d.name?.d.value;
+            const prefix = routeText(argument.d.valueExpr);
+            if ((keyword === "prefix" || keyword === "url_prefix") && prefix !== undefined)
+              prefixes.set(name, prefix);
+          }
+        }
+      }
+      for (const [name, count] of assigned) if (count > 1) prefixes.delete(name);
+      this.routers = prefixes;
+    }
+    return this.routers.get(name) ?? "";
+  }
+
+  // The route a decorator registers its function under, when it says more than the decorator's
+  // argument: router.put("/{id}") or app.route("/items", methods=["GET", "POST"]) on a router
+  // whose prefix this module sets.
+  private route(call: CallNode, argument: string | undefined): string | undefined {
+    const callee = call.d.leftExpr;
+    if (callee.nodeType !== ParseNodeType.MemberAccess) return undefined;
+    const member = (callee as MemberAccessNode).d.member.d.value;
+    const methods = HTTP_METHODS.has(member.toUpperCase()) ? [member.toUpperCase()] : [];
+    let path: string | undefined;
+    for (const item of call.d.args) {
+      const keyword = item.d.name?.d.value;
+      if (keyword === undefined) path ??= routeText(item.d.valueExpr);
+      else if (keyword === "path" || keyword === "rule") path ??= routeText(item.d.valueExpr);
+      else if (
+        keyword === "methods" &&
+        (item.d.valueExpr.nodeType === ParseNodeType.List ||
+          item.d.valueExpr.nodeType === ParseNodeType.Tuple)
+      )
+        for (const method of (item.d.valueExpr as ListNode | TupleNode).d.items) {
+          const text = routeText(method)?.toUpperCase();
+          if (text && HTTP_METHODS.has(text)) methods.push(text);
+        }
+    }
+    if (path === undefined || (!methods.length && member !== "route" && member !== "api_route"))
+      return undefined;
+    const receiver = (callee as MemberAccessNode).d.leftExpr;
+    const prefix =
+      receiver.nodeType === ParseNodeType.Name
+        ? this.routerPrefix((receiver as NameNode).d.value)
+        : "";
+    const route = `${methods.length ? `${methods.join("|")} ` : ""}${joinRoute(prefix, path)}`;
+    return route.length <= 256 && route !== argument ? route : undefined;
+  }
+
   private decorate(owner: number, decorators: DecoratorNode[], executing: number) {
     for (const decorator of decorators) {
       const expression = decorator.d.expr;
@@ -736,6 +827,7 @@ class Relater extends ParseTreeWalker {
       const target = call ? call.d.leftExpr : expression;
       const first = call?.d.args.find((argument) => !argument.d.name);
       const argument = literal(first?.d.valueExpr);
+      const route = call && this.route(call, argument);
       this.relation({
         kind: "DECORATED_BY",
         from: owner,
@@ -744,6 +836,7 @@ class Relater extends ParseTreeWalker {
         target: label(target),
         ...this.x.resolve(target),
         ...(argument ? { argument } : {}),
+        ...(route ? { route } : {}),
       });
       // What the decorator's arguments pass belongs to the declaration it decorates; they run
       // where the declaration is defined (a function's range includes its decorators).
