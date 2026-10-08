@@ -23,9 +23,17 @@ case "$input" in *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exi
 printf '%s' "$fingerprint" > "$state/$session.checked" 2>/dev/null
 transcript=$(field transcript_path)
 if [ -f "$transcript" ]; then
-  edited=$(grep -nE '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript" 2>/dev/null | tail -n 1 | cut -d: -f1)
+  # The last edit this session made to a file among the code changes git sees.
+  edited=$(grep -nE '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript" 2>/dev/null |
+    while IFS= read -r line; do
+      file=$(printf '%s' "$line" | sed -nE 's/.*"(file|notebook)_path": *"([^"]*)".*/\2/p')
+      [ -n "$file" ] || continue
+      printf '%s' "$file" | grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|go|py|java)$' || continue
+      git -C "$dir" status --porcelain --untracked-files=all -- "$file" 2>/dev/null | grep -q . && printf '%s\n' "${line%%:*}"
+    done | tail -n 1)
+  [ -n "$edited" ] || exit 0
   checked=$(grep -nE '"name": *"[^"]*project_check_changes"' "$transcript" 2>/dev/null | tail -n 1 | cut -d: -f1)
-  [ -n "$checked" ] && [ "$checked" -gt "${edited:-0}" ] && exit 0
+  [ -n "$checked" ] && [ "$checked" -gt "$edited" ] && exit 0
 fi
 cat <<'EOF'
 {"decision":"block","reason":"Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If you already checked these changes, say so briefly and finish."}

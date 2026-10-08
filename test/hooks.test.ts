@@ -72,7 +72,7 @@ test("the stop hook asks once per set of code changes made in the session", asyn
   assert.equal(await hook("stop-check.sh", next, env), "");
 });
 
-test("the stop hook does not ask when Claude checked after its last edit", async () => {
+test("the stop hook asks only about this session's own edits, and not after it checked", async () => {
   const { root, write } = await project({ "src/a.ts": "export const a = 1;\n" });
   const git = (...args: string[]) =>
     run("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root });
@@ -80,10 +80,17 @@ test("the stop hook does not ask when Claude checked after its last edit", async
   await git("commit", "-qm", "base");
   const env = { TMPDIR: await sandbox() };
   const transcript = path.join(await sandbox(), "transcript.jsonl");
-  const line = (name: string) =>
-    JSON.stringify({ message: { content: [{ type: "tool_use", name, input: {} }] } });
+  const line = (name: string, file = path.join(root, "src/a.ts")) =>
+    JSON.stringify({
+      message: { content: [{ type: "tool_use", name, input: { file_path: file } }] },
+    });
   const input = { session_id: "s", cwd: root, transcript_path: transcript };
   await hook("session-start.sh", input, env);
+
+  // Changes another session made in the shared work tree, or edits elsewhere, are not this one's.
+  await write("src/a.ts", "export const a = 9;\n");
+  await writeFile(transcript, line("Edit", "/somewhere/else/a.ts"));
+  assert.equal(await hook("stop-check.sh", input, env), "");
 
   await write("src/a.ts", "export const a = 2;\n");
   await writeFile(
