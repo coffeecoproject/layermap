@@ -117,3 +117,18 @@ test("outside a Git repository the hooks only print the note", async () => {
   assert.match(await hook("session-start.sh", input, env), /hookSpecificOutput/u);
   assert.equal(await hook("stop-check.sh", input, env), "");
 });
+
+test("hook fields are unescaped, so Windows paths reach git with single backslashes", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const script = await readFile(path.join(hooks, "stop-check.sh"), "utf8");
+  const field = script.split("\n").find((line) => line.startsWith("field()"));
+  assert.ok(field);
+  const child = execFile("sh", ["-c", `input=$(cat | tr -d '\\n')\n${field}\nfield cwd`]);
+  child.stdin?.end(JSON.stringify({ cwd: "C:\\Users\\me\\project" }));
+  let output = "";
+  child.stdout?.on("data", (chunk) => {
+    output += chunk;
+  });
+  await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(output.trim(), "C:\\Users\\me\\project");
+});

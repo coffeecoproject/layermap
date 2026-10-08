@@ -61,7 +61,8 @@ const CODE = CODE_EXTENSIONS.map((extension) => `'*.${extension}'`).join(" ");
 // tree's uncommitted code changes (empty outside a repository or without changes). Plain sh and
 // git, so the hooks start no runtime and the plugin directory's validator can read them.
 const HOOK_SHELL = String.raw`input=$(cat 2>/dev/null | tr -d '\n')
-field() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"; }
+# JSON escapes a backslash as two; Windows paths (C:\\Users\\…) need them back as one.
+field() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | sed 's/\\\\/\\/g'; }
 session=$(field session_id | tr -cd 'A-Za-z0-9_-')
 [ -n "$session" ] || session=unknown
 dir=$(field cwd)
@@ -175,7 +176,7 @@ if [ -f "$transcript" ]; then
   # The last edit this session made to a file among the code changes git sees.
   edited=$(grep -nE '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript" 2>/dev/null |
     while IFS= read -r line; do
-      file=$(printf '%s' "$line" | sed -nE 's/.*"(file|notebook)_path": *"([^"]*)".*/\\2/p')
+      file=$(printf '%s' "$line" | sed -nE 's/.*"(file|notebook)_path": *"([^"]*)".*/\\2/p' | sed 's/\\\\\\\\/\\\\/g')
       [ -n "$file" ] || continue
       printf '%s' "$file" | grep -qE '\\.(${CODE_EXTENSIONS.join("|")})$' || continue
       git -C "$dir" status --porcelain --untracked-files=all -- "$file" 2>/dev/null | grep -q . && printf '%s\\n' "\${line%%:*}"

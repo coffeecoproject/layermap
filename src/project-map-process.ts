@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { ZodType } from "zod";
 import { ProjectEvidenceError } from "./core";
+import { childEnvironment, executableName, processTreeGone, stopProcessTree } from "./platform";
 import {
   type MapParserDiagnostic,
   MapParserDiagnosticSchema,
@@ -57,8 +58,8 @@ export function discoverJavaRuntime(
   env: NodeJS.ProcessEnv = process.env,
 ): { runtimePath: string; runtimeVersion: string } | undefined {
   const homes = [env.LAYERMAP_JAVA_HOME, env.JAVA_HOME];
-  for (const directory of (env.PATH ?? "").split(path.delimiter)) {
-    const java = path.join(directory, "java");
+  for (const directory of (env.PATH ?? env.Path ?? "").split(path.delimiter)) {
+    const java = path.join(directory, executableName("java"));
     if (directory && existsSync(java)) homes.push(path.dirname(path.dirname(realpathSync(java))));
   }
   // An app started from the Finder has a short PATH: the usual package manager homes, whose
@@ -86,8 +87,9 @@ export function discoverJavaRuntime(
     }
   for (const home of homes) {
     if (!home) continue;
-    const runtimePath = path.join(home, "bin", "java");
-    if (!existsSync(runtimePath) || !existsSync(path.join(home, "bin", "javac"))) continue;
+    const runtimePath = path.join(home, "bin", executableName("java"));
+    if (!existsSync(runtimePath) || !existsSync(path.join(home, "bin", executableName("javac"))))
+      continue;
     let release = "";
     try {
       release = readFileSync(path.join(home, "release"), "utf8");
@@ -137,8 +139,6 @@ export function runMapOperation<T>(
   signal: AbortSignal,
   observeTiming?: (event: MapParserTiming) => void,
 ): Promise<T> {
-  if (process.platform === "win32")
-    return Promise.reject(new ProjectEvidenceError("PROJECT_MAP_PLATFORM_UNSUPPORTED", false));
   if (signal.aborted)
     return Promise.reject(new ProjectEvidenceError("PROJECT_READ_CANCELLED", true));
   if (!path.isAbsolute(resources.workerPath) || !path.isAbsolute(resources.compilerPath)) {
@@ -162,14 +162,15 @@ export function runMapOperation<T>(
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [...(resources.execArgv ?? []), resources.workerPath], {
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env: {
+      env: childEnvironment({
         PATH: "/usr/bin:/bin",
         LANG: "C",
         HOME: process.env.HOME,
         TMPDIR: process.env.TMPDIR,
         ELECTRON_RUN_AS_NODE: "1",
-      },
+      }),
     });
     let result: T | undefined;
     let resultAt: number | undefined;
@@ -191,7 +192,7 @@ export function runMapOperation<T>(
     const kill = (value: NodeJS.Signals) => {
       if (!child.pid) return;
       try {
-        process.kill(-child.pid, value);
+        stopProcessTree(child.pid, value);
       } catch {
         // The group may have exited between the worker message and this signal.
         // Only the bounded close/reap check below can confirm a safe stop.
@@ -322,12 +323,8 @@ export function runMapOperation<T>(
       const drained = async () => {
         const until = Date.now() + PROJECT_MAP_LIMITS.stopMs;
         while (child.pid) {
-          try {
-            process.kill(-child.pid, 0);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
-            // A departing process group can briefly report EPERM. Only ESRCH confirms exit.
-          }
+          // A departing process group can briefly report EPERM. Only ESRCH confirms exit.
+          if (processTreeGone(child.pid)) return true;
           if (Date.now() >= until) return false;
           await new Promise((resolve) => setTimeout(resolve, 20));
         }

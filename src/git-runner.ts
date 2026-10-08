@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { childEnvironment, findExecutable } from "./platform";
 
 const CONSTRAINED_CONFIG = [
   "-c",
@@ -59,8 +60,34 @@ export type GitRunResult = {
   stderr: Buffer;
 };
 
+// Git runs with no user or system configuration, no prompts and no pager. Git for Windows maps
+// /dev/null to NUL; it finds its own helpers, so its PATH stays, and it has no /usr/bin/false.
+function gitEnvironment(): NodeJS.ProcessEnv {
+  const windows = process.platform === "win32";
+  return childEnvironment({
+    LANG: process.env.LANG ?? "C",
+    LC_ALL: "C",
+    PATH: windows ? (process.env.PATH ?? "") : "/usr/bin:/bin",
+    ...(windows ? {} : { TMPDIR: process.env.TMPDIR ?? "/tmp" }),
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: "0",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_PAGER: "cat",
+    PAGER: "cat",
+    ...(windows ? {} : { GIT_ASKPASS: "/usr/bin/false", SSH_ASKPASS: "/usr/bin/false" }),
+  });
+}
+
+// The git LayerMap runs: the system's on POSIX, where /usr/bin/git is always there, and the one on
+// PATH on Windows, where Git for Windows installs wherever the user chose.
+const defaultGit = () =>
+  process.platform === "win32" ? (findExecutable("git") ?? "git.exe") : "/usr/bin/git";
+
 export class GitRunner {
-  constructor(private readonly executable = "/usr/bin/git") {}
+  constructor(private readonly executable = defaultGit()) {}
 
   run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
     if (options.signal?.aborted) {
@@ -77,22 +104,8 @@ export class GitRunner {
     return new Promise((resolve, reject) => {
       const child = spawn(this.executable, finalArgs, {
         cwd: options.cwd,
-        env: {
-          LANG: process.env.LANG ?? "C",
-          LC_ALL: "C",
-          PATH: "/usr/bin:/bin",
-          TMPDIR: process.env.TMPDIR ?? "/tmp",
-          GIT_ATTR_NOSYSTEM: "1",
-          GIT_CONFIG_COUNT: "0",
-          GIT_CONFIG_NOSYSTEM: "1",
-          GIT_CONFIG_GLOBAL: "/dev/null",
-          GIT_OPTIONAL_LOCKS: "0",
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_PAGER: "cat",
-          PAGER: "cat",
-          GIT_ASKPASS: "/usr/bin/false",
-          SSH_ASKPASS: "/usr/bin/false",
-        },
+        env: gitEnvironment(),
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       });
       const stdout: Buffer[] = [];

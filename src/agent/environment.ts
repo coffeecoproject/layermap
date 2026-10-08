@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type LayerMapAnalyzers, mapDatabasePath } from "../layermap";
+import { executableName } from "../platform";
 import { discoverJavaRuntime } from "../project-map-process";
 
 /** The layermap package around this module, whether run from its sources or from its bundle. */
@@ -76,9 +77,13 @@ const resolvePlaceholder = (field: string): string => {
       createRequire(import.meta.url).resolve("typescript/package.json"),
     );
     const native = `@typescript/typescript-${process.platform}-${process.arch}/package.json`;
-    return path.join(path.dirname(compiler.resolve(native)), "lib", "tsc");
+    return path.join(path.dirname(compiler.resolve(native)), "lib", executableName("tsc"));
   }
-  return field.replaceAll("{platform}", process.platform).replaceAll("{arch}", process.arch);
+  const resolved = field
+    .replaceAll("{platform}", process.platform)
+    .replaceAll("{arch}", process.arch);
+  // go-map is built per platform under its own name; Windows runs it as go-map.exe.
+  return field.includes("{platform}") ? executableName(resolved) : resolved;
 };
 const absoluteIn = (directory: string, value: StoredAnalyzers): LayerMapAnalyzers =>
   Object.fromEntries(

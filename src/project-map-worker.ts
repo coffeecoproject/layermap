@@ -1,3 +1,4 @@
+import { stopProcessTree } from "./platform";
 import { withMapCompiler } from "./project-map-compiler";
 import { applyMapWorkspace, discoverMapConfiguration } from "./project-map-configuration";
 import { mapParsingContext } from "./project-map-context";
@@ -9,7 +10,7 @@ import type { MapWorkerInput } from "./project-map-types";
 import { MapVirtualFiles, mapRelativePath, mapVirtualPath } from "./project-map-virtual-files";
 import { MapWorkerTimingCollector } from "./project-map-worker-timing";
 
-const stopOwnedGroup = () => process.kill(-process.pid, "SIGKILL");
+const stopOwnedGroup = () => stopProcessTree(process.pid, "SIGKILL");
 process.once("disconnect", stopOwnedGroup);
 process.once("SIGTERM", stopOwnedGroup);
 process.once("beforeExit", () => process.off("disconnect", stopOwnedGroup));

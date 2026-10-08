@@ -1,0 +1,3 @@
+# Generated files and shell scripts must keep LF line endings on every platform: a CRLF hook
+# script breaks sh, and the plugin files are compared byte for byte with their generator.
+* text=auto eol=lf

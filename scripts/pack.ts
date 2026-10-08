@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
+import { executableName } from "../src/platform";
 import { buildGoMap, buildProjectMapParser } from "./build.mjs";
 import { MCP_NAME } from "./plugins";
 
@@ -23,6 +24,8 @@ const PLATFORMS = [
   { platform: "darwin", arch: "x64" },
   { platform: "linux", arch: "x64" },
   { platform: "linux", arch: "arm64" },
+  { platform: "win32", arch: "x64" },
+  { platform: "win32", arch: "arm64" },
 ] as const;
 
 const source = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
@@ -56,7 +59,12 @@ await rm(path.join(analyzers, "project-map-native"), { recursive: true, force: t
 await rm(path.join(analyzers, "project-map-go"), { recursive: true, force: true });
 for (const platform of PLATFORMS)
   await buildGoMap(
-    path.join(analyzers, "go", `${platform.platform}-${platform.arch}`, "go-map"),
+    path.join(
+      analyzers,
+      "go",
+      `${platform.platform}-${platform.arch}`,
+      executableName("go-map", platform.platform),
+    ),
     platform,
   );
 const relative = (file: string) => path.relative(analyzers, file);
@@ -99,7 +107,7 @@ await writeFile(
       bin: { layermap: "dist/cli.mjs" },
       files: ["dist", "analyzers", "LICENSE", "NOTICE", "README.md"],
       engines: { node: ">=22.22" },
-      os: ["darwin", "linux"],
+      os: ["darwin", "linux", "win32"],
       dependencies: {
         "@photostructure/sqlite": source.dependencies["@photostructure/sqlite"],
         typescript: source.dependencies.typescript,

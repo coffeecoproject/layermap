@@ -7,6 +7,9 @@ export const MAP_WORKSPACE = "/layermap/";
 export const mapVirtualPath = (relative: string) => `${MAP_WORKSPACE}${relative}`;
 export const mapRelativePath = (absolute: string) =>
   absolute.startsWith(MAP_WORKSPACE) ? absolute.slice(MAP_WORKSPACE.length) : undefined;
+// The compiler names files with forward slashes on every platform, so do the keys here: the
+// library files' host paths are Windows paths on Windows.
+export const mapForwardSlashes = (file: string) => file.replaceAll("\\", "/");
 
 export class MapVirtualFiles {
   readonly required = new Set<string>();
@@ -28,7 +31,7 @@ export class MapVirtualFiles {
     for (const name of readdirSync(libraryDirectory)) {
       if (!/^lib(?:\.[a-z0-9_-]+)*\.d\.ts$/u.test(name)) continue;
       const text = readFileSync(path.join(libraryDirectory, name), "utf8");
-      this.files.set(path.join(libraryDirectory, name), text);
+      this.files.set(mapForwardSlashes(path.join(libraryDirectory, name)), text);
     }
     for (const file of new Set([...this.files.keys(), ...this.inventory.keys()]))
       this.addPath(file);
@@ -45,6 +48,7 @@ export class MapVirtualFiles {
   }
 
   private canonical(file: string): string {
+    file = mapForwardSlashes(file);
     for (const [alias, target] of this.aliases)
       if (file === alias || file.startsWith(`${alias}/`)) return target + file.slice(alias.length);
     return file;

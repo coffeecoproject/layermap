@@ -18,6 +18,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
+// An executable's file name: Windows runs a program only by a name with an extension.
+const executable = (name, platform = process.platform) =>
+  platform === "win32" ? `${name}.exe` : name;
+
 // The Go analyzer's identity (go-1.24-map-v6) assumes this toolchain; another version must bump it.
 const GO_VERSION = /^go1\.24(?:\.\d+)?$/u;
 // The Java analyzer's identity (javac-lombok-1.18.48-map-v3) pins this Lombok, vendored with its
@@ -56,7 +60,10 @@ export async function buildGoMap(output, target) {
   const env = {
     ...process.env,
     ...(target
-      ? { GOOS: target.platform, GOARCH: target.arch === "x64" ? "amd64" : target.arch }
+      ? {
+          GOOS: target.platform === "win32" ? "windows" : target.platform,
+          GOARCH: target.arch === "x64" ? "amd64" : target.arch,
+        }
       : {}),
     CGO_ENABLED: "0",
     GOENV: "off",
@@ -144,7 +151,7 @@ export async function buildPythonMap(directory, record = async () => {}) {
 export async function findJava() {
   const homes = [process.env.LAYERMAP_JAVA_HOME, process.env.JAVA_HOME];
   for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-    const java = path.join(directory, "java");
+    const java = path.join(directory, executable("java"));
     if (directory && existsSync(java)) homes.push(path.dirname(path.dirname(await realpath(java))));
   }
   homes.push(
@@ -160,7 +167,7 @@ export async function findJava() {
       String(await run("/usr/libexec/java_home", ["-v", "21+"], {}).catch(() => "")).trim(),
     );
   for (const home of homes) {
-    if (!home || !existsSync(path.join(home, "bin", "javac"))) continue;
+    if (!home || !existsSync(path.join(home, "bin", executable("javac")))) continue;
     const release = await readFile(path.join(home, "release"), "utf8").catch(() => "");
     const version = /^JAVA_VERSION="([^"]+)"/mu.exec(release)?.[1];
     if (version && Number(version.split(".", 1)[0]) >= 21) return { home, version };
@@ -186,7 +193,7 @@ export async function buildJavaMap(directory, record = async () => {}) {
   const classes = await mkdtemp(path.join(directory, "java-map-classes-"));
   try {
     await run(
-      path.join(home, "bin", "javac"),
+      path.join(home, "bin", executable("javac")),
       ["--release", "21", "-Xlint:all", "-Werror", "-d", classes, ...sources],
       {},
     );
@@ -223,7 +230,7 @@ export async function buildJavaMap(directory, record = async () => {}) {
   return {
     workerPath,
     compilerPath: path.join(output, "java-map.jar"),
-    runtimePath: path.join(home, "bin", "java"),
+    runtimePath: path.join(home, "bin", executable("java")),
     runtimeVersion: version,
   };
 }
@@ -237,7 +244,7 @@ export async function buildProjectMapParser(directory) {
   const compilerDirectory = path.join(path.dirname(compilerPackage), "lib");
   const nativeDirectory = path.join(directory, "project-map-native");
   const workerPath = path.join(directory, "project-map-worker.mjs");
-  const compilerPath = path.join(nativeDirectory, "tsc");
+  const compilerPath = path.join(nativeDirectory, executable("tsc"));
   // Outputs of an earlier build (library files of another compiler version, a stale analyzer)
   // must not outlive it.
   for (const name of [
@@ -275,9 +282,9 @@ export async function buildProjectMapParser(directory) {
   for (const file of Object.keys(built.metafile.inputs)) await record(file);
   for (const output of built.outputFiles)
     await writeFile(output.path, output.contents, { mode: 0o600 });
-  const executable = path.join(compilerDirectory, process.platform === "win32" ? "tsc.exe" : "tsc");
-  await record(executable);
-  await copyFile(executable, compilerPath);
+  const compiler = path.join(compilerDirectory, executable("tsc"));
+  await record(compiler);
+  await copyFile(compiler, compilerPath);
   await chmod(compilerPath, 0o755);
   for (const name of await readdir(compilerDirectory)) {
     if (!/^lib(?:\.[a-z0-9_-]+)*\.d\.ts$/u.test(name)) continue;
@@ -286,7 +293,7 @@ export async function buildProjectMapParser(directory) {
     await copyFile(source, path.join(nativeDirectory, name));
   }
   const goWorkerPath = path.join(directory, "project-map-go-worker.mjs");
-  const goMapPath = path.join(directory, "project-map-go", "go-map");
+  const goMapPath = path.join(directory, "project-map-go", executable("go-map"));
   const goWorker = await build({
     absWorkingDir: inputRoot,
     entryPoints: [path.join(packageRoot, "src/project-map-go-worker.ts")],

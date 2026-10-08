@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { childEnvironment, stopProcessTree } from "./platform";
 import { type MapParserTrace, mapWorkerFailure } from "./project-map-failure";
 
 // Relays one request to the Java analyzer (java-map.jar on a Java runtime of 21 or later). The
 // analyzer reads sources only from the request and runs with an empty environment; the Lombok jar
 // beside it runs as javac's annotation processor. This worker's process group owns the JVM.
-const stopOwnedGroup = () => process.kill(-process.pid, "SIGKILL");
+const stopOwnedGroup = () => stopProcessTree(process.pid, "SIGKILL");
 process.once("disconnect", stopOwnedGroup);
 process.once("SIGTERM", stopOwnedGroup);
 process.once("beforeExit", () => process.off("disconnect", stopOwnedGroup));
@@ -40,7 +41,7 @@ process.once(
         message.compilerPath,
         "javamap.Main",
       ],
-      { stdio: ["pipe", "pipe", "pipe"], env: {} },
+      { stdio: ["pipe", "pipe", "pipe"], env: childEnvironment({}), windowsHide: true },
     );
     const output: Buffer[] = [];
     let errors = "";

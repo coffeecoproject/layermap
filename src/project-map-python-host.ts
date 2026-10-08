@@ -17,6 +17,9 @@ import { Uri } from "pyright-internal/common/uri/uri";
 const PROJECT = "/project";
 const TYPESHED = "/typeshed";
 const detector = { isCaseSensitive: () => true };
+// Pyright builds file paths with the host's separator, so on Windows /project/a.py comes back as
+// \project\a.py; the keys here use forward slashes on every platform.
+const filePath = (uri: Uri) => uri.getFilePath().replaceAll("\\", "/");
 
 const missing = (path: string): never => {
   throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
@@ -64,13 +67,13 @@ class SourceFileSystem {
   }
 
   existsSync(uri: Uri) {
-    const path = uri.getFilePath();
+    const path = filePath(uri);
     const disk = this.disk(path);
     return disk ? nodeFs.existsSync(disk) : this.files.has(path) || this.directories.has(path);
   }
   chdir() {}
   readdirEntriesSync(uri: Uri) {
-    const path = uri.getFilePath();
+    const path = filePath(uri);
     const disk = this.disk(path);
     if (disk) return nodeFs.readdirSync(disk, { withFileTypes: true });
     return [...(this.directories.get(path) ?? missing(path))].map(([name, file]) => ({
@@ -84,13 +87,13 @@ class SourceFileSystem {
     return this.readdirEntriesSync(uri).map((entry) => entry.name);
   }
   readFileSync(uri: Uri, encoding?: BufferEncoding | null) {
-    const path = uri.getFilePath();
+    const path = filePath(uri);
     const disk = this.disk(path);
     const text = disk ? nodeFs.readFileSync(disk, "utf8") : (this.files.get(path) ?? missing(path));
     return encoding ? text : Buffer.from(text);
   }
   statSync(uri: Uri) {
-    const path = uri.getFilePath();
+    const path = filePath(uri);
     const disk = this.disk(path);
     if (disk) return nodeFs.statSync(disk);
     const text = this.files.get(path);
@@ -307,4 +310,4 @@ export function openPythonProgram(input: PythonProgramInput): PythonProgram {
 }
 
 /** Whether a declaration lies in the bundled standard library stubs. */
-export const pythonStandardLibrary = (uri: Uri) => uri.getFilePath().startsWith(`${TYPESHED}/`);
+export const pythonStandardLibrary = (uri: Uri) => filePath(uri).startsWith(`${TYPESHED}/`);
