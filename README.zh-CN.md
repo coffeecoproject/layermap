@@ -65,6 +65,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 | Claude Code 花费，不限次数 | **−33%** | |
 | Codex 输入 token，不限次数（当前默认设置） | +14% | |
 | 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
+| 改完自检列出的失败测试（Go / Python，让函数失败） | **100% / 83–88%** | — |
 
 **怎么理解这些结果：**
 

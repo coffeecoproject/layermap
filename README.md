@@ -69,6 +69,7 @@ projects, graded blind against truth sets cross-checked with each language's own
 | Claude Code cost, no request limit | **−33%** | |
 | Codex input tokens, no request limit (current defaults) | +14% | |
 | Time, no request limit (Claude Code / Codex) | +25% / +20% | |
+| Failing tests the change check lists (Go / Python, functions made to fail) | **100% / 83–88%** | — |
 
 With a tight budget, the map finds far more of the affected code, at about 24% more tokens. With
 no limit, both agents find nearly everything either way. Claude Code costs a third less with the

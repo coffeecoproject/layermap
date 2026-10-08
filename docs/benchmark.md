@@ -2,7 +2,7 @@
 
 [English](benchmark.md) · [中文](benchmark.zh-CN.md)
 
-Does a code map help a coding agent answer "what does changing this affect?" Two experiments:
+Does a code map help a coding agent answer "what does changing this affect?" Three experiments:
 
 1. **Budget-limited comparison.** One model, at most 15 requests per answer, with and without
    LayerMap. With the map it found **97.9%** of the affected HTTP endpoints across six public tasks;
@@ -15,6 +15,11 @@ Does a code map help a coding agent answer "what does changing this affect?" Two
    - Codex used **55% fewer** input tokens at reasoning effort max, but 14% more with its current,
      leaner defaults ([rerun](#rerun-with-015));
    - runs took 17–25% longer.
+
+3. **Change check accuracy** (no model). Functions were made to fail on entry, one at a time, and the
+   whole test suite was run. Of the test files that failed, `project_check_changes` listed **100%**
+   on Miniflux (Go) and **83–88%** directly, **90–98%** with indirect importers, on Starlette
+   (Python, tests in their own directory).
 
 Samples are small and LayerMap's authors wrote the tasks; see [Limitations](#limitations). The
 questions, truth sets and scoring rules are in [`benchmark/tasks`](benchmark/tasks).
@@ -200,6 +205,31 @@ Claude Code's false positive is the Miniflux share page from Experiment 1.
   map, against 23.48M at effort max. With the map it made 35% fewer other tool calls, but used 14%
   more input tokens and 20% more time.
 
+## Experiment 3: change check accuracy
+
+Does `project_check_changes` list the tests a change can break? Like a test impact tool's
+simulator, the check was compared with what the tests actually do, without a model:
+
+1. Pick a function or method at random and make it fail on entry (Go `panic`, Python `raise`).
+2. Run `project_check_changes` on that diff.
+3. Run the project's whole test suite and record the test files that fail.
+4. Restore the file. 60 functions per sample, with a fixed seed.
+
+| Project | Test files | Samples with failing tests | Failing test files listed | Listed per change (median) |
+|---|---|---|---|---|
+| [Miniflux](https://github.com/miniflux/v2) (Go) | 71 | 22 of 60 | **33 of 33 (100%)** | 3 |
+| [Starlette](https://github.com/Kludex/starlette) (Python), sample 1 | 31 | 60 of 60 | **148 of 168 (88.1%)**; 98.2% with indirect importers | 10 |
+| Starlette, sample 2 | 31 | 58 of 60 | **203 of 245 (82.9%)**; 90.2% with indirect importers | 11.5 |
+
+"Listed" means the RELATED TESTS list; "with indirect importers" adds the test files the check
+only counts. The list errs on the side of more: on Starlette it holds about a third of the test
+files. A check takes about 2 s on these projects (median).
+
+Most misses on Starlette are calls the framework makes at run time through the ASGI protocol
+(`__call__`, `receive`), and a class passed as a value to `functools.partial` in a pytest fixture,
+which the Python analysis does not yet record as a use. Functions no test runs (38 of 60 on
+Miniflux) can only be checked through the entry points the check lists.
+
 ## Limitations
 
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has
@@ -207,6 +237,8 @@ Claude Code's false positive is the Miniflux share page from Experiment 1.
   vary widely: in the rerun, one Claude Code answer took 665 s against 359 s in the first round.
 - **One kind of task.** Every task is impact analysis up to HTTP endpoints, which is what LayerMap
   is built for.
+- **Experiment 3** covers two projects, Go and Python. Failing on entry only shows which tests run a
+  function, not whether they would notice a subtler bug.
 - **Authorship.** LayerMap's authors wrote the tasks, and LayerMap's index is one of the two
   truth-set sources. Disagreements were checked in source, and the revisions are documented.
 - **The grader is a model.** It was blind to the condition but saw the truth set.
