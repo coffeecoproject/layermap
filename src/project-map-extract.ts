@@ -156,6 +156,8 @@ export async function extractProjectMap(
   const pending: Pending[] = [];
   // Module-level variables declared in the project: the only targets of a state read.
   const moduleVariables = new Set<string>();
+  // (reading declaration, variable) pairs already linked.
+  const stateReads = new Set<string>();
   // Object literals and heritage declarations whose members may implement contract members.
   const contracts: Contract[] = [];
   // Object members materialized because their value resolved to a function.
@@ -583,8 +585,12 @@ export async function extractProjectMap(
     trace.phase = "RELATION_TARGETS";
     for (const [index, item] of batch.entries()) {
       if (item.state) {
-        // A read links only to a module-level variable; other values are data flow.
-        for (const destination of await targets.resolveMapped(symbols[index], moduleVariable))
+        // A read links only to a module-level variable, once per reading declaration; other
+        // values are data flow, and find_references lists every read.
+        for (const destination of await targets.resolveMapped(symbols[index], moduleVariable)) {
+          const read = `${item.owner}\u0000${destination.id}`;
+          if (stateReads.has(read)) continue;
+          stateReads.add(read);
           collect.relation({
             from: item.owner,
             to: destination.id,
@@ -593,6 +599,7 @@ export async function extractProjectMap(
             target: item.target,
             basis: "TYPE_RESOLVED",
           });
+        }
         continue;
       }
       if (item.kind === "REFERENCES") {

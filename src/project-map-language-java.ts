@@ -43,7 +43,7 @@ const platformPackage =
   /^(?:java|jdk|sun|com\.sun|javax\.(?:annotation\.processing|crypto|imageio|lang\.model|management|naming|net|print|script|security|sound|sql|swing|tools|transaction\.xa|xml))(?:\.|$)/u;
 
 export const JAVA_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "javac-lombok-1.18.48-map-v7",
+  id: "javac-lombok-1.18.48-map-v8",
   claims: (path: string) => path.endsWith(".java"),
   reads: (path: string) => buildFile.test(path),
   // A package of the Java platform, or a library named by its first two package segments.

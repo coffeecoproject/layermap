@@ -140,3 +140,39 @@ test("a Python class passed as a value counts as a use of it; annotations and ba
   assert.match(text, /tests\/test_requests\.py \(may use it through tests\/conftest\.py\)/u);
   assert.doesNotMatch(text, /describe|Special/u);
 });
+
+test("each declaration's reads of a constant are stored once, in every language", async (t) => {
+  const java = Boolean(process.env.LAYERMAP_JAVA_HOME || process.env.JAVA_HOME);
+  const { root } = await project({
+    "go.mod": "module example.com/m\n\ngo 1.22\n",
+    "state/state.go":
+      "package state\n\nconst Limit = 3\n\nfunc Thrice() int {\n\treturn Limit + Limit + Limit\n}\n",
+    "pkg/__init__.py": "",
+    "pkg/state.py": "LIMIT = 3\n\n\ndef thrice():\n    return LIMIT + LIMIT + LIMIT\n",
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/state.ts":
+      "export const LIMIT = 3;\n\nexport function thrice(): number {\n  return LIMIT + LIMIT + LIMIT;\n}\n",
+    ...(java
+      ? {
+          "src/main/java/app/State.java":
+            "package app;\n\nclass State {\n  static final int LIMIT = 3;\n\n  static int thrice() {\n    return LIMIT + LIMIT + LIMIT;\n  }\n}\n",
+        }
+      : {}),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const constants: [string, string][] = [
+    ["state/state.go", "Limit"],
+    ["pkg/state.py", "LIMIT"],
+    ["src/state.ts", "LIMIT"],
+    ...(java ? ([["src/main/java/app/State.java", "State.LIMIT"]] as [string, string][]) : []),
+  ];
+  for (const [path, name] of constants) {
+    const { text } = await map.explore({ path, name, direction: "INCOMING", depth: 1 }, signal());
+    assert.equal(text.match(/← used as value by /gu)?.length, 1, `${path}: ${text}`);
+  }
+});

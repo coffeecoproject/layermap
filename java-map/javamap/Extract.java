@@ -968,6 +968,8 @@ final class Extract {
 
     // Targets of assignments: a write there, not a read.
     private final Set<Tree> writing = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    // Static fields each declaration reads, recorded once: further reads are found on demand.
+    private final Set<List<Integer>> reads = new HashSet<>();
 
     @Override
     public Void visitIdentifier(IdentifierTree node, Void unused) {
@@ -989,7 +991,8 @@ final class Extract {
           || element.getKind() != ElementKind.FIELD
           || !element.getModifiers().contains(Modifier.STATIC)) return;
       Integer to = declared.get(element);
-      if (to != null) resolved(site("REFERENCES", declaredStack.peek(), node, label(node)), to);
+      if (to != null && reads.add(List.of(declaredStack.peek(), to)))
+        resolved(site("REFERENCES", declaredStack.peek(), node, label(node)), to);
     }
 
     private void write(ExpressionTree target) {

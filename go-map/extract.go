@@ -619,10 +619,12 @@ type walker struct {
 	methods map[*ast.CallExpr][]string
 	// Each local variable's single assigned value (nil when assigned otherwise), built on demand.
 	assigned map[*types.Var]ast.Expr
+	// Package state each declaration reads, recorded once: further reads are found on demand.
+	reads map[[2]int]bool
 }
 
 func (x *extractor) relate(file *sourceFile, u *unit, fileObject int) {
-	w := &walker{x: x, u: u, file: file, executing: []int{fileObject}, declared: []int{fileObject}, methods: map[*ast.CallExpr][]string{}}
+	w := &walker{x: x, u: u, file: file, executing: []int{fileObject}, declared: []int{fileObject}, methods: map[*ast.CallExpr][]string{}, reads: map[[2]int]bool{}}
 	for _, spec := range file.ast.Imports {
 		w.importSpec(spec, fileObject)
 	}
@@ -969,23 +971,31 @@ func (w *walker) valueUse(ident *ast.Ident, expr ast.Expr) {
 	if obj == nil || w.isCallee(expr) {
 		return
 	}
-	id := 0
+	id, state := 0, false
 	switch v := obj.(type) {
 	case *types.Func:
 		id, _ = w.x.objectID(obj)
 	case *types.Var:
 		// A local is mapped only when it holds a function literal; package-level state always is.
 		id = w.x.declaredID(obj)
-		if id != 0 && w.x.object(id).Execution != "CLOSURE" && (v.Pkg() == nil || v.Parent() != v.Pkg().Scope()) {
+		state = id != 0 && w.x.object(id).Execution != "CLOSURE"
+		if state && (v.Pkg() == nil || v.Parent() != v.Pkg().Scope()) {
 			id = 0
 		}
 	case *types.Const:
 		if v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
-			id = w.x.declaredID(obj)
+			id, state = w.x.declaredID(obj), true
 		}
 	}
 	if id == 0 {
 		return
+	}
+	if state {
+		read := [2]int{w.declared[len(w.declared)-1], id}
+		if w.reads[read] {
+			return
+		}
+		w.reads[read] = true
 	}
 	start, end := w.x.span(expr)
 	w.relation(relationFact{

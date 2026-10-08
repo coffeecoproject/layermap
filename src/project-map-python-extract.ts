@@ -739,6 +739,8 @@ function inAnnotation(node: ParseNode): boolean {
 }
 
 class Relater extends ParseTreeWalker {
+  // Module variables each declaration reads, recorded once.
+  private readonly reads = new Set<string>();
   // Executing object and innermost declared object for the current node.
   private readonly executing: number[];
   private readonly declared: number[];
@@ -1058,9 +1060,16 @@ class Relater extends ParseTreeWalker {
       if (to === undefined) continue;
       // Only module state: a local or an attribute read is not a use of a mapped declaration.
       if (read && this.x.global(this.x.object(to).path, name.d.value) !== to) continue;
+      // Each declaration's reads of a variable are recorded once; find_references lists them all.
+      const from = this.top(this.declared);
+      if (read && !value) {
+        const key = `${from}\u0000${to}`;
+        if (this.reads.has(key)) return;
+        this.reads.add(key);
+      }
       this.relation({
         kind: "REFERENCES",
-        from: this.top(this.declared),
+        from,
         to,
         start: expression.start,
         end: end(expression),
