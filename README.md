@@ -133,7 +133,8 @@ Claude Code asks once before each map tool runs in a project. Choose "don't ask 
 **After an edit.** When the agent changes code, `project_check_changes` lists what the change
 affects: the routes, jobs and commands that reach the changed functions, what the map cannot see,
 and the existing tests related to the change. It never writes or runs tests. In Claude Code the
-plugin asks the agent once, before it finishes, to run this check if it has not; set
+plugin asks the agent once, before it finishes, to run this check if it edited code in the repository
+and has not checked since (changes another session makes in the same work tree do not count); set
 `LAYERMAP_STOP_CHECK=0` to turn that off. Codex and DeepSeek Harness are told to run it.
 
 **Without plugins:** run `npx layermap setup claude` or `npx layermap setup codex`. Setup does three

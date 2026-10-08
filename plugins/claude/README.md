@@ -16,14 +16,14 @@ Start a session in a Git repository and ask as usual, for example:
 
 ## What it runs, fetches and sends
 
-- It runs the LayerMap MCP server on your machine (`npx -y layermap@0.1.6 mcp`).
+- It runs the LayerMap MCP server on your machine (`npx -y layermap@0.1.7 mcp`).
   Java analysis uses your local JDK 21 or later.
 - On first launch, npx downloads the pinned `layermap` package and its dependencies from the npm
   registry.
 - LayerMap itself makes no network requests. Maps stay in your user cache, never in the repository.
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
-- When Claude is about to finish after changing code, a stop hook asks it once to run
+- When Claude is about to finish after editing code in the repository itself, a stop hook asks it once to run
   `project_check_changes` and check what the changes affect. It only asks git whether code
   changed and never runs tests or edits anything. Set `LAYERMAP_STOP_CHECK=0` to turn it off.
 

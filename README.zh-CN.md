@@ -129,7 +129,7 @@ Claude Code 在每个项目里第一次用到某个地图工具时会问一次�
 
 **改完自检**：agent 改完代码后，`project_check_changes` 会列出这次改动影响到哪里：经过改动函数的路由、
 定时任务和命令，地图看不到、需要人工核对的地方，以及相关的已有测试。它不会写测试，也不会运行测试。在
-Claude Code 里，如果 agent 还没做这个检查，插件会在它结束前提醒一次；设置 `LAYERMAP_STOP_CHECK=0`
+Claude Code 里，如果 agent 在本仓库里改了代码、之后还没做这个检查，插件会在它结束前提醒一次（同一工作目录里其他会话的改动不算）；设置 `LAYERMAP_STOP_CHECK=0`
 可以关掉。Codex 和 DeepSeek Harness 通过说明文字提示 agent 去做。
 
 **不用插件**：运行 `npx layermap setup claude` 或 `npx layermap setup codex`，它会：
