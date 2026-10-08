@@ -27,7 +27,7 @@ const DESCRIPTION =
   "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.";
 // The MCP Registry allows at most 100 characters.
 const REGISTRY_DESCRIPTION =
-  "Call graph for coding agents: callers up to HTTP routes, callees and usages for TS, Go, Python, Java";
+  "Call graph for coding agents: callers up to HTTP routes, callees, usages for TS/JS, Go, Python, Java";
 const KEYWORDS = [
   "code-map",
   "call-graph",
