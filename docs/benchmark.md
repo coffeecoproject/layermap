@@ -18,8 +18,8 @@ Does a code map help a coding agent answer "what does changing this affect?" Fou
 
 3. **Change check accuracy** (no model). Functions were made to fail on entry, one at a time, and the
    whole test suite was run. Of the test files that failed, `project_check_changes` listed **100%**
-   on Miniflux (Go) and **83–88%** directly, **90–98%** with indirect importers, on Starlette
-   (Python, tests in their own directory).
+   on Miniflux (Go) and, with 0.1.10, **94–98%** directly, **97–99%** with indirect importers, on
+   Starlette (Python, tests in their own directory; 83–88% and 90–98% before).
 4. **Ripple tasks.** Requests whose obvious change breaks another feature. With the change check
    of 0.1.8 and 0.1.9, Codex left every other feature's tests passing in **23 of 24** runs with the
    map and 3 of 12 without. Claude Code showed no clear difference (11 of 24 and 4 of 12): it saw
@@ -223,17 +223,18 @@ simulator, the check was compared with what the tests actually do, without a mod
 | Project | Test files | Samples with failing tests | Failing test files listed | Listed per change (median) |
 |---|---|---|---|---|
 | [Miniflux](https://github.com/miniflux/v2) (Go) | 71 | 22 of 60 | **33 of 33 (100%)** | 3 |
-| [Starlette](https://github.com/Kludex/starlette) (Python), sample 1 | 31 | 60 of 60 | **148 of 168 (88.1%)**; 98.2% with indirect importers | 10 |
-| Starlette, sample 2 | 31 | 58 of 60 | **203 of 245 (82.9%)**; 90.2% with indirect importers | 11.5 |
+| [Starlette](https://github.com/Kludex/starlette) (Python), sample 1 | 31 | 60 of 60 | **163 of 167 (97.6%)**; 99.4% with indirect importers | 10 |
+| Starlette, sample 2 | 31 | 58 of 60 | **231 of 245 (94.3%)**; 96.7% with indirect importers | 13 |
 
 "Listed" means the RELATED TESTS list; "with indirect importers" adds the test files the check
 only counts. The list errs on the side of more: on Starlette it holds about a third of the test
-files. A check takes about 2 s on these projects (median).
+files. A check takes 2–4 s on these projects (median). Starlette's rows are from 0.1.10; with 0.1.9
+the same samples listed 88.1% and 82.9% directly, before the Python analysis recorded a class
+passed as a value (to `functools.partial` in a pytest fixture) as a use of it.
 
-Most misses on Starlette are calls the framework makes at run time through the ASGI protocol
-(`__call__`, `receive`), and a class passed as a value to `functools.partial` in a pytest fixture,
-which the Python analysis does not yet record as a use. Functions no test runs (38 of 60 on
-Miniflux) can only be checked through the entry points the check lists.
+The remaining misses on Starlette are calls the framework makes at run time through the ASGI
+protocol (`receive`, `__aenter__`) and file methods an upload calls. Functions no test runs (38 of
+60 on Miniflux) can only be checked through the entry points the check lists.
 
 ## Experiment 4: ripple tasks
 

@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "layermap@0.1.9",
+        "layermap@0.1.10",
         "mcp"
       ],
       "default_tools_approval_mode": "approve"

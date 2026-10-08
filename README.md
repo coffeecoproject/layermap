@@ -69,7 +69,7 @@ projects, graded blind against truth sets cross-checked with each language's own
 | Claude Code cost, no request limit (0.1.5 re-run; first round −32%) | **−33%** | |
 | Codex input tokens, no request limit (current defaults) | +14% | |
 | Time, no request limit (Claude Code / Codex) | +25% / +20% | |
-| Failing tests the change check lists (Go / Python, functions made to fail) | **100% / 83–88%** | — |
+| Failing tests the change check lists (Go / Python, functions made to fail) | **100% / 94–98%** | — |
 | Ripple tasks: runs leaving other features' tests passing (Codex / Claude Code, 4 tasks × 6 runs with, × 3 without) | **23 of 24** / 11 of 24 | 3 of 12 / 4 of 12 |
 
 With a tight budget, the map finds far more of the affected code, at about 24% more tokens. With
