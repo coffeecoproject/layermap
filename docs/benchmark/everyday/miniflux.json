@@ -1,0 +1,46 @@
+{
+  "repository": "https://github.com/miniflux/v2",
+  "commit": "d3a1e7dbec5a726bf47734352dcfda8514406169",
+  "tasks": [
+    {
+      "id": "mf-config-file-quoted-values",
+      "request": "Our miniflux.conf was copied from a shell env file, so values are wrapped in quotes, like DATABASE_URL=\"postgres://...\" or LOG_LEVEL=\"debug\". Miniflux keeps the quotes as part of the value (LOG_LEVEL is even rejected), so please strip a matching pair of surrounding single or double quotes from values in the config file.",
+      "acceptanceTest": {
+        "path": "internal/config/daily_quoted_values_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage config // import \"miniflux.app/v2/internal/config\"\n\nimport (\n\t\"os\"\n\t\"path/filepath\"\n\t\"testing\"\n)\n\nfunc TestDailyConfigFileQuotedValues(t *testing.T) {\n\tcontent := `# copied from a shell env file\nDATABASE_URL=\"postgres://user:secret@db/miniflux?sslmode=disable\"\nADMIN_USERNAME='admin'\nLOG_LEVEL=\"debug\"\nHTTP_CLIENT_USER_AGENT=PlainAgent/1.0\n`\n\tfilename := filepath.Join(t.TempDir(), \"miniflux.conf\")\n\tif err := os.WriteFile(filename, []byte(content), 0o600); err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\topts, err := NewConfigParser().ParseFile(filename)\n\tif err != nil {\n\t\tt.Fatalf(\"unexpected error parsing config file with quoted values: %v\", err)\n\t}\n\n\tif got, want := opts.DatabaseURL(), \"postgres://user:secret@db/miniflux?sslmode=disable\"; got != want {\n\t\tt.Errorf(\"DATABASE_URL = %q, want %q\", got, want)\n\t}\n\tif got, want := opts.AdminUsername(), \"admin\"; got != want {\n\t\tt.Errorf(\"ADMIN_USERNAME = %q, want %q\", got, want)\n\t}\n\tif got, want := opts.LogLevel(), \"debug\"; got != want {\n\t\tt.Errorf(\"LOG_LEVEL = %q, want %q\", got, want)\n\t}\n\tif got, want := opts.HTTPClientUserAgent(), \"PlainAgent/1.0\"; got != want {\n\t\tt.Errorf(\"HTTP_CLIENT_USER_AGENT = %q, want %q\", got, want)\n\t}\n}\n"
+      },
+      "referenceChange": "internal/config/parser.go: parseFileContent now splits each line on the first '=' and passes the trimmed value through a new unquoteValue helper that removes one matching pair of surrounding \" or ' quotes.",
+      "notes": "Test parses a temp file with NewConfigParser().ParseFile and checks the existing accessors DatabaseURL, AdminUsername, LogLevel, HTTPClientUserAgent. LOG_LEVEL has a choice validator, so quotes must be removed before validation (stripping in parseFileContent or parseLines both work). Stripping quotes for environment variables too is acceptable; not tested."
+    },
+    {
+      "id": "mf-query-bool-yes-no",
+      "request": "Our scripts call the API with things like ?update_content=yes or ?globally_visible=no, and Miniflux silently ignores those values and uses the default. Please accept yes/no and on/off (any case) for boolean query parameters, the same as true/false.",
+      "acceptanceTest": {
+        "path": "internal/http/request/daily_query_bool_words_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage request // import \"miniflux.app/v2/internal/http/request\"\n\nimport (\n\t\"net/http\"\n\t\"net/url\"\n\t\"testing\"\n)\n\nfunc TestDailyQueryBoolParamAcceptsYesNoOnOff(t *testing.T) {\n\tcases := []struct {\n\t\traw          string\n\t\tdefaultValue bool\n\t\twant         bool\n\t}{\n\t\t{\"yes\", false, true},\n\t\t{\"Yes\", false, true},\n\t\t{\"on\", false, true},\n\t\t{\"ON\", false, true},\n\t\t{\"no\", true, false},\n\t\t{\"NO\", true, false},\n\t\t{\"off\", true, false},\n\t\t{\"Off\", true, false},\n\t\t{\"true\", false, true},\n\t\t{\"1\", false, true},\n\t\t{\"false\", true, false},\n\t\t{\"0\", true, false},\n\t}\n\n\tfor _, c := range cases {\n\t\tu, _ := url.Parse(\"http://example.org/?flag=\" + url.QueryEscape(c.raw))\n\t\tr := &http.Request{URL: u}\n\t\tif got := QueryBoolParam(r, \"flag\", c.defaultValue); got != c.want {\n\t\t\tt.Errorf(\"QueryBoolParam(flag=%q, default=%v) = %v, want %v\", c.raw, c.defaultValue, got, c.want)\n\t\t}\n\t}\n}\n\nfunc TestDailyQueryBoolParamUnknownValueUsesDefault(t *testing.T) {\n\tu, _ := url.Parse(\"http://example.org/?flag=maybe\")\n\tr := &http.Request{URL: u}\n\tif got := QueryBoolParam(r, \"flag\", true); got != true {\n\t\tt.Errorf(\"QueryBoolParam(flag=maybe, default=true) = %v, want true\", got)\n\t}\n\tif got := QueryBoolParam(r, \"flag\", false); got != false {\n\t\tt.Errorf(\"QueryBoolParam(flag=maybe, default=false) = %v, want false\", got)\n\t}\n}\n"
+      },
+      "referenceChange": "internal/http/request/params.go: QueryBoolParam checks strings.ToLower(value) for yes/on (true) and no/off (false) before falling back to strconv.ParseBool.",
+      "notes": "Test calls the existing exported helper QueryBoolParam (the single place all handlers parse bool query params), since the API handlers need a database. Unknown values ('maybe') must still return the default; existing TestQueryBoolParam ('wat' -> default) keeps passing."
+    },
+    {
+      "id": "mf-enclosure-webp-avif-image",
+      "request": "Image attachments whose URL ends in .webp or .avif and that have no MIME type aren't treated as images, so they don't show up like .jpg/.png ones do. Please recognize .webp and .avif as images too.",
+      "acceptanceTest": {
+        "path": "internal/model/daily_enclosure_image_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage model // import \"miniflux.app/v2/internal/model\"\n\nimport \"testing\"\n\nfunc TestDailyEnclosureWebPAndAVIFAreImages(t *testing.T) {\n\tfor _, u := range []string{\n\t\t\"https://example.org/cover.webp\",\n\t\t\"https://example.org/cover.avif\",\n\t\t\"https://example.org/COVER.WEBP\",\n\t} {\n\t\te := &Enclosure{URL: u}\n\t\tif !e.IsImage() {\n\t\t\tt.Errorf(\"Enclosure{URL: %q}.IsImage() = false, want true\", u)\n\t\t}\n\t}\n}\n\nfunc TestDailyEnclosureOtherFilesStillNotImages(t *testing.T) {\n\tfor _, u := range []string{\n\t\t\"https://example.org/episode.mp3\",\n\t\t\"https://example.org/notes.pdf\",\n\t} {\n\t\te := &Enclosure{URL: u}\n\t\tif e.IsImage() {\n\t\t\tt.Errorf(\"Enclosure{URL: %q}.IsImage() = true, want false\", u)\n\t\t}\n\t}\n}\n"
+      },
+      "referenceChange": "internal/model/enclosure.go: Enclosure.IsImage also returns true for URLs ending in .webp or .avif (URL is already lower-cased).",
+      "notes": "Tests the exported Enclosure.IsImage method with empty MimeType. Upper-case extension must work (existing code lower-cases the URL). .mp3/.pdf must stay non-images."
+    },
+    {
+      "id": "mf-filter-max-age-weeks",
+      "request": "In my entry filter rules, EntryDate=max-age:7d works but max-age:2w does nothing. Please support weeks (w) in max-age, like days.",
+      "acceptanceTest": {
+        "path": "internal/reader/filter/daily_max_age_weeks_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage filter // import \"miniflux.app/v2/internal/reader/filter\"\n\nimport (\n\t\"testing\"\n\t\"time\"\n\n\t\"miniflux.app/v2/internal/model\"\n)\n\nfunc TestDailyMaxAgeRuleSupportsWeeks(t *testing.T) {\n\tfeed := &model.Feed{ID: 1, FeedURL: \"https://example.org/feed.xml\"}\n\tblockRules := ParseRules(\"EntryDate=max-age:2w\", \"\")\n\n\told := &model.Entry{Title: \"old\", URL: \"https://example.org/old\", Date: time.Now().Add(-15 * 24 * time.Hour)}\n\tif !IsBlockedEntry(blockRules, nil, feed, old) {\n\t\tt.Error(\"entry 15 days old should be blocked by max-age:2w\")\n\t}\n\n\trecent := &model.Entry{Title: \"recent\", URL: \"https://example.org/recent\", Date: time.Now().Add(-10 * 24 * time.Hour)}\n\tif IsBlockedEntry(blockRules, nil, feed, recent) {\n\t\tt.Error(\"entry 10 days old should not be blocked by max-age:2w\")\n\t}\n}\n\nfunc TestDailyMaxAgeRuleDaysStillWork(t *testing.T) {\n\tfeed := &model.Feed{ID: 1, FeedURL: \"https://example.org/feed.xml\"}\n\tblockRules := ParseRules(\"EntryDate=max-age:7d\", \"\")\n\n\told := &model.Entry{Title: \"old\", URL: \"https://example.org/old\", Date: time.Now().Add(-8 * 24 * time.Hour)}\n\tif !IsBlockedEntry(blockRules, nil, feed, old) {\n\t\tt.Error(\"entry 8 days old should be blocked by max-age:7d\")\n\t}\n}\n"
+      },
+      "referenceChange": "internal/reader/filter/filter.go: parseDuration handles a 'w' suffix (integer weeks * 7 * 24h) before falling back to time.ParseDuration.",
+      "notes": "Test goes through exported ParseRules + IsBlockedEntry with entries 15 days (blocked) and 10 days (kept) old for max-age:2w, plus a 7d control. The rule validator (internal/validator/filter.go) only checks regex syntax, so no second file is needed."
+    }
+  ]
+}

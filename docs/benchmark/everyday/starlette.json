@@ -1,0 +1,46 @@
+{
+  "repository": "https://github.com/Kludex/starlette",
+  "commit": "0a15da395d13e8eb6ecadeb6f4928d7d7c493fc8",
+  "tasks": [
+    {
+      "id": "config-bool-yes-no",
+      "request": "Our deployment sets flags like DEBUG=yes or MAINTENANCE=off, but `config(\"DEBUG\", cast=bool)` raises ValueError for anything other than true/false/1/0. Please also accept yes/no and on/off (case-insensitive) for boolean config values.",
+      "acceptanceTest": {
+        "path": "tests/test_daily_config_bool_words.py",
+        "code": "from __future__ import annotations\n\nimport pytest\n\nfrom starlette.config import Config\n\n\n@pytest.mark.parametrize(\n    \"raw, expected\",\n    [\n        (\"yes\", True),\n        (\"Yes\", True),\n        (\"ON\", True),\n        (\"on\", True),\n        (\"no\", False),\n        (\"NO\", False),\n        (\"off\", False),\n        (\"Off\", False),\n        (\"true\", True),\n        (\"1\", True),\n        (\"false\", False),\n        (\"0\", False),\n    ],\n)\ndef test_daily_bool_cast_accepts_common_words(raw: str, expected: bool) -> None:\n    config = Config(environ={\"FEATURE_FLAG\": raw})\n    assert config(\"FEATURE_FLAG\", cast=bool) is expected\n\n\ndef test_daily_bool_cast_still_rejects_other_values() -> None:\n    config = Config(environ={\"FEATURE_FLAG\": \"maybe\"})\n    with pytest.raises(ValueError):\n        config(\"FEATURE_FLAG\", cast=bool)\n"
+      },
+      "referenceChange": "starlette/config.py: added \"yes\"/\"on\" -> True and \"no\"/\"off\" -> False to the bool mapping in Config._perform_cast (value is already lower-cased).",
+      "notes": "Only public Config API is exercised (Config(environ=...)). Unknown values like 'maybe' must still raise ValueError; existing test_config expects 'example.com' and '2' to fail the bool cast, which the obvious change preserves."
+    },
+    {
+      "id": "state-get-default",
+      "request": "I'd like to read optional values from `request.state` / `app.state` without try/except, e.g. `request.state.get(\"user\")` returning None when it was never set, or `request.state.get(\"user\", \"anonymous\")` with a default, like dict.get.",
+      "acceptanceTest": {
+        "path": "tests/test_daily_state_get.py",
+        "code": "from __future__ import annotations\n\nfrom starlette.applications import Starlette\nfrom starlette.datastructures import State\nfrom starlette.requests import Request\nfrom starlette.responses import JSONResponse\nfrom starlette.routing import Route\nfrom starlette.testclient import TestClient\n\n\ndef test_daily_state_get_returns_value_or_default() -> None:\n    state = State({\"user\": \"alice\"})\n    assert state.get(\"user\") == \"alice\"\n    assert state.get(\"missing\") is None\n    assert state.get(\"missing\", 42) == 42\n\n    state.count = 0\n    assert state.get(\"count\", 99) == 0\n\n\ndef test_daily_request_state_get_in_endpoint() -> None:\n    async def endpoint(request: Request) -> JSONResponse:\n        before = request.state.get(\"user\", \"anonymous\")\n        request.state.user = \"bob\"\n        after = request.state.get(\"user\", \"anonymous\")\n        return JSONResponse({\"before\": before, \"after\": after})\n\n    app = Starlette(routes=[Route(\"/\", endpoint)])\n    with TestClient(app) as client:\n        response = client.get(\"/\")\n    assert response.json() == {\"before\": \"anonymous\", \"after\": \"bob\"}\n"
+      },
+      "referenceChange": "starlette/datastructures.py: added State.get(key, default=None) returning self._state.get(key, default).",
+      "notes": "Tests State directly and via request.state in an endpoint. Any implementation (plain method, or making State a Mapping/MutableMapping) passes. A falsy stored value (0) must be returned instead of the default."
+    },
+    {
+      "id": "csv-strings-skip-empty",
+      "request": "When ALLOWED_HOSTS has a stray comma, like \"example.com, , api.example.com\", `CommaSeparatedStrings` gives me an empty string entry in the list. Please ignore empty entries so only real values come back.",
+      "acceptanceTest": {
+        "path": "tests/test_daily_csv_skip_empty.py",
+        "code": "from __future__ import annotations\n\nfrom starlette.config import Config\nfrom starlette.datastructures import CommaSeparatedStrings\n\n\ndef test_daily_empty_entries_are_dropped() -> None:\n    assert list(CommaSeparatedStrings(\"a.com, ,b.com\")) == [\"a.com\", \"b.com\"]\n    assert list(CommaSeparatedStrings(\" , a.com,   , b.com , \")) == [\"a.com\", \"b.com\"]\n    assert len(CommaSeparatedStrings(\"a.com, , b.com\")) == 2\n\n\ndef test_daily_normal_lists_unchanged() -> None:\n    assert list(CommaSeparatedStrings(\"a.com, b.com\")) == [\"a.com\", \"b.com\"]\n    assert list(CommaSeparatedStrings(\"\")) == []\n\n\ndef test_daily_config_cast_drops_empty_entries() -> None:\n    config = Config(environ={\"ALLOWED_HOSTS\": \"example.com, , api.example.com,\"})\n    hosts = config(\"ALLOWED_HOSTS\", cast=CommaSeparatedStrings)\n    assert list(hosts) == [\"example.com\", \"api.example.com\"]\n"
+      },
+      "referenceChange": "starlette/datastructures.py: CommaSeparatedStrings.__init__ keeps only items whose stripped value is non-empty (`[item.strip() for item in splitter if item.strip()]`).",
+      "notes": "Only string inputs are tested; whether list inputs are also filtered is left to the implementer. Existing quoted-value tests in test_datastructures.py keep passing."
+    },
+    {
+      "id": "https-redirect-status-code",
+      "request": "HTTPSRedirectMiddleware always redirects with 307. We want permanent redirects, so please add a `status_code` option (e.g. 308) and keep 307 as the default.",
+      "acceptanceTest": {
+        "path": "tests/middleware/test_daily_https_redirect_status.py",
+        "code": "from __future__ import annotations\n\nfrom starlette.applications import Starlette\nfrom starlette.middleware import Middleware\nfrom starlette.middleware.httpsredirect import HTTPSRedirectMiddleware\nfrom starlette.requests import Request\nfrom starlette.responses import PlainTextResponse\nfrom starlette.routing import Route\nfrom starlette.testclient import TestClient\n\n\ndef homepage(request: Request) -> PlainTextResponse:\n    return PlainTextResponse(\"OK\")\n\n\ndef test_daily_https_redirect_custom_status_code() -> None:\n    app = Starlette(\n        routes=[Route(\"/\", endpoint=homepage)],\n        middleware=[Middleware(HTTPSRedirectMiddleware, status_code=308)],\n    )\n    client = TestClient(app)\n    response = client.get(\"/path?x=1\", follow_redirects=False)\n    assert response.status_code == 308\n    assert response.headers[\"location\"] == \"https://testserver/path?x=1\"\n\n    secure = TestClient(app, base_url=\"https://testserver\")\n    assert secure.get(\"/\").status_code == 200\n\n\ndef test_daily_https_redirect_default_still_307() -> None:\n    app = Starlette(\n        routes=[Route(\"/\", endpoint=homepage)],\n        middleware=[Middleware(HTTPSRedirectMiddleware)],\n    )\n    client = TestClient(app)\n    response = client.get(\"/\", follow_redirects=False)\n    assert response.status_code == 307\n"
+      },
+      "referenceChange": "starlette/middleware/httpsredirect.py: __init__(self, app, status_code: int = 307) stores it and the RedirectResponse uses self.status_code.",
+      "notes": "The request names the keyword `status_code`, so the test passes it via Middleware(HTTPSRedirectMiddleware, status_code=308). Test uses TestClient directly (not the test_client_factory fixture). Location for http://testserver/path?x=1 must be https://testserver/path?x=1 (unchanged existing behavior)."
+    }
+  ]
+}

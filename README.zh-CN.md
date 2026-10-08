@@ -67,6 +67,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 | 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
 | 改完自检列出的失败测试（Go / Python，让函数失败） | **100% / 94–98%** | — |
 | 波及任务：没有碰坏别的功能测试的运行（Codex / Claude Code，4 道题，用地图各 6 次、不用各 3 次） | **24 次中 23 次** / 24 次中 11 次 | 12 次中 3 次 / 12 次中 4 次 |
+| 日常任务（不需要影响分析）：做对次数 / 用时（Claude Code 和 Codex，8 道题各 2 次） | 32 次中 32 次 / +20–22% | 32 次中 32 次 |
 
 **怎么理解这些结果：**
 
@@ -75,6 +76,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 - Codex 现在的默认设置本来就查得很省，地图不再帮它省 token；第一轮用最高推理强度时，它省了 55%。
 - 有地图时 agent 会查得更广，所以用时更长。
 - 在最省事的改法会改坏别的功能的需求上，改完自检帮 Codex 守住了需求范围；Claude Code 看到了自己改了别的功能的测试，但常常有意保留范围更大的改法，所以没有明显差别。
+- 在局部小改动上，地图没有改变结果，但用时和花费多出约五分之一。
 
 样本量小，题目也由 LayerMap 作者编写。实验条件、公开的题目和局限说明见
 [报告](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)。

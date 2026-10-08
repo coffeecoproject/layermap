@@ -2,7 +2,7 @@
 
 [English](benchmark.md) · [中文](benchmark.zh-CN.md)
 
-Does a code map help a coding agent answer "what does changing this affect?" Four experiments:
+Does a code map help a coding agent answer "what does changing this affect?" Five experiments:
 
 1. **Budget-limited comparison.** One model, at most 15 requests per answer, with and without
    LayerMap. With the map it found **97.9%** of the affected HTTP endpoints across six public tasks;
@@ -25,6 +25,8 @@ Does a code map help a coding agent answer "what does changing this affect?" Fou
    map and 3 of 12 without. Claude Code showed no clear difference (11 of 24 and 4 of 12): it saw
    which tests of other features it had changed and kept the broader change on purpose, saying so.
    With 0.1.7's check the map made no difference.
+5. **Everyday tasks.** Small local requests that need no impact analysis. Both agents did all of
+   them right either way, and the map cost them about **a fifth more** time and money.
 
 Samples are small and LayerMap's authors wrote the tasks; see [Limitations](#limitations). The
 questions, truth sets and scoring rules are in [`benchmark/tasks`](benchmark/tasks).
@@ -307,6 +309,26 @@ asks the agent to call the check once, when the edits are done.
 - **Time**: Claude Code's runs with the map took 22% less time than in round 2, at about the same
   cost; Codex's took about the same.
 
+## Experiment 5: everyday tasks
+
+What does the map cost on the ordinary requests that need no impact analysis? Eight small, local
+tasks with no trap, four on Starlette and four on Miniflux, such as accepting yes/no in a boolean
+setting, adding an option with a default, or recognizing one more file type. Each has a hidden
+acceptance test; scoring is as in Experiment 4. Claude Code and Codex ran each task twice with
+LayerMap 0.1.10 and twice without, and every request allows running the tests.
+
+| | Done correctly | Broke another feature | Time, with / without | Cost, with / without |
+|---|---|---|---|---|
+| Claude Code | 16/16 and 16/16 | 0 and 0 | 2,439 s / 2,002 s (**+22%**) | $12.31 / $9.98 (**+23%**) |
+| Codex | 16/16 and 16/16 | 0 and 0 | 2,397 s / 2,005 s (**+20%**) | 4.78M / 4.01M tokens (**+19%**) |
+
+- The map made no difference to the result: every run did the task and broke nothing.
+- **Claude Code** looked something up in the map in 2 of 16 runs; the cost was the change check,
+  called 27 times in 16 runs although it is asked to call it once.
+- **Codex** looked up the map in every run, about twice each, and called the check once per run.
+- So on small local work the map is overhead, about a fifth; the earlier experiments show where it
+  pays for itself.
+
 ## Limitations
 
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has
@@ -314,6 +336,8 @@ asks the agent to call the check once, when the edits are done.
   vary widely: in the rerun, one Claude Code answer took 665 s against 359 s in the first round.
 - **One kind of task.** Every task is impact analysis up to HTTP endpoints, which is what LayerMap
   is built for.
+- **Experiment 5** has eight tasks on two projects and two runs per cell; the tasks were designed
+  to need no impact analysis, so it measures the map's overhead, not its use.
 - **Experiment 4** has 3 runs per cell. Its round 2 tasks were the ones agents had failed in round
   1, chosen after seeing results, and LayerMap's authors wrote them. Round 1 and round 2 differ in
   the request too (round 2 allows running tests), so only results within a round compare; round 3
@@ -344,6 +368,8 @@ Each file in [`benchmark/tasks`](benchmark/tasks) holds:
 - the target and the truth set, with each endpoint's call chain;
 - the neutral and verified-unaffected endpoints;
 - the scoring rules and any revision.
+
+The Experiment 5 tasks, with their acceptance tests, are in [`benchmark/everyday`](benchmark/everyday).
 
 The Experiment 4 tasks, with each request, the obvious change, the tests it breaks, a correct
 change and the hidden acceptance test, are in [`benchmark/ripple`](benchmark/ripple).

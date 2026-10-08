@@ -71,6 +71,7 @@ projects, graded blind against truth sets cross-checked with each language's own
 | Time, no request limit (Claude Code / Codex) | +25% / +20% | |
 | Failing tests the change check lists (Go / Python, functions made to fail) | **100% / 94–98%** | — |
 | Ripple tasks: runs leaving other features' tests passing (Codex / Claude Code, 4 tasks × 6 runs with, × 3 without) | **23 of 24** / 11 of 24 | 3 of 12 / 4 of 12 |
+| Everyday tasks, no impact analysis needed: done right / time (Claude Code and Codex, 8 tasks × 2 runs) | 32 of 32 / +20–22% | 32 of 32 |
 
 With a tight budget, the map finds far more of the affected code, at about 24% more tokens. With
 no limit, both agents find nearly everything either way. Claude Code costs a third less with the
@@ -78,7 +79,8 @@ map. Codex's current defaults already search lean, so the map no longer saves it
 reasoning effort max, in the first round, it saved 55%. Agents with the map explore more widely,
 which takes longer. On requests whose obvious change breaks another feature, the change check
 helped Codex keep to the requested feature. Claude Code saw which tests of other features it had
-changed but often kept the broader change on purpose, so it showed no clear difference. These are small samples on tasks written by LayerMap's authors.
+changed but often kept the broader change on purpose, so it showed no clear difference. On small
+local tasks the map changed nothing but cost about a fifth more time and money. These are small samples on tasks written by LayerMap's authors.
 The [report](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.md) has the
 setup, the published tasks and the limitations.
 
