@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/coffeecoproject/layermap#readme",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "layermap",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

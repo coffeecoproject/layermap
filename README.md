@@ -70,15 +70,15 @@ projects, graded blind against truth sets cross-checked with each language's own
 | Codex input tokens, no request limit (current defaults) | +14% | |
 | Time, no request limit (Claude Code / Codex) | +25% / +20% | |
 | Failing tests the change check lists (Go / Python, functions made to fail) | **100% / 83–88%** | — |
-| Ripple tasks: runs leaving other features' tests passing (Codex / Claude Code, 4 tasks × 3 runs) | **11 of 12 / 7 of 12** | 3 of 12 / 4 of 12 |
+| Ripple tasks: runs leaving other features' tests passing (Codex / Claude Code, 4 tasks × 6 runs with, × 3 without) | **23 of 24** / 11 of 24 | 3 of 12 / 4 of 12 |
 
 With a tight budget, the map finds far more of the affected code, at about 24% more tokens. With
 no limit, both agents find nearly everything either way. Claude Code costs a third less with the
 map. Codex's current defaults already search lean, so the map no longer saves it tokens; at
 reasoning effort max, in the first round, it saved 55%. Agents with the map explore more widely,
 which takes longer. On requests whose obvious change breaks another feature, the change check
-helped Codex keep to the requested feature; for Claude Code the gap could be chance, and both took
-longer. These are small samples on tasks written by LayerMap's authors.
+helped Codex keep to the requested feature. Claude Code saw which tests of other features it had
+changed but often kept the broader change on purpose, so it showed no clear difference. These are small samples on tasks written by LayerMap's authors.
 The [report](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.md) has the
 setup, the published tasks and the limitations.
 
@@ -136,8 +136,8 @@ Claude Code asks once before each map tool runs in a project. Choose "don't ask 
 **After an edit.** When the agent changes code, `project_check_changes` lists what the change
 affects: the routes, jobs and commands that reach the changed functions, what the map cannot see,
 and the existing tests related to the change. When the changed code serves several areas (packages
-or modules), it names each one with its tests, so a change meant for one feature does not quietly
-change the others. It never writes or runs tests. In Claude Code the
+or modules), it names each one with its tests, and it names the existing tests the diff rewrote, so
+a change meant for one feature does not quietly change the others. It never writes or runs tests. In Claude Code the
 plugin asks the agent once, before it finishes, to run this check if it edited code in the repository
 and has not checked since (changes another session makes in the same work tree do not count); set
 `LAYERMAP_STOP_CHECK=0` to turn that off. Codex and DeepSeek Harness are told to run it.

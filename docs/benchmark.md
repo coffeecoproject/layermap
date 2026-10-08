@@ -20,10 +20,11 @@ Does a code map help a coding agent answer "what does changing this affect?" Fou
    whole test suite was run. Of the test files that failed, `project_check_changes` listed **100%**
    on Miniflux (Go) and **83–88%** directly, **90–98%** with indirect importers, on Starlette
    (Python, tests in their own directory).
-4. **Ripple tasks.** Requests whose obvious change breaks another feature. With the 0.1.8 change
-   check, Codex left every other feature's tests passing in **11 of 12** runs with the map and 3 of
-   12 without; Claude Code in **7 of 12** and 4 of 12. With 0.1.7's check the map made no
-   difference.
+4. **Ripple tasks.** Requests whose obvious change breaks another feature. With the change check
+   of 0.1.8 and 0.1.9, Codex left every other feature's tests passing in **23 of 24** runs with the
+   map and 3 of 12 without. Claude Code showed no clear difference (11 of 24 and 4 of 12): it saw
+   which tests of other features it had changed and kept the broader change on purpose, saying so.
+   With 0.1.7's check the map made no difference.
 
 Samples are small and LayerMap's authors wrote the tasks; see [Limitations](#limitations). The
 questions, truth sets and scoring rules are in [`benchmark/tasks`](benchmark/tasks).
@@ -283,6 +284,28 @@ without; every request adds "You may run the project's tests to verify the chang
 - **Cost**: with the map, Claude Code took 54% longer and cost 29% more; Codex took 27% longer and
   used 14% more tokens.
 
+0.1.9 names the existing tests a diff changed, comparing each test's code before and after, and
+asks the agent to call the check once, when the edits are done.
+
+**Round 3** (0.1.9; the same 4 tasks, 3 runs each with the map; the runs without the map are round
+2's). Clean runs out of 12:
+
+| | Without (round 2) | With 0.1.8 (round 2) | With 0.1.9 (round 3) |
+|---|---|---|---|
+| Codex | 3 | 11 | **12** |
+| Claude Code | 4 | 7 | 4 |
+
+- **Codex**: 23 of 24 runs with the map against 3 of 12 without (p < 0.001).
+- **Claude Code**: 11 of 24 against 4 of 12, which could well be chance (p = 0.72); between rounds 2
+  and 3 its result moved from 7 to 4 with almost the same setup. In every failing round 3 run the
+  check named the other feature's test Claude Code had changed. Claude Code kept the change on
+  purpose and said so in its answer, offering the narrower change: it judged the shared code to be
+  the place to fix, as the owner's global instructions ask ("find the real owner, do not stack
+  patches"). Two requests also read either way: whether "article links" include links inside an
+  article, and whether YouTube links played through Invidious are part of "the Invidious player".
+- **Time**: Claude Code's runs with the map took 22% less time than in round 2, at about the same
+  cost; Codex's took about the same.
+
 ## Limitations
 
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has
@@ -292,7 +315,10 @@ without; every request adds "You may run the project's tests to verify the chang
   is built for.
 - **Experiment 4** has 3 runs per cell. Its round 2 tasks were the ones agents had failed in round
   1, chosen after seeing results, and LayerMap's authors wrote them. Round 1 and round 2 differ in
-  the request too (round 2 allows running tests), so only results within a round compare.
+  the request too (round 2 allows running tests), so only results within a round compare; round 3
+  reuses round 2's runs without the map. Scoring counts any change to another feature's tests as
+  breaking it, even when an agent argues for it and says so, and the agents inherited the owner's
+  global instructions.
 - **Experiment 3** covers two projects, Go and Python. Failing on entry only shows which tests run a
   function, not whether they would notice a subtler bug.
 - **Authorship.** LayerMap's authors wrote the tasks, and LayerMap's index is one of the two

@@ -5,11 +5,11 @@ description: Use before grep or reading files when a task asks what calls a func
 
 # LayerMap
 
-The layermap MCP server is available here. For questions about what calls a function, what a change affects or where code is used, start with its project_explore_map tool (direction INCOMING, depth up to 8) before grep, then confirm in source. After editing code, call its project_check_changes tool before reporting the work done.
+The layermap MCP server is available here. For questions about what calls a function, what a change affects or where code is used, start with its project_explore_map tool (direction INCOMING, depth up to 8) before grep, then confirm in source. When the edits are done, call its project_check_changes tool once before reporting the work done.
 
 - `project_explore_map` with `path` "." shows what the repository contains; a file `path` lists its declarations; with `name` (and `line` when names repeat) it shows a declaration's callers and callees. `direction` INCOMING with `depth` up to 8 traces callers up to the entry points; continue from any NOT EXPANDED declarations it names.
 - `project_search_map` finds a declaration by words in its name, path or documentation.
 - `project_find_references` lists every usage of a declaration, compiled from current source.
-- `project_check_changes`, after editing code and before reporting it done, lists the routes, jobs and commands the uncommitted changes reach and the existing tests related to them.
+- `project_check_changes`, once the edits are done and before reporting them, lists the routes, jobs and commands the uncommitted changes reach, the existing tests related to them, and the existing tests the diff rewrote.
 
 The map is static: dynamic dispatch, framework wiring and unresolved targets need source reading, and a missing relationship does not prove absence. A large repository's first map takes minutes to build; until then the tools say so, and you can read source meanwhile.

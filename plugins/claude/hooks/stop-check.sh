@@ -36,5 +36,5 @@ if [ -f "$transcript" ]; then
   [ -n "$checked" ] && [ "$checked" -gt "$edited" ] && exit 0
 fi
 cat <<'EOF'
-{"decision":"block","reason":"Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it reports the changed code SHARED BY several areas, keep the areas the request is not about working as before: narrow the change rather than rewrite their tests. If you already checked these changes, say so briefly and finish."}
+{"decision":"block","reason":"Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it lists EXISTING TESTS CHANGED or code SHARED BY several areas, decide which of them the request is about; for the others, restore their tests and narrow the change. If you already checked these changes, say so briefly and finish."}
 EOF

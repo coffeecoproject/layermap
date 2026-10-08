@@ -66,7 +66,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 | Codex 输入 token，不限次数（当前默认设置） | +14% | |
 | 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
 | 改完自检列出的失败测试（Go / Python，让函数失败） | **100% / 83–88%** | — |
-| 波及任务：没有碰坏别的功能测试的运行（Codex / Claude Code，4 道题 × 3 次） | **12 次中 11 次 / 12 次中 7 次** | 12 次中 3 次 / 12 次中 4 次 |
+| 波及任务：没有碰坏别的功能测试的运行（Codex / Claude Code，4 道题，用地图各 6 次、不用各 3 次） | **24 次中 23 次** / 24 次中 11 次 | 12 次中 3 次 / 12 次中 4 次 |
 
 **怎么理解这些结果：**
 
@@ -74,7 +74,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 - 不限次数时，两个 agent 有没有地图最终都能找全。Claude Code 用地图花费少三分之一。
 - Codex 现在的默认设置本来就查得很省，地图不再帮它省 token；第一轮用最高推理强度时，它省了 55%。
 - 有地图时 agent 会查得更广，所以用时更长。
-- 在最省事的改法会改坏别的功能的需求上，改完自检帮 Codex 守住了需求范围；Claude Code 的差距可能是偶然，两者都更慢。
+- 在最省事的改法会改坏别的功能的需求上，改完自检帮 Codex 守住了需求范围；Claude Code 看到了自己改了别的功能的测试，但常常有意保留范围更大的改法，所以没有明显差别。
 
 样本量小，题目也由 LayerMap 作者编写。实验条件、公开的题目和局限说明见
 [报告](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)。
@@ -131,7 +131,7 @@ Claude Code 在每个项目里第一次用到某个地图工具时会问一次�
 
 **改完自检**：agent 改完代码后，`project_check_changes` 会列出这次改动影响到哪里：经过改动函数的路由、
 定时任务和命令，地图看不到、需要人工核对的地方，以及相关的已有测试。如果改动的代码被好几块功能（包或模块）
-共用，它会逐一列出每块功能和守护它的测试，避免只想改一处、却悄悄改动了别的功能。它不会写测试，也不会运行测试。在
+共用，它会逐一列出每块功能和守护它的测试；改动了原有测试时，它也会点名这些测试，避免只想改一处、却悄悄改动了别的功能。它不会写测试，也不会运行测试。在
 Claude Code 里，如果 agent 在本仓库里改了代码、之后还没做这个检查，插件会在它结束前提醒一次（同一工作目录里其他会话的改动不算）；设置 `LAYERMAP_STOP_CHECK=0`
 可以关掉。Codex 和 DeepSeek Harness 通过说明文字提示 agent 去做。
 

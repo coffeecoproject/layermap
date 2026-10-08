@@ -152,6 +152,8 @@ test("a change to code several areas use names each area and its tests; construc
       'from pkg.feeds import parse_feed\n\n\ndef test_feed():\n    assert parse_feed(" a ") == "a"\n',
     "tests/test_users.py":
       'from pkg.users import parse_user\n\n\ndef test_user():\n    assert parse_user(" b ") == "b"\n',
+    "tests/test_shared.py":
+      'from pkg.shared import normalize\n\n\ndef test_strip():\n    assert normalize(" x ") == "x"\n',
   });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
@@ -160,10 +162,30 @@ test("a change to code several areas use names each area and its tests; construc
 
   await write("pkg/shared.py", "def normalize(value):\n    return value.strip().lower()\n");
   await write("pkg/responses.py", RESPONSES("str(path)"));
+  // An existing expectation rewritten, lines inserted into an existing test (which git shows as a
+  // pure addition), and a test added: the first two are named.
+  await write(
+    "tests/test_users.py",
+    'from pkg.users import parse_user\n\n\ndef test_user():\n    assert parse_user(" B ") == "b"\n',
+  );
+  await write(
+    "tests/test_feeds.py",
+    'from pkg.feeds import parse_feed\n\n\ndef test_feed():\n    assert parse_feed(" a ") == "a"\n\n\ndef test_feed_case():\n    assert parse_feed("A") == "a"\n',
+  );
+  await write(
+    "tests/test_shared.py",
+    'from pkg.shared import normalize\n\n\ndef test_strip():\n    assert normalize("Y") == "y"\n    assert normalize(" x ") == "x"\n',
+  );
   const { text } = await map.checkChanges({}, signal());
 
+  const rewritten = text.slice(text.indexOf("EXISTING TESTS CHANGED"), text.indexOf("For each,"));
+  assert.match(rewritten, /^ {2}tests\/test_users\.py: test_user$/mu);
+  assert.match(rewritten, /^ {2}tests\/test_shared\.py: test_strip$/mu);
+  assert.doesNotMatch(rewritten, /test_feed/u);
+  assert.match(text, /restore the test and narrow the change/u);
+
   const shared = text.slice(text.indexOf("SHARED BY"), text.indexOf("Each area's tests"));
-  assert.match(shared, /^SHARED BY 2 AREAS/u);
+  assert.match(shared, /^SHARED BY 3 AREAS/u);
   assert.match(shared, /pkg\/feeds\.py \(parse_feed\): tests\/test_feeds\.py: test_feed/u);
   assert.match(shared, /pkg\/users\.py \(parse_user\): tests\/test_users\.py: test_user/u);
   assert.match(text, /narrow the change/u);

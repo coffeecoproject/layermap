@@ -1,6 +1,6 @@
 {
   "name": "layermap",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.",
   "author": {
     "name": "The LayerMap Authors",

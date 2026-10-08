@@ -27,6 +27,8 @@ export type MapChangedFile = Readonly<{
   /** Lines removed or changed in the base. */
   baseLines: Lines;
   binary: boolean;
+  /** A changed test file's text in the base, to tell which of its existing tests changed. */
+  baseText?: string;
 }>;
 
 export type MapChanges = Readonly<{
@@ -97,6 +99,14 @@ export async function readMapChanges(
     )
   ).stdout.toString("utf8");
   const files = parseMapDiff(diff);
+  for (const [index, file] of files.entries())
+    if (file.basePath && file.status !== "ADDED" && !file.binary && testCode(file.basePath))
+      files[index] = {
+        ...file,
+        baseText: (
+          await git.run(["show", `${commit}:${file.basePath}`], gitOptions(project, signal))
+        ).stdout.toString("utf8"),
+      };
   const untracked = (
     await git.run(["ls-files", "--others", "--exclude-standard", "-z"], gitOptions(project, signal))
   ).stdout
@@ -208,6 +218,8 @@ export type MapChangeEntry = Readonly<{
 export type MapChangeImpact = Readonly<{
   changed: readonly string[];
   removed: readonly string[];
+  /** Existing tests whose code the diff changed or removed: expectations that held before it. */
+  rewrittenTests: readonly Readonly<{ path: string; names: readonly string[] }>[];
   entries: readonly MapChangeEntry[];
   /** Related test files, closest first: rank 0 calls the change ... 4 imports it indirectly. */
   tests: readonly Readonly<{ path: string; names: readonly string[]; why: string; rank: number }>[];
@@ -560,8 +572,14 @@ export function mapChangeImpact(
   supportTests(store, working, tracer);
 
   // Declarations the diff removed or renamed: their callers in the base still expect them.
+  const rewrittenTests: { path: string; names: string[] }[] = [];
   if (base) {
     const before = new MapViewGraph(store, base);
+    for (const file of changes.files)
+      if (file.basePath && file.baseText !== undefined && testCode(file.basePath)) {
+        const names = existingTestsChanged(before, graph, file, project);
+        if (names.length) rewrittenTests.push({ path: file.path, names });
+      }
     const beforeTracer = new Tracer(before, cache.memberCalls(store, base));
     const gone: string[] = [];
     for (const file of changes.files) {
@@ -612,6 +630,7 @@ export function mapChangeImpact(
   return {
     changed,
     removed,
+    rewrittenTests,
     entries: [...tracer.entries.values()].sort(
       (left, right) =>
         Number(right.certain) - Number(left.certain) ||
@@ -641,6 +660,57 @@ export function mapChangeImpact(
     unclear: [...new Set([...unclear, ...tracer.unclear])],
     truncated: tracer.truncated,
   };
+}
+
+// The declarations of a changed test file that existed in the base and whose text the diff changed
+// or removed, innermost first: a test method, not its class. Comparing text, not diff hunks, keeps
+// a test added beside an existing one from counting as a change to it, and catches lines inserted
+// into an existing test, which git may show as a pure addition.
+function existingTestsChanged(
+  before: MapViewGraph,
+  after: MapViewGraph,
+  file: MapChangedFile,
+  project: string | undefined,
+): string[] {
+  if (!file.basePath || file.baseText === undefined) return [];
+  const baseLines = file.baseText.split("\n");
+  let workingLines: string[] = [];
+  if (file.status !== "DELETED" && project)
+    try {
+      workingLines = readFileSync(path.join(project, file.path), "utf8").split("\n");
+    } catch {}
+  const key = (graph: MapViewGraph, object: MapObject) =>
+    `${object.kind}\u0000${graph.qualifiedName(object.id)}`;
+  const text = (lines: readonly string[], object: MapObject) =>
+    lines
+      .slice(object.anchor.startLine - 1, object.anchor.endLine)
+      .map((line) => line.trimEnd())
+      .join("\n");
+  const now = new Map(
+    (file.status === "DELETED" ? [] : after.objectsAt(file.path))
+      .filter((object) => !mapIsModule(object) && after.isAddressable(object))
+      .map((object) => [key(after, object), object]),
+  );
+  const changed = before
+    .objectsAt(file.basePath)
+    .filter((object) => !mapIsModule(object) && before.isAddressable(object))
+    .filter((object) => {
+      const counterpart = now.get(key(before, object));
+      return !counterpart || text(baseLines, object) !== text(workingLines, counterpart);
+    });
+  // A class changes with its method; name the method.
+  return changed
+    .filter(
+      (object) =>
+        !changed.some(
+          (other) =>
+            other !== object &&
+            object.anchor.start <= other.anchor.start &&
+            other.anchor.end <= object.anchor.end,
+        ),
+    )
+    .map((object) => before.qualifiedName(object.id))
+    .sort();
 }
 
 // Tests that import a changed file, directly or through up to two importing modules.
@@ -808,6 +878,21 @@ export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): st
     impact.removed,
     LIST.changed,
   );
+  // Expectations the diff rewrote: when the request did not ask for them, the code change reached
+  // a feature it was not meant to change, and the rewritten test hides that.
+  if (impact.rewrittenTests.length) {
+    list(
+      "EXISTING TESTS CHANGED (tests that existed before this diff, whose code it changed or removed)",
+      impact.rewrittenTests.map(
+        (test) =>
+          `${test.path}: ${test.names.slice(0, LIST.names).join(", ")}${test.names.length > LIST.names ? `, +${test.names.length - LIST.names} more` : ""}`,
+      ),
+      LIST.tests,
+    );
+    lines.push(
+      "For each, decide whether the request asks for that behavior to change. If it does not, the code change probably reached a feature it was not meant to: restore the test and narrow the change.",
+    );
+  }
   // The changed code serves several features: a change meant for one can leak into the others.
   if (impact.areas.length > 1) {
     list(
@@ -823,7 +908,7 @@ export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): st
       LIST.areas,
     );
     lines.push(
-      "Each area's tests pin its current behavior. Decide which areas the request is about: if a test of another area fails, the change reached a feature it was not meant to change; narrow the change, for example to the code only the requested area uses, instead of rewriting that test, unless the request covers that behavior too.",
+      "Each area's tests pin its current behavior. Decide which areas the request is about: a failing test of another area means the change reached a feature the request may not cover; if it does not, narrow the change, for example to code only the requested area uses, rather than rewriting that test.",
     );
   }
   const entry = (item: MapChangeEntry) =>

@@ -249,7 +249,11 @@ export class LayerMap {
   async checkChanges(input: { base?: string }, signal: AbortSignal): Promise<{ text: string }> {
     const changes = await readMapChanges(this.project, input.base ?? "HEAD", signal);
     const working = await this.refresh(signal);
-    const base = changes.files.some((file) => file.basePath !== undefined && file.baseLines.length)
+    // The base map tells what the diff removed, and which existing tests it changed.
+    const base = changes.files.some(
+      (file) =>
+        file.basePath !== undefined && (file.baseLines.length || file.baseText !== undefined),
+    )
       ? await this.versionAt(changes.commit, signal)
       : undefined;
     return {
