@@ -32,7 +32,7 @@ export class CodeIndex {
     private readonly clock: () => string = () => new Date().toISOString(),
     private readonly analyzer: ProjectMapAnalyzer = new ProjectMapAnalyzer(),
   ) {
-    this.query = new CodeIndexQuery(store, (signal, read) => this.read(signal, read));
+    this.query = new CodeIndexQuery(store, analyzer.id, (signal, read) => this.read(signal, read));
     this.capture = new CodeIndexCapture(analyzer.id);
   }
 

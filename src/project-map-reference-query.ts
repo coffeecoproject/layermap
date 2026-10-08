@@ -3,7 +3,6 @@ import { normalizeProjectEvidencePath, ProjectEvidenceError } from "./core";
 import { decodeQueryCursor, encodeQueryCursor } from "./cursor";
 import { canonicalJson, digestValue } from "./digest";
 import type { ProjectMapAnalyzer } from "./project-map-analyzer";
-import { PROJECT_MAP_ANALYZER } from "./project-map-language";
 import { mapReferenceNavigation } from "./project-map-navigation";
 import { requireMapObject } from "./project-map-object-query";
 import { MAP_QUERY_GUIDANCE, ProjectMapQuery } from "./project-map-query";
@@ -29,7 +28,7 @@ export class ProjectMapReferenceQuery {
       directory: Object.freeze({ ...input.source.directory }),
     });
     const version = this.store.requireVersion(input.version);
-    if (version.analyzer !== PROJECT_MAP_ANALYZER)
+    if (version.analyzer !== this.analyzer.id)
       throw new ProjectEvidenceError("PROJECT_EVIDENCE_INDEX_UNAVAILABLE", true);
     if (version.projectRef !== source.projectRef)
       throw new ProjectEvidenceError("PROJECT_EVIDENCE_ACCESS_REVOKED", false);
@@ -80,7 +79,7 @@ export class ProjectMapReferenceQuery {
       ...MAP_QUERY_GUIDANCE,
       object,
       query,
-      gaps: new ProjectMapQuery(this.store).gaps(input.version, prefixes),
+      gaps: new ProjectMapQuery(this.store, this.analyzer.id).gaps(input.version, prefixes),
     };
     if (!contexts.length) {
       if (input.cursor) throw new ProjectEvidenceError("PROJECT_CONTINUATION_INVALID", false);

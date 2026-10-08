@@ -2,7 +2,6 @@ import { setImmediate } from "node:timers/promises";
 import type { CodeIndexStore } from "./code-index-store";
 import { normalizeProjectEvidencePath, ProjectEvidenceError } from "./core";
 import { canonicalJson } from "./digest";
-import { PROJECT_MAP_ANALYZER } from "./project-map-language";
 import { mapExploreNavigation, mapSearchNavigation } from "./project-map-navigation";
 import { requireMapObject } from "./project-map-object-query";
 import { mapQueryPage } from "./project-map-query-page";
@@ -67,7 +66,11 @@ export class ProjectMapQuery {
   private readonly views = new MapViewCache();
   private cachedReferences = 0;
 
-  constructor(private readonly store: CodeIndexStore) {}
+  constructor(
+    private readonly store: CodeIndexStore,
+    // The suite that builds this index's maps; a version another suite recorded is not current.
+    private readonly analyzer: string,
+  ) {}
 
   clear(): void {
     this.traversals.clear();
@@ -283,7 +286,7 @@ export class ProjectMapQuery {
   }
 
   private requireCurrentMap(version: string) {
-    if (this.store.requireVersion(version).analyzer !== PROJECT_MAP_ANALYZER)
+    if (this.store.requireVersion(version).analyzer !== this.analyzer)
       throw new ProjectEvidenceError("PROJECT_EVIDENCE_INDEX_UNAVAILABLE", true);
   }
 

@@ -50,13 +50,14 @@ export class CodeIndexQuery {
 
   constructor(
     private readonly store: CodeIndexStore,
+    analyzer: string,
     private readonly withRead: <T>(
       signal: AbortSignal,
       read: (signal: AbortSignal) => Promise<T>,
     ) => Promise<T>,
   ) {
     this.cursorSecret = store.cursorSecret();
-    this.map = new ProjectMapQuery(store);
+    this.map = new ProjectMapQuery(store, analyzer);
   }
 
   clear(): void {
