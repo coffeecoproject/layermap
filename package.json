@@ -2,7 +2,7 @@
   "name": "layermap",
   "version": "0.1.7",
   "private": true,
-  "description": "A layered map of a codebase for coding agents: directories, modules and call chains across TypeScript, Go, Python and Java.",
+  "description": "A layered map of a codebase for coding agents: directories, modules and call chains across TypeScript, JavaScript, Go, Python and Java.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
