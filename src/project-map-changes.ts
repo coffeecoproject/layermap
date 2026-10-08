@@ -211,6 +211,15 @@ export type MapChangeImpact = Readonly<{
   entries: readonly MapChangeEntry[];
   /** Related test files, closest first: rank 0 calls the change ... 4 imports it indirectly. */
   tests: readonly Readonly<{ path: string; names: readonly string[]; why: string; rank: number }>[];
+  /**
+   * The areas (a Go or Java package, another language's file) whose code the tests call the change
+   * through, with those tests: more than one means the changed code serves several features.
+   */
+  areas: readonly Readonly<{
+    area: string;
+    through: readonly string[];
+    tests: readonly Readonly<{ path: string; names: readonly string[] }>[];
+  }>[];
   unclear: readonly string[];
   truncated: boolean;
 }>;
@@ -224,10 +233,16 @@ const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
 // A declaration the trace reached, and the one below it on the way from the change.
 type Reached = { ref: string; depth: number; certain: boolean; via?: string };
 
+// The unit a feature lives in: a package in Go and Java, a module (file) elsewhere.
+const areaOf = (file: string) =>
+  /\.(?:go|java|kt)$/u.test(file) ? file.slice(0, file.lastIndexOf("/") + 1) || "./" : file;
+
 class Tracer {
   readonly reached = new Map<string, Reached>();
   readonly entries = new Map<string, MapChangeEntry>();
   readonly tests = new Map<string, { names: Set<string>; why: string; rank: number }>();
+  /** Tests that certainly call the change, by the area of the declaration they call it through. */
+  readonly areas = new Map<string, { through: Set<string>; tests: Map<string, Set<string>> }>();
   readonly unclear: string[] = [];
   truncated = false;
   private readonly callerCount = new Map<string, number>();
@@ -282,6 +297,8 @@ class Tracer {
               // Tests closer to the change come first; all of them rank before other relations.
               current.depth / 10,
             );
+            if (certain && mapRunnableTest(callerObject.anchor.path))
+              this.area(current.ref, callerObject.anchor.path, this.name(caller.ref));
             continue;
           }
           if (this.reached.has(caller.ref)) continue;
@@ -340,11 +357,11 @@ class Tracer {
     // through syntax, a property when it is read. The class's users are their callers too.
     const object = this.graph.object(ref);
     const parent = this.graph.parent(ref);
+    const constructs =
+      object.execution === "CONSTRUCTOR" ||
+      object.name === "__init__" ||
+      object.name === "constructor";
     if (parent && this.graph.object(parent).kind === "CLASS") {
-      const constructs =
-        object.execution === "CONSTRUCTOR" ||
-        object.name === "__init__" ||
-        object.name === "constructor";
       const implicit =
         constructs ||
         /^__\w+__$/u.test(object.name) ||
@@ -363,18 +380,20 @@ class Tracer {
           }
     }
     // A call through an interface or base member may reach this implementation, or another;
-    // with no other implementation in the project, it reaches this one.
-    for (const override of this.graph.relationsFrom([ref]))
-      if (override.kind === "OVERRIDES" && override.to !== undefined) {
-        const contract = override.to;
-        const relations = this.graph.relationsTo([contract]);
-        const only = relations.filter((relation) => relation.kind === "OVERRIDES").length === 1;
-        for (const relation of relations)
-          if (CALLER_KINDS.has(relation.kind)) {
-            const owner = this.graph.owner(relation.from);
-            if (owner !== ref) callers.push({ ref: owner, relation, certain: only });
-          }
-      }
+    // with no other implementation in the project, it reaches this one. A constructor is not
+    // dispatched: the base's constructor, or super().__init__ in a sibling class, never runs it.
+    if (!constructs)
+      for (const override of this.graph.relationsFrom([ref]))
+        if (override.kind === "OVERRIDES" && override.to !== undefined) {
+          const contract = override.to;
+          const relations = this.graph.relationsTo([contract]);
+          const only = relations.filter((relation) => relation.kind === "OVERRIDES").length === 1;
+          for (const relation of relations)
+            if (CALLER_KINDS.has(relation.kind)) {
+              const owner = this.graph.owner(relation.from);
+              if (owner !== ref) callers.push({ ref: owner, relation, certain: only });
+            }
+        }
     return callers;
   }
 
@@ -425,6 +444,16 @@ class Tracer {
     const known = this.entries.get(label);
     if (known && (known.certain || !certain)) return;
     this.entries.set(label, { label, route, chain, ...(site ? { site } : {}), certain });
+  }
+
+  private area(ref: string, test: string, name: string) {
+    const area = areaOf(this.graph.object(ref).anchor.path);
+    const known = this.areas.get(area) ?? { through: new Set<string>(), tests: new Map() };
+    known.through.add(this.name(ref));
+    const names = known.tests.get(test) ?? new Set<string>();
+    if (!name.startsWith("<")) names.add(name);
+    known.tests.set(test, names);
+    this.areas.set(area, known);
   }
 
   /** A related test file; the closest relation (lowest rank) explains it. */
@@ -566,6 +595,15 @@ export function mapChangeImpact(
         if (known) for (const name of test.names) known.names.add(name);
         else tracer.tests.set(path, test);
       }
+      for (const [area, known] of beforeTracer.areas) {
+        const now = tracer.areas.get(area);
+        if (!now) tracer.areas.set(area, known);
+        else {
+          for (const name of known.through) now.through.add(name);
+          for (const [path, names] of known.tests)
+            now.tests.set(path, new Set([...(now.tests.get(path) ?? []), ...names]));
+        }
+      }
       unclear.push(...beforeTracer.unclear.filter((line) => !line.includes("has no callers")));
       if (beforeTracer.truncated) tracer.truncated = true;
     }
@@ -591,6 +629,15 @@ export function mapChangeImpact(
         (left, right) =>
           left.rank - right.rank || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0),
       ),
+    areas: [...tracer.areas]
+      .map(([area, known]) => ({
+        area,
+        through: [...known.through].sort(),
+        tests: [...known.tests]
+          .map(([path, names]) => ({ path, names: [...names].sort() }))
+          .sort((left, right) => right.names.length - left.names.length),
+      }))
+      .sort((left, right) => right.tests.length - left.tests.length),
     unclear: [...new Set([...unclear, ...tracer.unclear])],
     truncated: tracer.truncated,
   };
@@ -720,15 +767,25 @@ function sameDirectoryTests(store: CodeIndexStore, version: string, path: string
 }
 
 // The test functions among the test file's declarations that reach the change, else a few of them.
-function testNames(names: readonly string[]): string {
+function testNames(names: readonly string[], limit: number = LIST.names): string {
   if (!names.length) return "";
   const tests = names.filter((name) => /(?:^|\.)(?:test|Test|should|it_)\w*$/u.test(name));
-  const shown = (tests.length ? tests : names).slice(0, LIST.names);
+  const shown = (tests.length ? tests : names).slice(0, limit);
   const more = (tests.length ? tests : names).length - shown.length;
   return `: ${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}`;
 }
 
-const LIST = Object.freeze({ changed: 20, entries: 40, tests: 30, unclear: 20, names: 6 });
+const LIST = Object.freeze({
+  changed: 20,
+  entries: 40,
+  tests: 12,
+  unclear: 20,
+  names: 6,
+  areas: 8,
+  areaTests: 3,
+  areaNames: 3,
+  through: 2,
+});
 
 /** The check as an agent reads it: the conclusion first, then each list, then what it cannot see. */
 export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): string {
@@ -751,6 +808,24 @@ export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): st
     impact.removed,
     LIST.changed,
   );
+  // The changed code serves several features: a change meant for one can leak into the others.
+  if (impact.areas.length > 1) {
+    list(
+      `SHARED BY ${impact.areas.length} AREAS (tests that call the changed code, by the code they call it through)`,
+      impact.areas.map((area) => {
+        const through = `${area.through.slice(0, LIST.through).join(", ")}${area.through.length > LIST.through ? ", …" : ""}`;
+        const tests = area.tests
+          .slice(0, LIST.areaTests)
+          .map((test) => `${test.path}${testNames(test.names, LIST.areaNames)}`);
+        const more = area.tests.length - tests.length;
+        return `${area.area} (${through}): ${tests.join("; ")}${more > 0 ? `; +${more} more files` : ""}`;
+      }),
+      LIST.areas,
+    );
+    lines.push(
+      "Each area's tests pin its current behavior. Decide which areas the request is about: if a test of another area fails, the change reached a feature it was not meant to change; narrow the change, for example to the code only the requested area uses, instead of rewriting that test, unless the request covers that behavior too.",
+    );
+  }
   const entry = (item: MapChangeEntry) =>
     `${item.route ? JSON.stringify(item.label) : item.label}${item.chain.length ? ` → ${item.chain.join(" → ")}` : ""}${item.site ? ` (registered at ${item.site})` : ""}`;
   list(

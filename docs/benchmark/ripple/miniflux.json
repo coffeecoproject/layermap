@@ -1,0 +1,183 @@
+{
+  "repository": "https://github.com/miniflux/v2",
+  "commit": "d3a1e7dbec5a726bf47734352dcfda8514406169",
+  "tasks": [
+    {
+      "id": "mf-01-rss-protocol-relative-http",
+      "request": "Some of our feeds live on an internal server that only speaks plain HTTP. When an RSS item's link is protocol-relative (like //intranet.example/post/1), Miniflux saves it as https://intranet.example/post/1, which doesn't open. Article links from such feeds should keep the feed's own http scheme.",
+      "sharedFunction": "internal/urllib/url.go: resolveToAbsoluteURL (behind urllib.ResolveToAbsoluteURL and urllib.ResolveToAbsoluteURLWithParsedBaseURL)",
+      "obviousChange": "The RSS adapter resolves entry links with urllib.ResolveToAbsoluteURL(feed.SiteURL, link), and the only place that turns '//host/path' into 'https://host/path' is the hard-coded `return \"https:\" + relativeURL` branch in urllib.resolveToAbsoluteURL. The obvious fix is to make that branch use the base URL's scheme. That helper is shared by every feed parser, the icon and subscription finders, and the HTML sanitizer, which resolves links inside article content with the parsed base URL.",
+      "breakingTests": [
+        {
+          "file": "internal/reader/sanitizer/sanitizer_test.go",
+          "test": "TestProtocolRelativeURL",
+          "why": "The article-content sanitizer deliberately upgrades protocol-relative links in content to https even when the base is http: SanitizeHTML(\"http://example.org/\", `<a href=\"//static.example.org/index.html\">`) must give https://static.example.org/index.html. If the shared resolver inherits the base scheme, the output is http://static.example.org/..., so the test fails. Verified: this is the only failing test."
+        }
+      ],
+      "correctSketch": "Leave urllib unchanged. In internal/reader/rss/adapter.go, before resolving the entry link, check for a '//' prefix and add the scheme of feed.SiteURL (falling back to the feed URL; only http/https). Then call urllib.ResolveToAbsoluteURL as before. A scheme-preserving helper used only by feed adapters (for example urllib.ResolveToAbsoluteURLKeepingScheme) would also work. The sanitizer, icon finder and subscription finder keep the https upgrade. Verified: full suite green with the acceptance test.",
+      "acceptanceTest": {
+        "path": "internal/reader/rss/protocol_relative_entry_link_acceptance_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage rss // import \"miniflux.app/v2/internal/reader/rss\"\n\nimport (\n\t\"bytes\"\n\t\"testing\"\n)\n\nfunc TestAcceptanceProtocolRelativeEntryLinkUsesFeedScheme(t *testing.T) {\n\tscenarios := []struct {\n\t\tname     string\n\t\tfeedURL  string\n\t\tsiteURL  string\n\t\titemLink string\n\t\texpected string\n\t}{\n\t\t{\n\t\t\tname:     \"plain http feed keeps http\",\n\t\t\tfeedURL:  \"http://intranet.example/feed.xml\",\n\t\t\tsiteURL:  \"http://intranet.example/\",\n\t\t\titemLink: \"//intranet.example/post/1\",\n\t\t\texpected: \"http://intranet.example/post/1\",\n\t\t},\n\t\t{\n\t\t\tname:     \"https feed keeps https\",\n\t\t\tfeedURL:  \"https://blog.example/feed.xml\",\n\t\t\tsiteURL:  \"https://blog.example/\",\n\t\t\titemLink: \"//blog.example/post/2\",\n\t\t\texpected: \"https://blog.example/post/2\",\n\t\t},\n\t}\n\n\tfor _, scenario := range scenarios {\n\t\tt.Run(scenario.name, func(t *testing.T) {\n\t\t\tdata := `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<rss version=\"2.0\">\n<channel>\n\t<title>Example</title>\n\t<link>` + scenario.siteURL + `</link>\n\t<item>\n\t\t<title>Post</title>\n\t\t<link>` + scenario.itemLink + `</link>\n\t</item>\n</channel>\n</rss>`\n\n\t\t\tfeed, err := Parse(scenario.feedURL, bytes.NewReader([]byte(data)))\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\n\t\t\tif len(feed.Entries) != 1 {\n\t\t\t\tt.Fatalf(\"expected 1 entry, got %d\", len(feed.Entries))\n\t\t\t}\n\n\t\t\tif feed.Entries[0].URL != scenario.expected {\n\t\t\t\tt.Errorf(\"entry URL = %q, want %q\", feed.Entries[0].URL, scenario.expected)\n\t\t\t}\n\t\t})\n\t}\n}\n"
+      },
+      "notes": "Confidence high. The requested feature (RSS entry URL) has no existing test with a protocol-relative link, so a correct change needs no edits to existing tests. Verified empirically: the obvious change fails 1 test (sanitizer); the scoped change passes all tests; the acceptance test fails on unmodified code."
+    },
+    {
+      "id": "mf-02-jsonfeed-two-digit-year",
+      "request": "A JSON Feed we follow writes its dates with two-digit years, like \"24-03-05T10:00:00+00:00\". Miniflux can't read them, so every item shows up as published 'just now'. Please read these JSON Feed dates correctly (that example is 5 March 2024, 10:00 UTC).",
+      "sharedFunction": "internal/reader/date/parser.go: date.Parse (its dateFormats layout list)",
+      "obviousChange": "The JSON adapter calls date.Parse(value), and all accepted layouts are in the dateFormats list in internal/reader/date/parser.go. The obvious fix is to add the layout \"06-01-02T15:04:05Z07:00\" (or a looser two-digit-year layout) to that shared list. date.Parse is also used by the RSS, Atom 0.3/1.0 and RDF adapters.",
+      "breakingTests": [
+        {
+          "file": "internal/reader/rdf/parser_test.go",
+          "test": "TestParseItemWithInvalidDublicCoreDate",
+          "why": "The RDF test asserts that dc:date \"20-04-10T05:00:00+00:00\" is invalid, so the entry date falls back to time.Now(). With a two-digit-year layout in the shared parser, that value parses as 2020-04-10, so the date is no longer 'now' and the test fails. Verified: this is the only failing test."
+        }
+      ],
+      "correctSketch": "Leave date.Parse unchanged. In internal/reader/json/adapter.go, where the entry date is filled in, first try time.Parse(\"06-01-02T15:04:05Z07:00\", value) (or call a JSON-only fallback when date.Parse fails), and use the result. RSS, Atom and RDF keep treating such strings as invalid. Verified: full suite green with the acceptance test.",
+      "acceptanceTest": {
+        "path": "internal/reader/json/two_digit_year_date_acceptance_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage json // import \"miniflux.app/v2/internal/reader/json\"\n\nimport (\n\t\"bytes\"\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestAcceptanceJSONFeedDateWithTwoDigitYear(t *testing.T) {\n\tdata := `{\n\t\t\"version\": \"https://jsonfeed.org/version/1.1\",\n\t\t\"title\": \"Two digit years\",\n\t\t\"home_page_url\": \"https://example.org/\",\n\t\t\"feed_url\": \"https://example.org/feed.json\",\n\t\t\"items\": [\n\t\t\t{\n\t\t\t\t\"id\": \"1\",\n\t\t\t\t\"url\": \"https://example.org/1\",\n\t\t\t\t\"content_text\": \"First\",\n\t\t\t\t\"date_published\": \"24-03-05T10:00:00+00:00\"\n\t\t\t},\n\t\t\t{\n\t\t\t\t\"id\": \"2\",\n\t\t\t\t\"url\": \"https://example.org/2\",\n\t\t\t\t\"content_text\": \"Second\",\n\t\t\t\t\"date_published\": \"23-11-30T22:15:00+02:00\"\n\t\t\t}\n\t\t]\n\t}`\n\n\tfeed, err := Parse(\"https://example.org/feed.json\", bytes.NewBufferString(data))\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\tif len(feed.Entries) != 2 {\n\t\tt.Fatalf(\"expected 2 entries, got %d\", len(feed.Entries))\n\t}\n\n\texpected := []time.Time{\n\t\ttime.Date(2024, time.March, 5, 10, 0, 0, 0, time.UTC),\n\t\ttime.Date(2023, time.November, 30, 20, 15, 0, 0, time.UTC),\n\t}\n\n\tfor i, want := range expected {\n\t\tif got := feed.Entries[i].Date; !got.Equal(want) {\n\t\t\tt.Errorf(\"entry %d date = %v, want %v\", i, got, want)\n\t\t}\n\t}\n}\n"
+      },
+      "notes": "Confidence high. No JSON test pins two-digit years, so the correct change needs no edits to existing tests. Verified: the obvious change fails 1 RDF test; the scoped change is green; the acceptance test fails on unmodified code (both dates fall back to now)."
+    },
+    {
+      "id": "mf-03-log-level-case-insensitive",
+      "request": "If we set LOG_LEVEL=DEBUG (upper case) in our deployment, Miniflux refuses to start with 'invalid value for key LOG_LEVEL'. Please accept the log level in any letter case, and actually turn on debug logging in that case.",
+      "sharedFunction": "internal/config/validators.go: validateChoices (also reached through validateListChoices)",
+      "obviousChange": "The startup error comes from the LOG_LEVEL validator, which calls validateChoices(rawValue, []string{\"debug\",\"info\",\"warning\",\"error\"}). validateChoices does an exact slices.Contains. The obvious fix is to make validateChoices case-insensitive (strings.EqualFold) and lower-case LogLevel(). validateChoices is the shared validator for LOG_FORMAT, MEDIA_PROXY_MODE, OAUTH2_PROVIDER, POLLING_SCHEDULER and, through validateListChoices, MEDIA_PROXY_RESOURCE_TYPES. Their consumers compare exactly (for example `mediaProxyOption == \"all\"`), so values like MEDIA_PROXY_MODE=ALL would pass validation and then silently misbehave. A second obvious variant, lower-casing every string option in parseLine, would also corrupt case-sensitive options such as passwords and URLs.",
+      "breakingTests": [
+        {
+          "file": "internal/config/validators_test.go",
+          "test": "TestValidateChoices (subtest case_sensitive_-_different_case)",
+          "why": "This test pins the shared contract that validateChoices(\"OPTION1\", {\"option1\",...}) returns an error. EqualFold makes it pass validation, so the test fails."
+        },
+        {
+          "file": "internal/config/validators_test.go",
+          "test": "TestValidateListChoices (subtest case_sensitive_-_different_case)",
+          "why": "validateListChoices (used by MEDIA_PROXY_RESOURCE_TYPES) delegates to validateChoices, so the same case-sensitivity assertion fails."
+        }
+      ],
+      "correctSketch": "Normalize only LOG_LEVEL. In the LOG_LEVEL option's validator in internal/config/options.go, call validateChoices(strings.ToLower(rawValue), ...), and make LogLevel() return strings.ToLower(...). Alternatively, lower-case the value at that option's parse step, or make cli.InitializeDefaultLogger match case-insensitively together with a LOG_LEVEL-only validator change. validateChoices and validateListChoices stay case-sensitive. Verified: full suite green with the acceptance test.",
+      "acceptanceTest": {
+        "path": "internal/cli/log_level_case_acceptance_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage cli // import \"miniflux.app/v2/internal/cli\"\n\nimport (\n\t\"bytes\"\n\t\"context\"\n\t\"log/slog\"\n\t\"os\"\n\t\"testing\"\n\n\t\"miniflux.app/v2/internal/config\"\n)\n\nfunc TestAcceptanceLogLevelIsCaseInsensitive(t *testing.T) {\n\tpreviousLogger := slog.Default()\n\tdefer slog.SetDefault(previousLogger)\n\n\tscenarios := []struct {\n\t\tvalue        string\n\t\tenabledLevel slog.Level\n\t\tbelowLevel   slog.Level\n\t\tcheckBelow   bool\n\t}{\n\t\t{value: \"DEBUG\", enabledLevel: slog.LevelDebug},\n\t\t{value: \"Warning\", enabledLevel: slog.LevelWarn, belowLevel: slog.LevelInfo, checkBelow: true},\n\t\t{value: \"ERROR\", enabledLevel: slog.LevelError, belowLevel: slog.LevelWarn, checkBelow: true},\n\t}\n\n\tfor _, scenario := range scenarios {\n\t\tt.Run(scenario.value, func(t *testing.T) {\n\t\t\tos.Clearenv()\n\t\t\tos.Setenv(\"LOG_LEVEL\", scenario.value)\n\n\t\t\topts, err := config.NewConfigParser().ParseEnvironmentVariables()\n\t\t\tif err != nil {\n\t\t\t\tt.Fatalf(\"LOG_LEVEL=%s should be accepted, got error: %v\", scenario.value, err)\n\t\t\t}\n\n\t\t\tvar buf bytes.Buffer\n\t\t\tif err := InitializeDefaultLogger(opts.LogLevel(), &buf, opts.LogFormat(), opts.LogDateTime()); err != nil {\n\t\t\t\tt.Fatalf(\"unable to initialize logger: %v\", err)\n\t\t\t}\n\n\t\t\tctx := context.Background()\n\t\t\tif !slog.Default().Enabled(ctx, scenario.enabledLevel) {\n\t\t\t\tt.Errorf(\"LOG_LEVEL=%s should enable %v logs\", scenario.value, scenario.enabledLevel)\n\t\t\t}\n\t\t\tif scenario.checkBelow && slog.Default().Enabled(ctx, scenario.belowLevel) {\n\t\t\t\tt.Errorf(\"LOG_LEVEL=%s should not enable %v logs\", scenario.value, scenario.belowLevel)\n\t\t\t}\n\t\t})\n\t}\n}\n"
+      },
+      "notes": "Confidence high that the tests fail if validateChoices is changed. Whether an agent edits the shared validator or the LOG_LEVEL lambda is a real fork in the road. The failing tests are unit tests of the shared validator, but they encode a contract that other options depend on: there is a real latent bug for MEDIA_PROXY_MODE=ALL. The acceptance test lives in package cli and checks the end-to-end outcome (config parses, logger enables the right level), so it does not constrain where the normalization happens. Verified: the obvious change fails 2 subtests in 2 tests; the scoped change is green; the acceptance test fails on unmodified code."
+    },
+    {
+      "id": "mf-04-invidious-player-16x9",
+      "request": "For entries that come from an Invidious instance, Miniflux embeds the video in a 650x350 player, which letterboxes normal 16:9 videos. Please make the embedded Invidious player 640x360.",
+      "sharedFunction": "internal/reader/rewrite/content_rewrite_functions.go: buildVideoPlayerIframe (through addVideoPlayerIframe)",
+      "obviousChange": "addInvidiousVideo calls addVideoPlayerIframe, which calls buildVideoPlayerIframe. That is the single place where the `<iframe width=\"650\" height=\"350\" ...>` markup lives, so the obvious fix is to change the size there. The same builder is used by the YouTube rewrite rules (add_youtube_video, add_youtube_video_from_id, and add_youtube_video_using_invidious_player for youtube.com links), so every YouTube embed changes size too.",
+      "breakingTests": [
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestRewriteYoutubeVideoLink",
+          "why": "The YouTube watch-link embed is pinned to width=\"650\" height=\"350\"."
+        },
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestRewriteYoutubeShortLink",
+          "why": "The YouTube Shorts embed is pinned to 650x350."
+        },
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestRewriteYoutubeLinkAndCustomEmbedURL",
+          "why": "The YouTube embed with YOUTUBE_EMBED_URL_OVERRIDE is pinned to 650x350."
+        },
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestAddYoutubeVideoFromId",
+          "why": "The add_youtube_video_from_id rule (used for quantamagazine.org) is pinned to 650x350."
+        },
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestAddYoutubeVideoFromIdWithCustomEmbedURL",
+          "why": "Same rule with a custom embed URL, pinned to 650x350."
+        },
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestRewriteYoutubeVideoLinkUsingInvidious",
+          "why": "The add_youtube_video_using_invidious_player rule (youtube.com links played through the configured Invidious instance) is pinned to 650x350. Borderline: some readers might count this rule as 'Invidious', but the request is about entries coming from an Invidious instance (the add_invidious_video rule)."
+        },
+        {
+          "file": "internal/reader/rewrite/content_rewrite_test.go",
+          "test": "TestRewriteYoutubeShortLinkUsingInvidious",
+          "why": "Same borderline case for YouTube Shorts links."
+        }
+      ],
+      "correctSketch": "Give addInvidiousVideo its own 640x360 player markup, for example a size parameter on buildVideoPlayerIframe/addVideoPlayerIframe passed only by addInvidiousVideo, or a dedicated builder. Leave the YouTube rules at 650x350. The requested feature's own test, TestAddInvidiousVideo, pins 650x350 and must be updated to 640x360 as part of the change. That is an expected edit, not a ripple. Verified: with only TestAddInvidiousVideo's expectations updated, the full suite is green with the acceptance test.",
+      "acceptanceTest": {
+        "path": "internal/reader/rewrite/invidious_player_size_acceptance_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage rewrite // import \"miniflux.app/v2/internal/reader/rewrite\"\n\nimport (\n\t\"regexp\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"miniflux.app/v2/internal/model\"\n)\n\nfunc TestAcceptanceInvidiousPlayerIs640x360(t *testing.T) {\n\tentry := &model.Entry{\n\t\tURL:     \"https://yewtu.be/watch?v=dQw4w9WgXcQ&t=30s\",\n\t\tTitle:   \"A title\",\n\t\tContent: \"Video description\",\n\t}\n\n\tApplyContentRewriteRules(entry, \"add_invidious_video\")\n\n\tiframeTag := regexp.MustCompile(`<iframe[^>]*>`).FindString(entry.Content)\n\tif iframeTag == \"\" {\n\t\tt.Fatalf(\"expected an embedded player, got %q\", entry.Content)\n\t}\n\n\tfor _, expectedAttr := range []string{\n\t\t`src=\"https://yewtu.be/embed/dQw4w9WgXcQ?t=30s\"`,\n\t\t`width=\"640\"`,\n\t\t`height=\"360\"`,\n\t} {\n\t\tif !strings.Contains(iframeTag, expectedAttr) {\n\t\t\tt.Errorf(\"expected player tag %q to contain %s\", iframeTag, expectedAttr)\n\t\t}\n\t}\n\n\tif !strings.Contains(entry.Content, \"Video description\") {\n\t\tt.Errorf(\"original content should be kept, got %q\", entry.Content)\n\t}\n}\n"
+      },
+      "notes": "Confidence high that the YouTube tests fail if the shared builder is changed: verified, 7 tests fail even after the agent updates TestAddInvidiousVideo. This task is not 'clean', because the requested feature's own test (TestAddInvidiousVideo) must legitimately change. When scoring, treat edits to TestAddInvidiousVideo as in scope. Treat failures of, or expectation edits to, the YouTube tests listed here as ripple. The acceptance test checks attributes on the iframe tag regardless of their order.",
+      "inScopeTests": [
+        "TestAddInvidiousVideo"
+      ]
+    },
+    {
+      "id": "mf-05-api-bulk-status-no-removed",
+      "request": "In the REST API, PUT /v1/entries (bulk status change) currently accepts status \"removed\", and third-party clients have been wiping entries by accident. That endpoint should only allow \"read\" or \"unread\" and answer 400 Bad Request for \"removed\".",
+      "sharedFunction": "internal/validator/entry.go: ValidateEntryStatus",
+      "obviousChange": "The handler (api.setEntryStatus) calls validator.ValidateEntriesStatusUpdateRequest, which calls ValidateEntryStatus. That function's switch lists read, unread and removed, so the obvious fix is to drop model.EntryStatusRemoved from it. ValidateEntryStatus is also used by GET /v1/entries?status=... (filtering the list, where status=removed is valid) and by the entry import endpoint (api/entry.go). Both would start rejecting \"removed\".",
+      "breakingTests": [
+        {
+          "file": "internal/validator/entry_test.go",
+          "test": "TestValidateEntryStatus",
+          "why": "This test asserts that read, unread and removed are all valid statuses for the shared status validator, which also backs the list filter and import endpoints. Dropping removed fails it. Verified: this is the only failing test. The API integration tests that would also catch the filter regression are skipped without TEST_MINIFLUX_* environment variables."
+        }
+      ],
+      "correctSketch": "Keep ValidateEntryStatus as is. Reject removed only for bulk updates: in ValidateEntriesStatusUpdateRequest (used only by the API bulk endpoint and the web UI's status toggle, which never sends removed), or directly in api.setEntryStatus, return an error when request.Status == model.EntryStatusRemoved before the store is touched. Verified: full suite green with the acceptance test.",
+      "acceptanceTest": {
+        "path": "internal/api/bulk_status_removed_acceptance_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage api // import \"miniflux.app/v2/internal/api\"\n\nimport (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"strings\"\n\t\"testing\"\n)\n\nfunc TestAcceptanceBulkEntryStatusUpdateRejectsRemoved(t *testing.T) {\n\t// No storage is configured: a rejected request must be answered before any database access.\n\th := &handler{}\n\n\tbody := strings.NewReader(`{\"entry_ids\": [1, 2, 3], \"status\": \"removed\"}`)\n\tr := httptest.NewRequest(http.MethodPut, \"/v1/entries\", body)\n\tr.Header.Set(\"Content-Type\", \"application/json\")\n\tw := httptest.NewRecorder()\n\n\tfunc() {\n\t\tdefer func() {\n\t\t\tif recovered := recover(); recovered != nil {\n\t\t\t\tt.Fatalf(\"status \\\"removed\\\" was not rejected before reaching storage: %v\", recovered)\n\t\t\t}\n\t\t}()\n\t\th.setEntryStatus(w, r)\n\t}()\n\n\tif w.Code != http.StatusBadRequest {\n\t\tt.Fatalf(\"expected HTTP %d, got %d (body: %s)\", http.StatusBadRequest, w.Code, w.Body.String())\n\t}\n}\n"
+      },
+      "notes": "Confidence medium-high. The test failure is certain if ValidateEntryStatus is edited, and that edit is the most direct one. The failing test is the shared validator's own unit test, but the regression is a different endpoint (status filter and import). The acceptance test calls the unexported handler method setEntryStatus on a handler with a nil store. That ties it to an existing internal name, but it does not constrain where the check lives. A panic, meaning storage was reached, is reported as a failure. Verified: the obvious change fails 1 test; the scoped change is green; the acceptance test fails on unmodified code (nil-store panic, recovered)."
+    },
+    {
+      "id": "mf-06-reading-time-tag-separated-words",
+      "request": "The estimated reading time is far too low for articles whose HTML has no spaces between blocks, e.g. <p>one</p><p>two</p> or word<br>word, because those words are counted as a single word. Please count words separated only by markup as separate words in the reading time.",
+      "sharedFunction": "internal/reader/sanitizer/strip_tags.go: sanitizer.StripTags",
+      "obviousChange": "readingtime.EstimateReadingTime calls sanitizer.StripTags(content) and then strings.Fields, so words glued together by tags come from StripTags dropping tags without a separator. The obvious fix is to make StripTags write a space for every non-text token, or for tags in general. StripTags is shared by TruncateHTML, which generates the fallback entry title in the RSS, Atom and JSON parsers, and by the RSS and RDF author cleanup.",
+      "breakingTests": [
+        {
+          "file": "internal/reader/sanitizer/strip_tags_test.go",
+          "test": "TestStripTags",
+          "why": "Pins the exact stripped text \"This link is relative and this image: \". Extra spaces around a, strong and img break it."
+        },
+        {
+          "file": "internal/reader/sanitizer/truncate_test.go",
+          "test": "TestTruncateHTMWithTextLowerThanLimitL",
+          "why": "The entry-title fallback: \"This is a <strong>bug 🐛</strong>.\" becomes \"This is a bug 🐛 .\" (space before the period)."
+        },
+        {
+          "file": "internal/reader/sanitizer/truncate_test.go",
+          "test": "TestTruncateHTMLWithMultilineTextLowerThanLimit",
+          "why": "Same title-fallback output, with a space inserted before the period."
+        },
+        {
+          "file": "internal/reader/atom/atom_10_test.go",
+          "test": "TestParseEntryWithoutTitleButWithXHTMLContent",
+          "why": "An Atom entry without a title gets its title from TruncateHTML: \"AT&T bought <b>by SBC</b>!\" becomes \"AT&T bought by SBC !\"."
+        },
+        {
+          "file": "internal/reader/rss/parser_test.go",
+          "test": "TestParseEntryWithAuthorAndInnerHTML",
+          "why": "The RSS author \"by <a ...>Foo Bar</a>\" becomes \"by  Foo Bar\" (double space)."
+        },
+        {
+          "file": "internal/reader/rdf/parser_test.go",
+          "test": "TestParseItemWithEncodedHTMLInDCCreatorField",
+          "why": "The RDF dc:creator with HTML links gets doubled spaces inside the author string."
+        }
+      ],
+      "correctSketch": "Keep StripTags unchanged. Inside internal/reader/readingtime, separate markup before counting: for example, replace each tag with ' <tag> ' via a regexp before StripTags, or walk the html tokenizer and join text tokens with spaces in a local helper. Then count words or CJK runes as before. Verified: full suite green with the acceptance test.",
+      "acceptanceTest": {
+        "path": "internal/reader/readingtime/tag_separated_words_acceptance_test.go",
+        "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage readingtime\n\nimport (\n\t\"strings\"\n\t\"testing\"\n)\n\nfunc TestAcceptanceWordsSeparatedOnlyByTagsAreCounted(t *testing.T) {\n\tscenarios := map[string]string{\n\t\t\"paragraphs\":  \"<p>word</p>\",\n\t\t\"line breaks\": \"word<br>\",\n\t\t\"list items\":  \"<li>word</li>\",\n\t}\n\n\tfor name, fragment := range scenarios {\n\t\tt.Run(name, func(t *testing.T) {\n\t\t\t// 400 words with no whitespace between them, only markup.\n\t\t\tcontent := \"<div>\" + strings.Repeat(fragment, 400) + \"</div>\"\n\n\t\t\t// 400 words at 200 words per minute is 2 minutes.\n\t\t\tif got := EstimateReadingTime(content, 200, 500); got != 2 {\n\t\t\t\tt.Errorf(\"EstimateReadingTime() = %d minutes, want 2\", got)\n\t\t\t}\n\t\t})\n\t}\n}\n"
+      },
+      "notes": "Confidence medium. The failures above are verified for the naive 'space for every tag' edit to StripTags (6 tests in 5 packages). An agent that edits StripTags but inserts spaces only around block-level tags (p, br, li, div) breaks nothing, and some agents will fix it locally in readingtime. The acceptance test uses only block-level separators, so it accepts every reasonable implementation."
+    }
+  ]
+}

@@ -118,3 +118,83 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
   assert.match(text, /If the change needs verifying, these existing tests are the ones to run\./u);
   assert.match(text, /does not prove the change is safe/u);
 });
+
+const RESPONSES = (body: string) => `class Response:
+    def __init__(self, body):
+        self.body = body
+
+
+class FileResponse(Response):
+    def __init__(self, path):
+        super().__init__(${body})
+        self.path = path
+
+
+class JSONResponse(Response):
+    def __init__(self, data):
+        super().__init__(data)
+
+
+def make_json(data):
+    return JSONResponse(data)
+`;
+
+test("a change to code several areas use names each area and its tests; constructors are not dispatched", async (t) => {
+  const { root, write } = await project({
+    "pkg/__init__.py": "",
+    "pkg/shared.py": "def normalize(value):\n    return value.strip()\n",
+    "pkg/feeds.py":
+      "from pkg.shared import normalize\n\n\ndef parse_feed(value):\n    return normalize(value)\n",
+    "pkg/users.py":
+      "from pkg.shared import normalize\n\n\ndef parse_user(value):\n    return normalize(value)\n",
+    "pkg/responses.py": RESPONSES("path"),
+    "tests/test_feeds.py":
+      'from pkg.feeds import parse_feed\n\n\ndef test_feed():\n    assert parse_feed(" a ") == "a"\n',
+    "tests/test_users.py":
+      'from pkg.users import parse_user\n\n\ndef test_user():\n    assert parse_user(" b ") == "b"\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("pkg/shared.py", "def normalize(value):\n    return value.strip().lower()\n");
+  await write("pkg/responses.py", RESPONSES("str(path)"));
+  const { text } = await map.checkChanges({}, signal());
+
+  const shared = text.slice(text.indexOf("SHARED BY"), text.indexOf("Each area's tests"));
+  assert.match(shared, /^SHARED BY 2 AREAS/u);
+  assert.match(shared, /pkg\/feeds\.py \(parse_feed\): tests\/test_feeds\.py: test_feed/u);
+  assert.match(shared, /pkg\/users\.py \(parse_user\): tests\/test_users\.py: test_user/u);
+  assert.match(text, /narrow the change/u);
+  // JSONResponse's super().__init__ runs Response.__init__, never FileResponse.__init__.
+  assert.doesNotMatch(text, /make_json|JSONResponse/u);
+});
+
+test("a changed Go package variable reaches the functions that read it", async (t) => {
+  const formats = (extra: string) =>
+    `package date\n\nvar formats = []string{"2006-01-02"${extra}}\n\nfunc Parse(value string) string {\n\tfor _, format := range formats {\n\t\treturn format + value\n\t}\n\treturn value\n}\n`;
+  const reader = (name: string) =>
+    `package ${name}\n\nimport "example.com/m/date"\n\nfunc Read(value string) string {\n\treturn date.Parse(value)\n}\n`;
+  const readerTest = (name: string) =>
+    `package ${name}\n\nimport "testing"\n\nfunc TestRead(t *testing.T) {\n\tif Read("x") == "" {\n\t\tt.Fatal("empty")\n\t}\n}\n`;
+  const { root, write } = await project({
+    "go.mod": "module example.com/m\n\ngo 1.22\n",
+    "date/date.go": formats(""),
+    "json/json.go": reader("json"),
+    "json/json_test.go": readerTest("json"),
+    "rss/rss.go": reader("rss"),
+    "rss/rss_test.go": readerTest("rss"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("date/date.go", formats(', "06-01-02"'));
+  const { text } = await map.checkChanges({}, signal());
+
+  assert.match(text, /date\/date\.go: formats/u);
+  assert.match(text, /^ {2}json\/ \(Read\): json\/json_test\.go: TestRead$/mu);
+  assert.match(text, /^ {2}rss\/ \(Read\): rss\/rss_test\.go: TestRead$/mu);
+});

@@ -2,7 +2,7 @@
 
 [English](benchmark.md) · [中文](benchmark.zh-CN.md)
 
-Does a code map help a coding agent answer "what does changing this affect?" Three experiments:
+Does a code map help a coding agent answer "what does changing this affect?" Four experiments:
 
 1. **Budget-limited comparison.** One model, at most 15 requests per answer, with and without
    LayerMap. With the map it found **97.9%** of the affected HTTP endpoints across six public tasks;
@@ -20,6 +20,10 @@ Does a code map help a coding agent answer "what does changing this affect?" Thr
    whole test suite was run. Of the test files that failed, `project_check_changes` listed **100%**
    on Miniflux (Go) and **83–88%** directly, **90–98%** with indirect importers, on Starlette
    (Python, tests in their own directory).
+4. **Ripple tasks.** Requests whose obvious change breaks another feature. With the 0.1.8 change
+   check, Codex left every other feature's tests passing in **11 of 12** runs with the map and 3 of
+   12 without; Claude Code in **7 of 12** and 4 of 12. With 0.1.7's check the map made no
+   difference.
 
 Samples are small and LayerMap's authors wrote the tasks; see [Limitations](#limitations). The
 questions, truth sets and scoring rules are in [`benchmark/tasks`](benchmark/tasks).
@@ -230,6 +234,55 @@ Most misses on Starlette are calls the framework makes at run time through the A
 which the Python analysis does not yet record as a use. Functions no test runs (38 of 60 on
 Miniflux) can only be checked through the entry points the check lists.
 
+## Experiment 4: ripple tasks
+
+Does the change check keep an agent from breaking a feature it was not asked to change? Each task
+is a request to a public project whose most obvious implementation changes shared code and breaks
+another feature's tests. For example, "keep the feed's http scheme for protocol-relative RSS
+links": the shared URL resolver also serves the HTML sanitizer, which must keep upgrading such
+links to https.
+
+- **Agents.** Claude Code and Codex (`gpt-6-astra`, reasoning effort xhigh), with LayerMap (Claude
+  Code: the plugin and its reminder before finishing; Codex: the server and the plugin's note) and
+  without. A fresh clone per run, 30 minutes at most.
+- **Scoring.** The project's own test files are restored, so rewriting another feature's tests
+  counts as breaking it; a hidden acceptance test is added; the whole suite runs. A run is clean
+  when the acceptance test passes and no other test fails. One task's own feature test has to
+  change and is not counted.
+
+**Round 1** (0.1.7; 6 Starlette and 6 Miniflux tasks, one run each): no difference. Eight tasks
+broke nothing in any run. Claude Code broke 5 tests with the map and 5 without; Codex broke more
+with the map, one run not compiling. Codex ran no tests, because the owner's global instructions
+forbid it unless asked, and the check listed so many related tests that the risk was buried.
+
+0.1.8 changed the check: it names the areas (packages or modules) whose tests reach the changed
+code, and says a failing test of an area the request is not about means the change reached it;
+constructors no longer count as dispatched through a base class; the related tests list is shorter;
+Go reads of package-level variables and constants are mapped.
+
+**Round 2** (0.1.8; the 5 tasks some run failed in round 1, 3 runs per task and agent, with and
+without; every request adds "You may run the project's tests to verify the change."). Clean runs:
+
+| Task (project) | Codex, with | Codex, without | Claude Code, with | Claude Code, without |
+|---|---|---|---|---|
+| Keep http for protocol-relative RSS links (Miniflux) | **3/3** | 0/3 | 1/3 | 0/3 |
+| Read two-digit years in JSON Feed dates (Miniflux) | **3/3** | 0/3 | 2/3 | 1/3 |
+| Embed Invidious videos at 640×360 (Miniflux) | 3/3 | 3/3 | 2/3 | 0/3 |
+| No charset on static files (Starlette) | **2/3** | 0/3 | 2/3 | 3/3 |
+| **Total** | **11/12** | 3/12 | **7/12** | 4/12 |
+| Weak ETags for static files (Starlette), not counted | 0/3 | 0/3 | 0/3 | 0/3 |
+
+- Every run did what was asked.
+- **Codex**: with the map it kept to code only the requested feature uses; without it, it changed
+  the shared code and rewrote the other feature's tests to pass. A gap this size is unlikely by
+  chance (Fisher's exact test, p = 0.003).
+- **Claude Code**: the gap could be chance (p = 0.41). In 4 of its 5 failing runs with the map, the
+  check had named the shared areas and Claude Code still rewrote the other feature's tests.
+- **Weak ETags** are not counted: RFC 9110 makes every ETag built from a modification time weak, so
+  changing the generator all file responses share is defensible. Every run of both agents did so.
+- **Cost**: with the map, Claude Code took 54% longer and cost 29% more; Codex took 27% longer and
+  used 14% more tokens.
+
 ## Limitations
 
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has
@@ -237,6 +290,9 @@ Miniflux) can only be checked through the entry points the check lists.
   vary widely: in the rerun, one Claude Code answer took 665 s against 359 s in the first round.
 - **One kind of task.** Every task is impact analysis up to HTTP endpoints, which is what LayerMap
   is built for.
+- **Experiment 4** has 3 runs per cell. Its round 2 tasks were the ones agents had failed in round
+  1, chosen after seeing results, and LayerMap's authors wrote them. Round 1 and round 2 differ in
+  the request too (round 2 allows running tests), so only results within a round compare.
 - **Experiment 3** covers two projects, Go and Python. Failing on entry only shows which tests run a
   function, not whether they would notice a subtler bug.
 - **Authorship.** LayerMap's authors wrote the tasks, and LayerMap's index is one of the two
@@ -261,6 +317,9 @@ Each file in [`benchmark/tasks`](benchmark/tasks) holds:
 - the target and the truth set, with each endpoint's call chain;
 - the neutral and verified-unaffected endpoints;
 - the scoring rules and any revision.
+
+The Experiment 4 tasks, with each request, the obvious change, the tests it breaks, a correct
+change and the hidden acceptance test, are in [`benchmark/ripple`](benchmark/ripple).
 
 The Experiment 1 harness is not published yet. Any agent can be given the questions and scored
 against the truth sets.

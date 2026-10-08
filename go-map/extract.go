@@ -962,22 +962,26 @@ func (w *walker) call(call *ast.CallExpr) {
 	w.relation(fact)
 }
 
-// valueUse links a function used as a value (stored, passed or returned) to its user.
+// valueUse links a function used as a value (stored, passed or returned), or a package-level
+// variable or constant that is read, to its user: a change to either changes what the user does.
 func (w *walker) valueUse(ident *ast.Ident, expr ast.Expr) {
 	obj := w.u.info.Uses[ident]
 	if obj == nil || w.isCallee(expr) {
 		return
 	}
 	id := 0
-	switch obj.(type) {
+	switch v := obj.(type) {
 	case *types.Func:
 		id, _ = w.x.objectID(obj)
 	case *types.Var:
-		// Only a variable that holds a function literal is a callable value; other locals are
-		// not added to the map just because they are read.
+		// A local is mapped only when it holds a function literal; package-level state always is.
 		id = w.x.declaredID(obj)
-		if id != 0 && w.x.object(id).Execution != "CLOSURE" {
+		if id != 0 && w.x.object(id).Execution != "CLOSURE" && (v.Pkg() == nil || v.Parent() != v.Pkg().Scope()) {
 			id = 0
+		}
+	case *types.Const:
+		if v.Pkg() != nil && v.Parent() == v.Pkg().Scope() {
+			id = w.x.declaredID(obj)
 		}
 	}
 	if id == 0 {

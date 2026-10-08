@@ -1,0 +1,269 @@
+{
+  "repository": "https://github.com/Kludex/starlette",
+  "commit": "0a15da395d13e8eb6ecadeb6f4928d7d7c493fc8",
+  "tasks": [
+    {
+      "id": "headers_scope_readonly",
+      "request": "Reading headers currently changes the ASGI scope: after `request.headers` or `Headers(scope=scope)` is used, `scope[\"headers\"]` has been replaced with a brand-new list object. Reading headers should leave `scope[\"headers\"]` exactly as the server provided it (the same object, even when it is a tuple).",
+      "sharedFunction": "starlette/datastructures.py: Headers.__init__ (scope branch: `self._list = scope[\"headers\"] = list(scope[\"headers\"])`)",
+      "obviousChange": "Drop the write-back in Headers.__init__: `self._list = list(scope[\"headers\"])`. It is the only line that touches scope, so it is the obvious spot. But MutableHeaders inherits this __init__, and CORSMiddleware and SessionMiddleware rely on `MutableHeaders(scope=message)` writing into `message[\"headers\"]`. After the change they edit a private copy, so CORS headers, Vary and Set-Cookie never reach the response.",
+      "breakingTests": [
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allow_all",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allow_all_except_credentials",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allow_all_methods",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allow_origin_regex",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allow_origin_regex_fullmatch",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allow_specific_origin",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_allowed_origin_does_not_leak_between_requests",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_private_network_access_allowed",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_vary_header_defaults_to_origin",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_vary_header_is_properly_set_for_credentialed_request",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_vary_header_is_properly_set_when_allow_origins_is_not_wildcard",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_vary_header_is_set_for_non_credentialed_request",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_cors.py",
+          "test": "test_cors_vary_origin_with_gzip",
+          "why": "CORSMiddleware.send uses MutableHeaders(scope=message); with the write-back removed, Access-Control-*/Vary headers are added to a copy and never sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_domain_cookie",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_partitioned_session",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_secure_session",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_session",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_session_cookie",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_session_cookie_subpath",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_session_expires",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_session_persists_mutations",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_set_cookie_only_on_modification",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        },
+        {
+          "file": "tests/middleware/test_session.py",
+          "test": "test_vary_cookie_on_access",
+          "why": "SessionMiddleware uses MutableHeaders(scope=message).append('Set-Cookie', ...)/add_vary_header; the copy is discarded so no session cookie / Vary: Cookie is sent"
+        }
+      ],
+      "correctSketch": "Change only the read-only path. In Headers.__init__, keep a reference without replacing the scope value: `h = scope[\"headers\"]; self._list = h if isinstance(h, list) else list(h)`. Give MutableHeaders its own __init__ that calls super() and then, when scope is given, keeps the old write-through behaviour: `self._list = scope[\"headers\"] = list(scope[\"headers\"])`. Mutating middleware works as before, and read-only Headers/request.headers leave the scope untouched. Verified: full suite plus the acceptance test pass.",
+      "acceptanceTest": {
+        "path": "tests/test_ab_headers_scope.py",
+        "code": "from __future__ import annotations\n\nfrom starlette.datastructures import Headers\nfrom starlette.requests import Request\n\n\ndef test_reading_headers_keeps_scope_headers_list_identity() -> None:\n    raw = [(b\"host\", b\"example.org\"), (b\"x-token\", b\"abc\")]\n    scope = {\"type\": \"http\", \"headers\": raw}\n\n    headers = Headers(scope=scope)\n\n    assert headers[\"host\"] == \"example.org\"\n    assert headers.getlist(\"x-token\") == [\"abc\"]\n    assert scope[\"headers\"] is raw\n    assert raw == [(b\"host\", b\"example.org\"), (b\"x-token\", b\"abc\")]\n\n\ndef test_reading_headers_keeps_tuple_scope_headers() -> None:\n    raw = ((b\"host\", b\"example.org\"), (b\"accept\", b\"text/html\"))\n    scope = {\"type\": \"http\", \"headers\": raw}\n\n    headers = Headers(scope=scope)\n\n    assert dict(headers) == {\"host\": \"example.org\", \"accept\": \"text/html\"}\n    assert scope[\"headers\"] is raw\n    assert isinstance(scope[\"headers\"], tuple)\n\n\ndef test_request_headers_do_not_modify_scope() -> None:\n    raw = ((b\"host\", b\"example.org\"), (b\"user-agent\", b\"tests\"))\n    scope = {\n        \"type\": \"http\",\n        \"method\": \"GET\",\n        \"path\": \"/\",\n        \"query_string\": b\"\",\n        \"headers\": raw,\n    }\n\n    request = Request(scope)\n\n    assert request.headers[\"user-agent\"] == \"tests\"\n    assert scope[\"headers\"] is raw\n"
+      }
+    },
+    {
+      "id": "queryparams_equals_dict",
+      "request": "In our endpoint tests we want to write `assert request.query_params == {\"page\": \"2\", \"sort\": \"name\"}`, but QueryParams never compares equal to a plain dict. Please make QueryParams compare equal to a dict that has the same keys and values.",
+      "sharedFunction": "starlette/datastructures.py: ImmutableMultiDict.__eq__ (inherited by QueryParams, FormData and MultiDict)",
+      "obviousChange": "QueryParams has no __eq__ of its own, so the natural edit is the base ImmutableMultiDict.__eq__: accept any plain Mapping and compare `dict(self.items()) == dict(other.items())`. FormData and MultiDict inherit the change.",
+      "breakingTests": [
+        {
+          "file": "tests/test_datastructures.py",
+          "test": "test_formdata",
+          "why": "asserts `FormData({'a': '123', 'b': '789'}) != {'a': '123', 'b': '789'}`; with the base __eq__ widened, FormData now equals the dict"
+        }
+      ],
+      "correctSketch": "Override __eq__ on QueryParams only: if `other` is a Mapping but not an ImmutableMultiDict, return `dict(self.items()) == {str(k): str(v) for k, v in other.items()}`; otherwise defer to `super().__eq__(other)`. ImmutableMultiDict, MultiDict and FormData keep strict type-based equality. Verified: full suite plus the acceptance test pass.",
+      "acceptanceTest": {
+        "path": "tests/test_ab_queryparams_dict_eq.py",
+        "code": "from __future__ import annotations\n\nfrom starlette.datastructures import QueryParams\nfrom starlette.requests import Request\nfrom starlette.responses import JSONResponse\nfrom starlette.types import Receive, Scope, Send\nfrom tests.types import TestClientFactory\n\n\ndef test_query_params_equal_plain_dict() -> None:\n    q = QueryParams(\"page=2&sort=name\")\n    assert q == {\"page\": \"2\", \"sort\": \"name\"}\n    assert {\"page\": \"2\", \"sort\": \"name\"} == q\n    assert q == {\"sort\": \"name\", \"page\": \"2\"}\n\n\ndef test_query_params_not_equal_different_dict() -> None:\n    q = QueryParams(\"page=2&sort=name\")\n    assert q != {\"page\": \"3\", \"sort\": \"name\"}\n    assert q != {\"page\": \"2\"}\n    assert q != {\"page\": \"2\", \"sort\": \"name\", \"extra\": \"1\"}\n    assert QueryParams(\"\") == {}\n\n\ndef test_query_params_still_compare_to_query_params() -> None:\n    assert QueryParams(\"a=1&b=2\") == QueryParams({\"b\": \"2\", \"a\": \"1\"})\n    assert QueryParams(\"a=1\") != \"a=1\"\n\n\ndef test_request_query_params_equal_dict(test_client_factory: TestClientFactory) -> None:\n    async def app(scope: Scope, receive: Receive, send: Send) -> None:\n        request = Request(scope, receive)\n        matches = request.query_params == {\"page\": \"2\", \"sort\": \"name\"}\n        await JSONResponse({\"matches\": matches})(scope, receive, send)\n\n    client = test_client_factory(app)\n    assert client.get(\"/?page=2&sort=name\").json() == {\"matches\": True}\n    assert client.get(\"/?page=3&sort=name\").json() == {\"matches\": False}\n"
+      }
+    },
+    {
+      "id": "staticfiles_weak_etag",
+      "request": "StaticFiles builds its ETag from the file's modification time and size, not from its bytes, so per RFC 9110 it should be a weak validator. Please make StaticFiles send weak ETags (`W/\"...\"`), and make sure a browser revalidating with that ETag in If-None-Match still gets 304 Not Modified.",
+      "sharedFunction": "starlette/responses.py: FileResponse.set_stat_headers (the only place an ETag is generated; used by every FileResponse, not just StaticFiles)",
+      "obviousChange": "Prefix the generated tag in FileResponse.set_stat_headers: `etag = f'W/\"{md5}\"'`, and adjust StaticFiles.is_not_modified so 304 still works. Plain FileResponse now also sends weak ETags, and FileResponse._should_use_range refuses If-Range validators that start with `W/`, so If-Range on plain FileResponses stops working.",
+      "breakingTests": [
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_range_multi_head",
+          "why": "sends `If-Range: <response etag>` to a plain FileResponse and expects 206; the etag is now weak, so _should_use_range returns False and a 200 full response is sent"
+        }
+      ],
+      "correctSketch": "Leave FileResponse alone. In StaticFiles.file_response, after building the FileResponse, set `response.headers['etag'] = 'W/' + etag` when it is not already weak. In StaticFiles.is_not_modified, use weak comparison: `candidates = {etag, etag.removeprefix('W/')}` and `any(tag.strip().removeprefix('W/') in candidates for tag in if_none_match.split(','))`. Keeping both forms is needed because the existing test sends `W/` + the received etag. Verified: full suite plus the acceptance test pass.",
+      "acceptanceTest": {
+        "path": "tests/test_ab_staticfiles_weak_etag.py",
+        "code": "from __future__ import annotations\n\nfrom pathlib import Path\n\nfrom starlette.staticfiles import StaticFiles\nfrom tests.types import TestClientFactory\n\n\ndef test_staticfiles_etag_is_weak(tmp_path: Path, test_client_factory: TestClientFactory) -> None:\n    (tmp_path / \"example.txt\").write_text(\"<file content>\", encoding=\"utf-8\")\n    client = test_client_factory(StaticFiles(directory=tmp_path))\n\n    response = client.get(\"/example.txt\")\n\n    assert response.status_code == 200\n    etag = response.headers[\"etag\"]\n    assert etag.startswith('W/\"')\n    assert etag.endswith('\"')\n    assert len(etag) > 4\n\n\ndef test_staticfiles_revalidates_with_weak_etag(tmp_path: Path, test_client_factory: TestClientFactory) -> None:\n    (tmp_path / \"example.txt\").write_text(\"<file content>\", encoding=\"utf-8\")\n    client = test_client_factory(StaticFiles(directory=tmp_path))\n    etag = client.get(\"/example.txt\").headers[\"etag\"]\n\n    same = client.get(\"/example.txt\", headers={\"if-none-match\": etag})\n    assert same.status_code == 304\n    assert same.content == b\"\"\n\n    # Weak comparison: the opaque tag without the W/ prefix also matches.\n    opaque = client.get(\"/example.txt\", headers={\"if-none-match\": etag.removeprefix(\"W/\")})\n    assert opaque.status_code == 304\n\n    listed = client.get(\"/example.txt\", headers={\"if-none-match\": f'\"nope\", {etag}'})\n    assert listed.status_code == 304\n\n    other = client.get(\"/example.txt\", headers={\"if-none-match\": '\"nope\"'})\n    assert other.status_code == 200\n    assert other.content == b\"<file content>\"\n"
+      }
+    },
+    {
+      "id": "url_path_param_encoding",
+      "request": "`url_path_for` / `url_for` put path parameter values into the URL verbatim, so `url_path_for('user', username='Zoë Smith')` returns `/users/Zoë Smith`, and a value like `a?b#c` produces a broken link. Please percent-encode path parameter values when building URLs, so the result is always a valid URL that routes back to the same value.",
+      "sharedFunction": "starlette/routing.py: replace_params (used by Route, WebSocketRoute, Mount and Host url_path_for, for every convertor including user-registered ones)",
+      "obviousChange": "Wrap the substitution in replace_params: `value = quote(convertor.to_string(value))`, with urllib's default `safe='/'`. That encodes ':' and every other non-unreserved character for all convertors, including custom ones registered via register_url_convertor.",
+      "breakingTests": [
+        {
+          "file": "tests/test_convertors.py",
+          "test": "test_datetime_convertor",
+          "why": "a custom DateTimeConvertor returns '1996-01-22T23:00:00'; quote() turns ':' into '%3A', so url_path_for returns '/datetime/1996-01-22T23%3A00%3A00' instead of the expected '/datetime/1996-01-22T23:00:00'"
+        }
+      ],
+      "correctSketch": "Encode only where the raw text comes from, using the RFC 3986 pchar safe set so legal path characters stay as they are. StringConvertor.to_string returns `quote(value, safe=\"!$&'()*+,;=:@\")` after its existing asserts. PathConvertor.to_string returns `quote(str(value), safe=\"!$&'()*+,;=:@/\")`. Int, float and UUID never produce unsafe characters, and custom convertors keep full control of their own output. (Encoding inside replace_params with the same pchar safe set also passes.) Verified: full suite plus the acceptance test pass.",
+      "acceptanceTest": {
+        "path": "tests/test_ab_url_path_encoding.py",
+        "code": "from __future__ import annotations\n\nfrom urllib.parse import unquote\n\nimport pytest\n\nfrom starlette.requests import Request\nfrom starlette.responses import JSONResponse\nfrom starlette.routing import Route, Router\nfrom tests.types import TestClientFactory\n\n\ndef echo(request: Request) -> JSONResponse:\n    return JSONResponse({key: str(value) for key, value in request.path_params.items()})\n\n\nrouter = Router(\n    routes=[\n        Route(\"/users/{username}\", echo, name=\"user\"),\n        Route(\"/files/{path:path}\", echo, name=\"file\"),\n    ]\n)\n\n\ndef _assert_safe(url: str) -> None:\n    assert url.isascii()\n    for char in (\" \", \"?\", \"#\"):\n        assert char not in url\n\n\n@pytest.mark.parametrize(\"username\", [\"Zoë Smith\", \"a?b#c\", \"100% sure\"])\ndef test_str_param_is_percent_encoded(username: str) -> None:\n    url = str(router.url_path_for(\"user\", username=username))\n    _assert_safe(url)\n    assert url.startswith(\"/users/\")\n    assert unquote(url) == f\"/users/{username}\"\n\n\ndef test_path_param_is_percent_encoded() -> None:\n    url = str(router.url_path_for(\"file\", path=\"docs/my file.txt\"))\n    _assert_safe(url)\n    assert unquote(url) == \"/files/docs/my file.txt\"\n\n\ndef test_plain_values_are_unchanged() -> None:\n    assert router.url_path_for(\"user\", username=\"tomchristie\") == \"/users/tomchristie\"\n    assert router.url_path_for(\"file\", path=\"docs/readme.txt\") == \"/files/docs/readme.txt\"\n\n\ndef test_encoded_url_round_trips(test_client_factory: TestClientFactory) -> None:\n    client = test_client_factory(router)\n    url = str(router.url_path_for(\"user\", username=\"Zoë Smith\"))\n    assert client.get(url).json() == {\"username\": \"Zoë Smith\"}\n"
+      }
+    },
+    {
+      "id": "staticfiles_no_charset",
+      "request": "StaticFiles serves every text file as `...; charset=utf-8` (for example `text/plain; charset=utf-8`), but many of our static .txt/.csv files are not UTF-8, and browsers render them as mojibake. Static files should be served with just their guessed media type (for example `text/plain`, `text/css`), without claiming a charset.",
+      "sharedFunction": "starlette/responses.py: Response.init_headers (appends `; charset=utf-8` to any text/* media type) as used by FileResponse",
+      "obviousChange": "StaticFiles has no content-type code; the charset is appended in Response.init_headers, which FileResponse calls. The natural edit is to stop the charset for FileResponse, for example `charset = None` on FileResponse plus `if self.charset and content_type.startswith('text/')` in init_headers, or a FileResponse-specific branch. Every plain FileResponse then loses the charset too.",
+      "breakingTests": [
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_without_range",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_head",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_range",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_range_head",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_range_multi",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_range_multi_head",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_insert_ranges",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_multi_small_chunk_size",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_file_response_multiple_calls",
+          "why": "plain FileResponse of README.txt; the test asserts content-type == 'text/plain; charset=utf-8' (or uses the content type in the multipart/byteranges part headers and the computed content-length)"
+        }
+      ],
+      "correctSketch": "Change only StaticFiles.file_response. Compute `media_type = mimetypes.guess_type(str(full_path))[0] or 'application/octet-stream'` and pass it as an explicit header: `FileResponse(full_path, status_code=status_code, stat_result=stat_result, headers={'content-type': media_type})`. init_headers skips its own content-type (and therefore the charset) when one is supplied. FileResponse defaults are unchanged. The html-mode 404.html path is untouched. Verified: full suite plus the acceptance test pass.",
+      "acceptanceTest": {
+        "path": "tests/test_ab_staticfiles_no_charset.py",
+        "code": "from __future__ import annotations\n\nfrom pathlib import Path\n\nimport pytest\n\nfrom starlette.staticfiles import StaticFiles\nfrom tests.types import TestClientFactory\n\n\n@pytest.mark.parametrize(\n    \"filename, media_type\",\n    [\n        (\"notes.txt\", \"text/plain\"),\n        (\"style.css\", \"text/css\"),\n        (\"page.html\", \"text/html\"),\n    ],\n)\ndef test_static_text_files_do_not_claim_a_charset(\n    tmp_path: Path, test_client_factory: TestClientFactory, filename: str, media_type: str\n) -> None:\n    (tmp_path / filename).write_bytes(b\"content\")\n    client = test_client_factory(StaticFiles(directory=tmp_path))\n\n    response = client.get(f\"/{filename}\")\n\n    assert response.status_code == 200\n    content_type = response.headers[\"content-type\"]\n    assert content_type.split(\";\")[0].strip().lower() == media_type\n    assert \"charset\" not in content_type.lower()\n    assert response.content == b\"content\"\n\n\ndef test_static_binary_files_keep_their_media_type(tmp_path: Path, test_client_factory: TestClientFactory) -> None:\n    (tmp_path / \"logo.png\").write_bytes(b\"\\x89PNG\")\n    client = test_client_factory(StaticFiles(directory=tmp_path))\n\n    response = client.get(\"/logo.png\")\n\n    assert response.headers[\"content-type\"] == \"image/png\"\n\n\ndef test_static_head_request_has_no_charset(tmp_path: Path, test_client_factory: TestClientFactory) -> None:\n    (tmp_path / \"notes.txt\").write_bytes(b\"content\")\n    client = test_client_factory(StaticFiles(directory=tmp_path))\n\n    response = client.head(\"/notes.txt\")\n\n    assert \"charset\" not in response.headers[\"content-type\"].lower()\n"
+      }
+    },
+    {
+      "id": "delete_cookie_past_expiry",
+      "request": "`response.delete_cookie()` sends an `Expires` attribute equal to the current time. Some older clients ignore `Max-Age` and have clock skew, so the cookie survives. Please make `delete_cookie` send an `Expires` date that is clearly in the past (for example `Thu, 01 Jan 1970 00:00:00 GMT`).",
+      "sharedFunction": "starlette/responses.py: Response.set_cookie (delete_cookie delegates to it with `expires=0`; set_cookie passes int `expires` to SimpleCookie, which treats it as seconds-from-now)",
+      "obviousChange": "delete_cookie already passes `expires=0`, so 'make 0 mean the epoch' looks like the natural fix: in set_cookie, format int `expires` as an absolute Unix timestamp (`formatdate(expires, usegmt=True)`) instead of handing it to SimpleCookie. That changes the documented meaning of `set_cookie(expires=<int>)` (seconds from now) for every caller.",
+      "breakingTests": [
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_set_cookie",
+          "why": "calls set_cookie(expires=10) with time mocked to 2037-01-22 12:00:00 and expects 'expires=Thu, 22 Jan 2037 12:00:10 GMT'; now gets 'Thu, 01 Jan 1970 00:00:10 GMT'"
+        },
+        {
+          "file": "tests/test_responses.py",
+          "test": "test_expires_on_set_cookie[int]",
+          "why": "same relative-seconds expectation for an int expires"
+        }
+      ],
+      "correctSketch": "Change only delete_cookie: pass `expires=\"Thu, 01 Jan 1970 00:00:00 GMT\"` (a string, which set_cookie forwards verbatim) instead of `expires=0`, and keep `max_age=0` and all other attributes. set_cookie semantics are unchanged. Verified: full suite plus the acceptance test pass.",
+      "acceptanceTest": {
+        "path": "tests/test_ab_delete_cookie_epoch.py",
+        "code": "from __future__ import annotations\n\nimport datetime as dt\nfrom email.utils import parsedate_to_datetime\nfrom http.cookies import SimpleCookie\n\nfrom starlette.requests import Request\nfrom starlette.responses import Response\nfrom starlette.types import Receive, Scope, Send\nfrom tests.types import TestClientFactory\n\nLONG_AGO = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)\n\n\ndef _expires(header: str, name: str) -> dt.datetime:\n    morsel = SimpleCookie(header)[name]\n    return parsedate_to_datetime(morsel[\"expires\"])\n\n\ndef test_delete_cookie_expires_in_the_past() -> None:\n    response = Response()\n    response.delete_cookie(\"session\")\n\n    header = response.headers[\"set-cookie\"]\n    morsel = SimpleCookie(header)[\"session\"]\n    assert morsel.value == \"\"\n    assert morsel[\"max-age\"] == \"0\"\n    assert _expires(header, \"session\") < LONG_AGO\n\n\ndef test_delete_cookie_keeps_scope_attributes() -> None:\n    response = Response()\n    response.delete_cookie(\"session\", path=\"/admin\", domain=\"example.com\", secure=True, httponly=True)\n\n    header = response.headers[\"set-cookie\"]\n    morsel = SimpleCookie(header)[\"session\"]\n    assert morsel[\"path\"] == \"/admin\"\n    assert morsel[\"domain\"] == \"example.com\"\n    assert morsel[\"secure\"] is True\n    assert morsel[\"httponly\"] is True\n    assert _expires(header, \"session\") < LONG_AGO\n\n\ndef test_deleted_cookie_is_dropped_by_client(test_client_factory: TestClientFactory) -> None:\n    async def app(scope: Scope, receive: Receive, send: Send) -> None:\n        request = Request(scope, receive)\n        response = Response(\"ok\", media_type=\"text/plain\")\n        if request.cookies.get(\"session\"):\n            response.delete_cookie(\"session\")\n        else:\n            response.set_cookie(\"session\", \"abc\")\n        await response(scope, receive, send)\n\n    client = test_client_factory(app)\n    client.get(\"/\")\n    assert client.cookies.get(\"session\") == \"abc\"\n    response = client.get(\"/\")\n    assert _expires(response.headers[\"set-cookie\"], \"session\") < LONG_AGO\n    assert client.cookies.get(\"session\") is None\n"
+      }
+    }
+  ]
+}

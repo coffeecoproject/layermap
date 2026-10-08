@@ -149,4 +149,4 @@ export const AGENT_MAP_NOTE =
  * stays a shell script that only asks git whether code changed.
  */
 export const AGENT_STOP_CHECK =
-  "Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If you already checked these changes, say so briefly and finish.";
+  "Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it reports the changed code SHARED BY several areas, keep the areas the request is not about working as before: narrow the change rather than rewrite their tests. If you already checked these changes, say so briefly and finish.";
