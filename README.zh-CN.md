@@ -190,6 +190,13 @@ npx layermap check --base main
 
 **支持 Windows 吗？** 暂不支持。
 
+**Claude Code 的无人值守模式（`claude -p`）能用吗？** 截至 Claude Code 2.1，这个模式不会启动已安装插件自带的服务，
+所以没有地图工具，但插件的提醒仍会生效。可以自己指定这个服务：
+
+```bash
+claude -p "..." --mcp-config '{"mcpServers":{"layermap":{"command":"npx","args":["-y","layermap","mcp"]}}}'
+```
+
 **怎么卸载？**
 
 - Claude Code：`/plugin uninstall layermap@layermap`

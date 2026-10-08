@@ -29,6 +29,7 @@ type Resolution = {
 
 export class MapTargetResolver {
   private readonly cache = new Map<number, Resolution>();
+  private readonly mappedCache = new Map<number, MapObject[]>();
   constructor(
     private readonly project: Project,
     private readonly input: MapWorkerInput,
@@ -89,6 +90,31 @@ export class MapTargetResolver {
     };
     this.cache.set(original, result);
     return result;
+  }
+
+  // The module-level variables a read resolves to, among those already mapped: a read of anything
+  // else (a local, a parameter, a library value) links nothing and materializes nothing.
+  async resolveMapped(
+    symbol: CompilerSymbol | undefined,
+    mapped: (node: Node) => MapObject | undefined,
+  ): Promise<MapObject[]> {
+    if (this.input.syntaxOnly || !symbol) return [];
+    const cached = this.mappedCache.get(symbol.id);
+    if (cached) return cached;
+    const target =
+      symbol.flags & SymbolFlags.Alias
+        ? await this.project.checker.getAliasedSymbol(symbol)
+        : symbol;
+    const objects: MapObject[] = [];
+    if (target.flags & SymbolFlags.Variable)
+      for (const handle of target.declarations) {
+        if (mapRelativePath(handle.path) === undefined) continue;
+        const node = await handle.resolve(this.project);
+        const object = node && mapped(node);
+        if (object) objects.push(object);
+      }
+    this.mappedCache.set(symbol.id, objects);
+    return objects;
   }
 
   // A value links only a function, a method or a binding initialized with a function expression.

@@ -8,12 +8,15 @@ import {
   isImportDeclaration,
   isImportSpecifier,
   isInterfaceDeclaration,
+  isNamedImports,
+  isNamespaceImport,
   isNewExpression,
   isNoSubstitutionTemplateLiteral,
   isObjectLiteralExpression,
   isPropertyAccessExpression,
   isShorthandPropertyAssignment,
   isStringLiteral,
+  isVariableStatement,
   type Node,
   type SourceFile,
   SyntaxKind,
@@ -78,7 +81,44 @@ type Pending = {
   holder?: Node;
   argument?: string;
   route?: string;
+  /** A read of what may be module state: linked only to a module-level variable. */
+  state?: true;
 };
+
+// Where a name is not a read of a value at run time: a type, a JSX tag, a key or an import.
+const NOT_STATE_READS = new Set<SyntaxKind>([
+  SyntaxKind.PropertyAssignment,
+  SyntaxKind.ImportClause,
+  SyntaxKind.ExportSpecifier,
+  SyntaxKind.TypeReference,
+  SyntaxKind.TypeQuery,
+  SyntaxKind.QualifiedName,
+  SyntaxKind.ExpressionWithTypeArguments,
+  SyntaxKind.JsxOpeningElement,
+  SyntaxKind.JsxSelfClosingElement,
+  SyntaxKind.JsxClosingElement,
+]);
+
+// The names a file can read module state by: its own top-level variables, and the names it imports
+// (namespace imports apart). A read of another name cannot reach a module-level variable.
+function moduleStateNames(file: SourceFile): { names: Set<string>; namespaces: Set<string> } {
+  const names = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const statement of file.statements) {
+    if (isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations)
+        if (isIdentifier(declaration.name)) names.add(declaration.name.text);
+    } else if (isImportDeclaration(statement) && statement.importClause) {
+      const clause = statement.importClause;
+      if (clause.name) names.add(clause.name.text);
+      const bindings = clause.namedBindings;
+      if (bindings && isNamespaceImport(bindings)) namespaces.add(bindings.name.text);
+      else if (bindings && isNamedImports(bindings))
+        for (const element of bindings.elements) names.add(element.name.text);
+    }
+  }
+  return { names, namespaces };
+}
 
 export async function extractProjectMap(
   project: Project,
@@ -114,6 +154,8 @@ export async function extractProjectMap(
   const declarations: { object: MapObject; name: Node; node: Node; file: SourceFile }[] = [];
   const exportedSymbols = new Map<string, Set<number>>();
   const pending: Pending[] = [];
+  // Module-level variables declared in the project: the only targets of a state read.
+  const moduleVariables = new Set<string>();
   // Object literals and heritage declarations whose members may implement contract members.
   const contracts: Contract[] = [];
   // Object members materialized because their value resolved to a function.
@@ -216,6 +258,7 @@ export async function extractProjectMap(
     // Dependency declarations are materialized only when linked. Their default context owns traversal.
     if (!owned.has(path)) continue;
     exportedSymbols.set(file.fileName, exports);
+    const state = moduleStateNames(file);
     trace.phase = "TRAVERSAL";
     const stack: {
       node: Node;
@@ -255,6 +298,8 @@ export async function extractProjectMap(
             basis: "SYNTAX_DECLARED",
           });
         if (owned.has(path) && name) declarations.push({ object, name, node, file });
+        if (object.kind === "VARIABLE" && !object.execution && item.owner.kind === "FILE")
+          moduleVariables.add(object.id);
         owner = object;
         if (kind === "INTERFACE" && owned.has(path)) {
           const note = {
@@ -339,6 +384,18 @@ export async function extractProjectMap(
             holder: mapValueProperty(node),
             ...(route ? { argument: route } : {}),
           };
+        } else if (
+          isPropertyAccessExpression(node) &&
+          isIdentifier(node.expression) &&
+          state.namespaces.has(node.expression.text)
+        ) {
+          reference = {
+            node,
+            lookup: node.name,
+            kind: "REFERENCES",
+            target: node.name.text,
+            state: true,
+          };
         }
       } else if (isIdentifier(node) && named(node.parent) !== node) {
         const parent = node.parent;
@@ -357,7 +414,13 @@ export async function extractProjectMap(
               holder: mapValueProperty(node),
               ...(route ? { argument: route } : {}),
             };
-          }
+          } else if (
+            state.names.has(node.text) &&
+            !(isPropertyAccessExpression(parent) && parent.name === node) &&
+            !NOT_STATE_READS.has(parent.kind) &&
+            !isImportSpecifier(parent)
+          )
+            reference = { node, lookup: node, kind: "REFERENCES", target: node.text, state: true };
         }
       } else if (isShorthandPropertyAssignment(node)) {
         reference = {
@@ -498,11 +561,16 @@ export async function extractProjectMap(
     return object;
   };
   const targets = new MapTargetResolver(project, input, materialize);
+  const moduleVariable = (node: Node) => {
+    const object = declared.get(key(node));
+    return object && moduleVariables.has(object.id) ? object : undefined;
+  };
   for (const object of declared.values())
     if (object.execution && object.execution !== "MODULE") valueNames.add(object.name);
   const linkable = pending.filter(
     (item) =>
       item.kind !== "REFERENCES" ||
+      item.state ||
       valueNames.has(item.target) ||
       (isPropertyAccessExpression(item.node) &&
         isIdentifier(item.node.expression) &&
@@ -514,6 +582,19 @@ export async function extractProjectMap(
     const symbols = await project.checker.getSymbolAtLocation(batch.map((item) => item.lookup));
     trace.phase = "RELATION_TARGETS";
     for (const [index, item] of batch.entries()) {
+      if (item.state) {
+        // A read links only to a module-level variable; other values are data flow.
+        for (const destination of await targets.resolveMapped(symbols[index], moduleVariable))
+          collect.relation({
+            from: item.owner,
+            to: destination.id,
+            kind: "REFERENCES",
+            anchor: item.anchor,
+            target: item.target,
+            basis: "TYPE_RESOLVED",
+          });
+        continue;
+      }
       if (item.kind === "REFERENCES") {
         const symbol = isShorthandPropertyAssignment(item.node)
           ? await project.checker.getShorthandAssignmentValueSymbol(item.node)

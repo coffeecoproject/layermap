@@ -181,6 +181,8 @@ class Extraction {
   private readonly carriers = new Map<LambdaNode, number>();
   // Names of project functions and methods: only such names can be a function used as a value.
   readonly callableNames = new Set<string>();
+  // Names of module-level variables: only such names can be a read of module state.
+  readonly stateNames = new Set<string>();
 
   constructor(
     readonly source: PythonProgram,
@@ -652,6 +654,7 @@ class Declarer extends ParseTreeWalker {
           ...execution,
         });
         this.x.setGlobal(this.path, name.d.value, id);
+        this.x.stateNames.add(name.d.value);
         if (closure) this.x.setCarrier(closure, id);
       } else if (scope.node.nodeType === ParseNodeType.Class) {
         if (this.x.member(scope.id, name.d.value) !== undefined) return;
@@ -1011,13 +1014,19 @@ class Relater extends ParseTreeWalker {
     return false;
   }
 
-  // A project function or method used as a value: passed, stored or returned.
+  // A project function or method used as a value (passed, stored or returned), or a module-level
+  // variable read: a change to either changes what the user does.
   private valueUse(name: NameNode, expression: ParseNode) {
-    if (!this.x.callableNames.has(name.d.value)) return;
+    const callable = this.x.callableNames.has(name.d.value);
+    const state = this.x.stateNames.has(name.d.value);
+    if (!callable && !state) return;
     for (const declaration of this.x.declarations(name)) {
-      if (declaration.type !== DeclarationType.Function) continue;
+      const read = state && declaration.type === DeclarationType.Variable;
+      if (!read && !(callable && declaration.type === DeclarationType.Function)) continue;
       const to = this.x.objectOf(declaration);
       if (to === undefined) continue;
+      // Only module state: a local or an attribute read is not a use of a mapped declaration.
+      if (read && this.x.global(this.x.object(to).path, name.d.value) !== to) continue;
       this.relation({
         kind: "REFERENCES",
         from: this.top(this.declared),

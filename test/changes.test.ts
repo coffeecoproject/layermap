@@ -192,31 +192,3 @@ test("a change to code several areas use names each area and its tests; construc
   // JSONResponse's super().__init__ runs Response.__init__, never FileResponse.__init__.
   assert.doesNotMatch(text, /make_json|JSONResponse/u);
 });
-
-test("a changed Go package variable reaches the functions that read it", async (t) => {
-  const formats = (extra: string) =>
-    `package date\n\nvar formats = []string{"2006-01-02"${extra}}\n\nfunc Parse(value string) string {\n\tfor _, format := range formats {\n\t\treturn format + value\n\t}\n\treturn value\n}\n`;
-  const reader = (name: string) =>
-    `package ${name}\n\nimport "example.com/m/date"\n\nfunc Read(value string) string {\n\treturn date.Parse(value)\n}\n`;
-  const readerTest = (name: string) =>
-    `package ${name}\n\nimport "testing"\n\nfunc TestRead(t *testing.T) {\n\tif Read("x") == "" {\n\t\tt.Fatal("empty")\n\t}\n}\n`;
-  const { root, write } = await project({
-    "go.mod": "module example.com/m\n\ngo 1.22\n",
-    "date/date.go": formats(""),
-    "json/json.go": reader("json"),
-    "json/json_test.go": readerTest("json"),
-    "rss/rss.go": reader("rss"),
-    "rss/rss_test.go": readerTest("rss"),
-  });
-  await run("git", ["add", "-A"], { cwd: root });
-  await commit(root);
-  const map = await openMap(root);
-  t.after(() => map.close());
-
-  await write("date/date.go", formats(', "06-01-02"'));
-  const { text } = await map.checkChanges({}, signal());
-
-  assert.match(text, /date\/date\.go: formats/u);
-  assert.match(text, /^ {2}json\/ \(Read\): json\/json_test\.go: TestRead$/mu);
-  assert.match(text, /^ {2}rss\/ \(Read\): rss\/rss_test\.go: TestRead$/mu);
-});

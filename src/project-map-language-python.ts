@@ -31,7 +31,7 @@ const directoryOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
 const DEFAULT_PYTHON = { major: 3, minor: 13 };
 
 export const PYTHON_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "pyright-1.1.414-map-v10",
+  id: "pyright-1.1.414-map-v11",
   claims: (path: string) => /\.pyi?$/u.test(path),
   reads: (path: string) => pythonConfig.test(path),
   // An absolute import names the standard library or a distribution's top-level package.

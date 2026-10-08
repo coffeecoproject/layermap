@@ -966,7 +966,34 @@ final class Extract {
       return super.visitMemberReference(node, unused);
     }
 
+    // Targets of assignments: a write there, not a read.
+    private final Set<Tree> writing = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
+    @Override
+    public Void visitIdentifier(IdentifierTree node, Void unused) {
+      staticRead(node);
+      return super.visitIdentifier(node, unused);
+    }
+
+    @Override
+    public Void visitMemberSelect(MemberSelectTree node, Void unused) {
+      staticRead(node);
+      return super.visitMemberSelect(node, unused);
+    }
+
+    // A read of a project's static field: a change to its value changes what the reader does.
+    private void staticRead(ExpressionTree node) {
+      if (writing.contains(node) || !p.written(unit, node)) return;
+      Element element = element(getCurrentPath());
+      if (element == null
+          || element.getKind() != ElementKind.FIELD
+          || !element.getModifiers().contains(Modifier.STATIC)) return;
+      Integer to = declared.get(element);
+      if (to != null) resolved(site("REFERENCES", declaredStack.peek(), node, label(node)), to);
+    }
+
     private void write(ExpressionTree target) {
+      writing.add(target);
       if (!p.written(unit, target)) return;
       Element element = element(child(target));
       if (element == null || !element.getKind().isField()) return;

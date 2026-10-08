@@ -199,6 +199,14 @@ relationship does not prove absence.
 
 **Windows?** Not yet.
 
+**Claude Code in print mode (`claude -p`)?** Print mode, as of Claude Code 2.1, does not start the
+servers that installed plugins bring, so the map tools are missing there while the plugin's hooks
+still run. Pass the server yourself:
+
+```bash
+claude -p "..." --mcp-config '{"mcpServers":{"layermap":{"command":"npx","args":["-y","layermap","mcp"]}}}'
+```
+
 **How do I remove it?**
 
 - Claude Code: `/plugin uninstall layermap@layermap`.
