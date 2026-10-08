@@ -215,7 +215,7 @@ export type MapChangeImpact = Readonly<{
   truncated: boolean;
 }>;
 
-const LIMITS = Object.freeze({ depth: 8, declarations: 800, changed: 200, chain: 3 });
+const LIMITS = Object.freeze({ depth: 8, declarations: 800, changed: 200, chain: 3, byName: 40 });
 const CALLER_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES"]);
 const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // A literal is a route when it is a path, optionally after its methods: "/x", "GET|POST /x".
@@ -233,6 +233,8 @@ class Tracer {
   private readonly callerCount = new Map<string, number>();
   // Declarations a decorator maps to a route: entry points already, never "top of a chain".
   private readonly routes = new Set<string>();
+  /** Test support files that call the changed code; the tests beside and below them may use it. */
+  readonly support = new Set<string>();
 
   constructor(
     private readonly graph: MapViewGraph,
@@ -270,6 +272,9 @@ class Tracer {
             this.entry(caller.relation.argument, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
           if (testCode(callerObject.anchor.path)) {
+            // Test support (conftest.py, fixtures, helpers) reaches tests by injection or import.
+            if (!mapRunnableTest(callerObject.anchor.path))
+              this.support.add(callerObject.anchor.path);
             this.test(
               callerObject.anchor.path,
               this.name(caller.ref),
@@ -290,6 +295,24 @@ class Tracer {
         }
       }
       frontier = next;
+    }
+    // Tests that call a reached method's name on a receiver of unknown type, as untyped Python and
+    // JavaScript tests do (client.get, request.url_for): they may run it. A name called too often
+    // by name says nothing, so such names are left to the CHECK BY HAND count.
+    for (const reached of this.reached.values()) {
+      const object = this.graph.object(reached.ref);
+      const language = mapLanguageOf(object.anchor.path);
+      if (object.kind !== "METHOD" || !language || /^__\w+__$/u.test(object.name)) continue;
+      const calls = this.memberCalls.get(`${language}\u0000${object.name}`) ?? [];
+      if (calls.length > LIMITS.byName) continue;
+      for (const call of calls)
+        if (testCode(call.path))
+          this.test(
+            call.path,
+            this.name(this.graph.owner(call.from)),
+            `may call ${this.name(reached.ref)} through a receiver of unknown type`,
+            3.5,
+          );
     }
     // Declarations nothing calls are where the chains start: commands, jobs, framework-wired
     // handlers, or code that is not used. Routes already name the more useful entry points.
@@ -312,6 +335,33 @@ class Tracer {
         const owner = this.graph.owner(relation.from);
         if (owner !== ref) callers.push({ ref: owner, relation, certain: true });
       }
+    // Members the language runs without naming them run wherever their class is used: a
+    // constructor where it is instantiated, a special method (__call__, __aenter__, __getitem__)
+    // through syntax, a property when it is read. The class's users are their callers too.
+    const object = this.graph.object(ref);
+    const parent = this.graph.parent(ref);
+    if (parent && this.graph.object(parent).kind === "CLASS") {
+      const constructs =
+        object.execution === "CONSTRUCTOR" ||
+        object.name === "__init__" ||
+        object.name === "constructor";
+      const implicit =
+        constructs ||
+        /^__\w+__$/u.test(object.name) ||
+        object.kind === "PROPERTY" ||
+        this.graph
+          .relationsFrom([ref])
+          .some(
+            (relation) => relation.kind === "DECORATED_BY" && /property$/u.test(relation.target),
+          );
+      if (implicit)
+        for (const relation of this.graph.relationsTo([parent]))
+          if (CALLER_KINDS.has(relation.kind)) {
+            const owner = this.graph.owner(relation.from);
+            if (owner !== ref && owner !== parent)
+              callers.push({ ref: owner, relation, certain: constructs });
+          }
+    }
     // A call through an interface or base member may reach this implementation, or another;
     // with no other implementation in the project, it reaches this one.
     for (const override of this.graph.relationsFrom([ref]))
@@ -478,6 +528,7 @@ export function mapChangeImpact(
   }
   tracer.trace(starts);
   if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
+  supportTests(store, working, tracer);
 
   // Declarations the diff removed or renamed: their callers in the base still expect them.
   if (base) {
@@ -568,6 +619,21 @@ function importerTests(graph: MapViewGraph, objects: readonly MapObject[], trace
       }
     }
     modules = next;
+  }
+}
+
+// Tests that may use the change through test support (pytest's conftest.py, shared fixtures and
+// helpers): fixtures are injected by name, so the tests beside and below the support file count.
+function supportTests(store: CodeIndexStore, version: string, tracer: Tracer) {
+  for (const file of tracer.support) {
+    const slash = file.lastIndexOf("/");
+    const directory = slash < 0 ? "" : file.slice(0, slash + 1);
+    for (const row of store.database
+      .prepare(
+        "SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ? AND substr(path, 1, ?) = ?",
+      )
+      .all(version, directory.length, directory))
+      tracer.test(String(row.path), undefined, `may use it through ${file}`, 3.5);
   }
 }
 
