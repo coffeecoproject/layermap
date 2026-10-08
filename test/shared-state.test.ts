@@ -119,3 +119,24 @@ test("a changed Java static constant reaches the methods that read it", {
   assert.match(text, /^ {2}src\/main\/java\/app\/json\/ \(JsonFeed\.read\): /mu);
   assert.match(text, /^ {2}src\/main\/java\/app\/rss\/ \(RssFeed\.read\): /mu);
 });
+
+test("a Python class passed as a value counts as a use of it; annotations and base classes do not", async () => {
+  const client = (extra: string) =>
+    `class Client:\n    def __init__(self, base):\n        self.base = base${extra}\n`;
+  const text = await checkAfter(
+    {
+      "pkg/__init__.py": "",
+      "pkg/client.py": client(""),
+      "pkg/typed.py":
+        "from typing import Optional\n\nfrom pkg.client import Client\n\ncache: dict[str, Client] = {}\n\n\nclass Special(Client):\n    pass\n\n\ndef describe(client: Optional[Client]) -> list[Client]:\n    return [client]\n",
+      "tests/__init__.py": "",
+      "tests/conftest.py":
+        "import functools\n\nfrom pkg.client import Client\n\n\ndef client_factory():\n    return functools.partial(Client, base='x')\n",
+      "tests/test_requests.py": "def test_get():\n    assert True\n",
+    },
+    ["pkg/client.py", client("\n        assert base")],
+  );
+  assert.match(text, /pkg\/client\.py: Client\.__init__/u);
+  assert.match(text, /tests\/test_requests\.py \(may use it through tests\/conftest\.py\)/u);
+  assert.doesNotMatch(text, /describe|Special/u);
+});

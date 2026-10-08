@@ -383,12 +383,18 @@ class Tracer {
           .some(
             (relation) => relation.kind === "DECORATED_BY" && /property$/u.test(relation.target),
           );
+      // Only a call of the class certainly constructs it; a class passed as a value (a factory,
+      // functools.partial, isinstance) may construct it or not.
       if (implicit)
         for (const relation of this.graph.relationsTo([parent]))
           if (CALLER_KINDS.has(relation.kind)) {
             const owner = this.graph.owner(relation.from);
             if (owner !== ref && owner !== parent)
-              callers.push({ ref: owner, relation, certain: constructs });
+              callers.push({
+                ref: owner,
+                relation,
+                certain: constructs && relation.kind === "CALLS",
+              });
           }
     }
     // A call through an interface or base member may reach this implementation, or another;

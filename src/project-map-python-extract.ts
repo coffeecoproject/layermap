@@ -30,6 +30,7 @@ import {
   type ModuleNameNode,
   type ModuleNode,
   type NameNode,
+  type ParameterNode,
   type ParseNode,
   ParseNodeType,
   type StatementListNode,
@@ -179,7 +180,8 @@ class Extraction {
   private readonly classes = new Map<number, ClassNode>();
   // Lambdas assigned to one variable or attribute take that object's identity.
   private readonly carriers = new Map<LambdaNode, number>();
-  // Names of project functions and methods: only such names can be a function used as a value.
+  // Names of project functions, methods and classes: only such names can be a callable used as a
+  // value.
   readonly callableNames = new Set<string>();
   // Names of module-level variables: only such names can be a read of module state.
   readonly stateNames = new Set<string>();
@@ -550,6 +552,7 @@ class Declarer extends ParseTreeWalker {
       exported: isPublic(name) && outer.node.nodeType === ParseNodeType.Module,
     });
     this.x.setClass(id, node);
+    this.x.callableNames.add(name);
     if (outer.node.nodeType === ParseNodeType.Class) this.x.setMember(outer.id, name, id);
     if (outer.node.nodeType === ParseNodeType.Module) this.x.setGlobal(this.path, name, id);
     const doc = docstring(node.d.suite.d.statements);
@@ -714,6 +717,27 @@ class Declarer extends ParseTreeWalker {
 }
 
 // Pass 2: what each declaration does and refers to.
+// Whether an expression is (part of) a type annotation: of a variable, a parameter or a return.
+function inAnnotation(node: ParseNode): boolean {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent)
+    switch (parent.nodeType) {
+      case ParseNodeType.TypeAnnotation:
+        if ((parent as TypeAnnotationNode).d.annotation === child) return true;
+        break;
+      case ParseNodeType.Parameter: {
+        const parameter = parent as ParameterNode;
+        return parameter.d.annotation === child || parameter.d.annotationComment === child;
+      }
+      case ParseNodeType.Function:
+        return (parent as FunctionNode).d.returnAnnotation === child;
+      case ParseNodeType.StatementList:
+      case ParseNodeType.Suite:
+      case ParseNodeType.Lambda:
+        return false;
+    }
+  return false;
+}
+
 class Relater extends ParseTreeWalker {
   // Executing object and innermost declared object for the current node.
   private readonly executing: number[];
@@ -997,7 +1021,9 @@ class Relater extends ParseTreeWalker {
     if (this.callees.has(node.id) || !parent) return false;
     switch (parent.nodeType) {
       case ParseNodeType.Argument:
+        // A keyword's name, or a base class: neither is a value the code passes around.
         if ((parent as ArgumentNode).d.name === node) return false;
+        if (parent.parent?.nodeType === ParseNodeType.Class) return false;
         break;
       case ParseNodeType.Function:
       case ParseNodeType.Class:
@@ -1014,15 +1040,20 @@ class Relater extends ParseTreeWalker {
     return false;
   }
 
-  // A project function or method used as a value (passed, stored or returned), or a module-level
-  // variable read: a change to either changes what the user does.
+  // A project function, method or class used as a value (passed, stored or returned, as
+  // functools.partial(Client, ...) passes a class), or a module-level variable read: a change to
+  // either changes what the user does. A class named in a type annotation is not a use.
   private valueUse(name: NameNode, expression: ParseNode) {
     const callable = this.x.callableNames.has(name.d.value);
     const state = this.x.stateNames.has(name.d.value);
     if (!callable && !state) return;
     for (const declaration of this.x.declarations(name)) {
       const read = state && declaration.type === DeclarationType.Variable;
-      if (!read && !(callable && declaration.type === DeclarationType.Function)) continue;
+      const value =
+        callable &&
+        (declaration.type === DeclarationType.Function ||
+          (declaration.type === DeclarationType.Class && !inAnnotation(expression)));
+      if (!read && !value) continue;
       const to = this.x.objectOf(declaration);
       if (to === undefined) continue;
       // Only module state: a local or an attribute read is not a use of a mapped declaration.
