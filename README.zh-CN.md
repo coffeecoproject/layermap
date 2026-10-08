@@ -9,7 +9,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
-**LayerMap 一次调用就告诉编程 agent：谁调用了这个函数、改它会影响什么，一直追到 HTTP 路由。** 每次最多 15 次请求时，用 LayerMap 的 agent 找到 **97.9%** 的受影响接口，不用只有 58.8%；不限次数时，Claude Code 花费**降低 32%**（[基准测试](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)）。
+**LayerMap 一次调用就告诉编程 agent：谁调用了这个函数、改它会影响什么，一直追到 HTTP 路由。** 每次最多 15 次请求时，用 LayerMap 的 agent 找到 **97.9%** 的受影响接口，不用只有 58.8%；不限次数时，Claude Code 花费**降低 33%**（0.1.5 复测，[基准测试](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)）。
 
 **由每种语言自己的编译器或类型检查器解析，而不是 tree-sitter 按名字猜：** 经由接口、基类、模板和装饰器的调用，都按编译器的方式关联，支持 TypeScript、JavaScript、Go、Python 和 Java。
 
@@ -62,7 +62,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 | 找到的接口，每次最多 15 次请求（`gpt-5.5`，6 道题各 3 次） | **97.9%** | 58.8% |
 | Claude Code / Codex 主动使用（装了插件，两轮） | **12 次中 12 次 / 12 次中 12 次** | — |
 | 找到的接口，不限次数（Claude Code / Codex，0.1.5） | 100% / 100% | 99.0% / 100% |
-| Claude Code 花费，不限次数 | **−33%** | |
+| Claude Code 花费，不限次数（0.1.5 复测；第一轮 −32%） | **−33%** | |
 | Codex 输入 token，不限次数（当前默认设置） | +14% | |
 | 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
 | 改完自检列出的失败测试（Go / Python，让函数失败） | **100% / 83–88%** | — |

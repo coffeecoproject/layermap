@@ -9,7 +9,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
-**LayerMap tells your coding agent what calls a function and what changing it affects, up to the HTTP routes, in one call.** With at most 15 requests, agents found **97.9%** of affected endpoints with LayerMap vs 58.8% without; with no limit, Claude Code cost **32% less** ([benchmark](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.md)).
+**LayerMap tells your coding agent what calls a function and what changing it affects, up to the HTTP routes, in one call.** With at most 15 requests, agents found **97.9%** of affected endpoints with LayerMap vs 58.8% without; with no limit, Claude Code cost **33% less** in the 0.1.5 re-run ([benchmark](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.md)).
 
 **Resolved by each language's compiler or type checker, not guessed from names by tree-sitter:** calls through interfaces, base classes, templates and decorators link as the compiler links them, for TypeScript, JavaScript, Go, Python and Java.
 
@@ -66,7 +66,7 @@ projects, graded blind against truth sets cross-checked with each language's own
 | Endpoints found, at most 15 requests (`gpt-5.5`, 6 tasks × 3 runs) | **97.9%** | 58.8% |
 | Used unprompted by Claude Code / Codex (plugin installed, two rounds) | **12 of 12 / 12 of 12** | — |
 | Endpoints found, no request limit (Claude Code / Codex, 0.1.5) | 100% / 100% | 99.0% / 100% |
-| Claude Code cost, no request limit | **−33%** | |
+| Claude Code cost, no request limit (0.1.5 re-run; first round −32%) | **−33%** | |
 | Codex input tokens, no request limit (current defaults) | +14% | |
 | Time, no request limit (Claude Code / Codex) | +25% / +20% | |
 | Failing tests the change check lists (Go / Python, functions made to fail) | **100% / 83–88%** | — |
