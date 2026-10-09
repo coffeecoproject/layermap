@@ -4,6 +4,7 @@ import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError } from "./core";
 import { GitRunner } from "./git-runner";
 import { mapLanguageOf } from "./project-map-language";
+import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
@@ -35,6 +36,8 @@ export type MapChanges = Readonly<{
   base: string;
   commit: string;
   files: readonly MapChangedFile[];
+  /** Environment variables and configuration keys the diff removed that other files still use. */
+  stranded: readonly MapStrandedName[];
 }>;
 
 const git = new GitRunner();
@@ -115,7 +118,15 @@ export async function readMapChanges(
     .filter(Boolean);
   for (const path of untracked)
     files.push({ path, status: "ADDED", lines: [EVERYTHING], baseLines: [], binary: false });
-  return { base, commit, files };
+  const stranded = await strandedNames(
+    project,
+    diff,
+    files,
+    (file) => nonCodeKind(file) === "configuration",
+    git,
+    gitOptions(project, signal),
+  );
+  return { base, commit, files, stranded };
 }
 
 /** Files and changed line ranges from `git diff --unified=0 -M`. */
@@ -861,6 +872,7 @@ const LIST = Object.freeze({
   entries: 40,
   tests: 12,
   unclear: 20,
+  stranded: 12,
   names: 6,
   areas: 8,
   areaTests: 3,
@@ -889,6 +901,17 @@ export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): st
     impact.removed,
     LIST.changed,
   );
+  // Names read or set by text, which no compiler links: a rename on one side strands the other.
+  if (changes.stranded.length) {
+    list(
+      "NAMES STILL USED ELSEWHERE (environment variables and configuration keys the diff removed from a file, found by text)",
+      changes.stranded.map(strandedNameLine),
+      LIST.stranded,
+    );
+    lines.push(
+      "These places still read or set the old name. If the diff renamed or dropped it on purpose, update them too or keep the old name working. Names built at run time are not found.",
+    );
+  }
   // Expectations the diff rewrote: when the request did not ask for them, the code change reached
   // a feature it was not meant to change, and the rewritten test hides that.
   if (impact.rewrittenTests.length) {
