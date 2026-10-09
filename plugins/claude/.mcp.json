@@ -1,11 +1,9 @@
 {
   "mcpServers": {
     "layermap": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "layermap@0.1.12",
-        "mcp"
+        "${CLAUDE_PLUGIN_ROOT}/server.mjs"
       ]
     }
   }

@@ -28,11 +28,24 @@ const PLUGIN_RULE = `mcp__plugin_${SERVER}_${SERVER}`;
 const BEGIN = "<!-- layermap:begin -->";
 const END = "<!-- layermap:end -->";
 
-/** How an agent starts this LayerMap's MCP server, whether run through npx or from a checkout. */
-export const mcpLaunchCommand = (version: string): string[] => {
+/**
+ * How an agent starts this LayerMap's MCP server, whether run through npx or from a checkout. On
+ * Windows npx is a .cmd script, which an agent that starts servers without a shell cannot run, so
+ * cmd.exe runs it.
+ */
+export const mcpLaunchCommand = (
+  version: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] => {
   const script = path.resolve(process.argv[1] ?? "");
   if (script.includes(`${path.sep}_npx${path.sep}`))
-    return ["npx", "-y", `layermap@${version}`, "mcp"];
+    return [
+      ...(platform === "win32" ? ["cmd", "/c"] : []),
+      "npx",
+      "-y",
+      `layermap@${version}`,
+      "mcp",
+    ];
   // Loaders such as --import tsx are resolved here: agents start servers in other directories.
   const execArgv: string[] = [];
   for (let index = 0; index < process.execArgv.length; index++) {
