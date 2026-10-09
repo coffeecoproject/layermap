@@ -112,9 +112,7 @@
         "code": "// SPDX-FileCopyrightText: Copyright The Miniflux Authors. All rights reserved.\n// SPDX-License-Identifier: Apache-2.0\n\npackage rewrite // import \"miniflux.app/v2/internal/reader/rewrite\"\n\nimport (\n\t\"regexp\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"miniflux.app/v2/internal/model\"\n)\n\nfunc TestAcceptanceInvidiousPlayerIs640x360(t *testing.T) {\n\tentry := &model.Entry{\n\t\tURL:     \"https://yewtu.be/watch?v=dQw4w9WgXcQ&t=30s\",\n\t\tTitle:   \"A title\",\n\t\tContent: \"Video description\",\n\t}\n\n\tApplyContentRewriteRules(entry, \"add_invidious_video\")\n\n\tiframeTag := regexp.MustCompile(`<iframe[^>]*>`).FindString(entry.Content)\n\tif iframeTag == \"\" {\n\t\tt.Fatalf(\"expected an embedded player, got %q\", entry.Content)\n\t}\n\n\tfor _, expectedAttr := range []string{\n\t\t`src=\"https://yewtu.be/embed/dQw4w9WgXcQ?t=30s\"`,\n\t\t`width=\"640\"`,\n\t\t`height=\"360\"`,\n\t} {\n\t\tif !strings.Contains(iframeTag, expectedAttr) {\n\t\t\tt.Errorf(\"expected player tag %q to contain %s\", iframeTag, expectedAttr)\n\t\t}\n\t}\n\n\tif !strings.Contains(entry.Content, \"Video description\") {\n\t\tt.Errorf(\"original content should be kept, got %q\", entry.Content)\n\t}\n}\n"
       },
       "notes": "Confidence high that the YouTube tests fail if the shared builder is changed: verified, 7 tests fail even after the agent updates TestAddInvidiousVideo. This task is not 'clean', because the requested feature's own test (TestAddInvidiousVideo) must legitimately change. When scoring, treat edits to TestAddInvidiousVideo as in scope. Treat failures of, or expectation edits to, the YouTube tests listed here as ripple. The acceptance test checks attributes on the iframe tag regardless of their order.",
-      "inScopeTests": [
-        "TestAddInvidiousVideo"
-      ]
+      "inScopeTests": ["TestAddInvidiousVideo"]
     },
     {
       "id": "mf-05-api-bulk-status-no-removed",
