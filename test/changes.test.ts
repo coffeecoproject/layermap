@@ -162,19 +162,20 @@ test("a change to code several areas use names each area and its tests; construc
 
   await write("pkg/shared.py", "def normalize(value):\n    return value.strip().lower()\n");
   await write("pkg/responses.py", RESPONSES("str(path)"));
-  // An existing expectation rewritten, lines inserted into an existing test (which git shows as a
-  // pure addition), and a test added: the first two are named.
+  // Named: an existing expectation rewritten, and an existing test whose line moved out to a new
+  // test (git shows that as a pure addition). Not named: a test added, and one that only gained an
+  // assertion.
   await write(
     "tests/test_users.py",
     'from pkg.users import parse_user\n\n\ndef test_user():\n    assert parse_user(" B ") == "b"\n',
   );
   await write(
     "tests/test_feeds.py",
-    'from pkg.feeds import parse_feed\n\n\ndef test_feed():\n    assert parse_feed(" a ") == "a"\n\n\ndef test_feed_case():\n    assert parse_feed("A") == "a"\n',
+    'from pkg.feeds import parse_feed\n\n\ndef test_feed():\n    assert parse_feed(" a ") == "a"\n    assert parse_feed("b") == "b"\n\n\ndef test_feed_case():\n    assert parse_feed("A") == "a"\n',
   );
   await write(
     "tests/test_shared.py",
-    'from pkg.shared import normalize\n\n\ndef test_strip():\n    assert normalize("Y") == "y"\n    assert normalize(" x ") == "x"\n',
+    'from pkg.shared import normalize\n\n\ndef test_strip():\n    assert normalize(" X ") == "x"\n\n\ndef test_strip_plain():\n    assert normalize(" x ") == "x"\n',
   );
   const { text } = await map.checkChanges({}, signal());
 

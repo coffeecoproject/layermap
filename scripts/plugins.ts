@@ -276,7 +276,7 @@ License: Apache-2.0.
     }),
     "plugins/codex/skills/layermap/SKILL.md": `---
 name: layermap
-description: Use before grep or reading files when a task asks what calls a function or method, what changing it affects (up to HTTP routes, handlers, jobs and commands), where code is used, or how the code is organized, and after editing code to check what the changes affect before reporting the work done. The layermap MCP tools answer these from a static map of the repository in one call.
+description: Use instead of grep when a task needs to know what calls a function or method, what changing it affects (up to HTTP routes, handlers, jobs and commands), where code is used, or how the code is organized, and once the edits are done to check what the changes affect before reporting the work done. The layermap MCP tools answer these from a static map of the repository in one call.
 ---
 
 # LayerMap
