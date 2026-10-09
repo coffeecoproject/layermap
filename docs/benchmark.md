@@ -329,6 +329,13 @@ LayerMap 0.1.10 and twice without, and every request allows running the tests.
 - So on small local work the map is overhead, about a fifth; the earlier experiments show where it
   pays for itself.
 
+0.1.12 removes two kinds of waste: the check no longer refuses arguments it lacks (Claude Code had
+guessed one in 12 calls), and a test that only gained lines no longer counts as an existing test
+changed. Rerun with both conditions at the same time on an idle machine, the map still cost Claude
+Code 31% more time and 20% more money, and Codex 12% more time and 17% more tokens; every run did
+the task right. What remains is the check at the end and, for Codex, looking up a function's
+callers before changing it, which is what kept it from breaking other features in Experiment 4.
+
 ## Limitations
 
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has

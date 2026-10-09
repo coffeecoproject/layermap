@@ -668,10 +668,11 @@ export function mapChangeImpact(
   };
 }
 
-// The declarations of a changed test file that existed in the base and whose text the diff changed
+// The declarations of a changed test file that existed in the base and whose lines the diff changed
 // or removed, innermost first: a test method, not its class. Comparing text, not diff hunks, keeps
-// a test added beside an existing one from counting as a change to it, and catches lines inserted
-// into an existing test, which git may show as a pure addition.
+// a test added beside an existing one from counting as a change to it, and catches lines moved out
+// of an existing test, which git may show as a pure addition; a test that only gained lines kept
+// every check it had.
 function existingTestsChanged(
   before: MapViewGraph,
   after: MapViewGraph,
@@ -687,11 +688,15 @@ function existingTestsChanged(
     } catch {}
   const key = (graph: MapViewGraph, object: MapObject) =>
     `${object.kind}\u0000${graph.qualifiedName(object.id)}`;
-  const text = (lines: readonly string[], object: MapObject) =>
-    lines
-      .slice(object.anchor.startLine - 1, object.anchor.endLine)
-      .map((line) => line.trimEnd())
-      .join("\n");
+  const body = (lines: readonly string[], object: MapObject) =>
+    lines.slice(object.anchor.startLine - 1, object.anchor.endLine).map((line) => line.trimEnd());
+  // A test whose every line is still there, in order, only gained lines (a new table row, another
+  // assertion): what it checked before, it still checks.
+  const extended = (before: readonly string[], after: readonly string[]) => {
+    let at = 0;
+    for (const line of after) if (at < before.length && line === before[at]) at++;
+    return at === before.length;
+  };
   const now = new Map(
     (file.status === "DELETED" ? [] : after.objectsAt(file.path))
       .filter((object) => !mapIsModule(object) && after.isAddressable(object))
@@ -702,7 +707,7 @@ function existingTestsChanged(
     .filter((object) => !mapIsModule(object) && before.isAddressable(object))
     .filter((object) => {
       const counterpart = now.get(key(before, object));
-      return !counterpart || text(baseLines, object) !== text(workingLines, counterpart);
+      return !counterpart || !extended(body(baseLines, object), body(workingLines, counterpart));
     });
   // A class changes with its method; name the method.
   return changed

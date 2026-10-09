@@ -99,6 +99,13 @@ test("an MCP client lists the read-only map tools and explores the project", asy
     assert.equal(invalid.result.isError, true);
     assert.match(invalid.result.content[0]?.text ?? "", /^Invalid arguments: query/u);
 
+    // An agent that has not loaded the schema guesses arguments; the check ignores those it lacks.
+    const guessed = (await client.request("tools/call", {
+      name: "project_check_changes",
+      arguments: { path: ".", project_root: root },
+    })) as { result: { content: { text: string }[]; isError: boolean } };
+    assert.doesNotMatch(guessed.result.content[0]?.text ?? "", /Invalid arguments/u);
+
     const unknown = (await client.request("resources/list")) as { error: { code: number } };
     assert.equal(unknown.error.code, -32601);
   } finally {

@@ -18,5 +18,5 @@ changes=$(code_changes)
 fingerprint=$(printf '%s' "$changes" | git hash-object --stdin 2>/dev/null)
 printf '%s' "$fingerprint" > "$state/$session.start" 2>/dev/null
 cat <<'EOF'
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The layermap MCP server is available here. For questions about what calls a function, what a change affects or where code is used, start with its project_explore_map tool (direction INCOMING, depth up to 8) before grep, then confirm in source. When the edits are done, call its project_check_changes tool once before reporting the work done."}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The layermap MCP server is available here. When a task needs to know what calls a function, what a change could affect beyond the code you are editing, or where code is used, use its project_explore_map tool (direction INCOMING, depth up to 8) instead of grep, then confirm in source; a change confined to code you have read does not need it. When the edits are done, call its project_check_changes tool once before reporting the work done."}}
 EOF

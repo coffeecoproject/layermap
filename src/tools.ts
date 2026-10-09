@@ -33,13 +33,13 @@ export const AGENT_MAP_TOOL_HOST: MapToolHost = Object.freeze({
   // Agents reach for grep by habit; these say which questions the map answers in one call.
   lead: {
     explore:
-      "Use this before grep or reading files to answer what calls a function or method, what changing it affects (callers traced up to entry points such as HTTP routes, handlers, jobs and commands), what it calls, and what a directory or file contains: one call returns the callers or callees up to 8 levels deep, with file paths and line numbers, for TypeScript, JavaScript, Go, Python and Java.",
+      "Use this instead of grep to answer what calls a function or method, what changing it affects (callers traced up to entry points such as HTTP routes, handlers, jobs and commands), what it calls, and what a directory or file contains: one call returns the callers or callees up to 8 levels deep, with file paths and line numbers, for TypeScript, JavaScript, Go, Python and Java.",
     search:
       "Use this to find where a function, method, class or type is declared, by name or by words in its name, path or documentation, before exploring its callers with project_explore_map.",
     references:
       "Use this to list every place a declaration is used (calls, imports, re-exports, reads and writes), compiled from current source: more complete than searching for its name.",
     check:
-      "Use this after editing code and before reporting the work done: it lists what the uncommitted changes affect, from the changed functions up to the HTTP routes, jobs and commands that reach them, plus the existing tests related to them.",
+      "Use this once the edits are done, before reporting the work done: it lists what the uncommitted changes affect, from the changed functions up to the HTTP routes, jobs and commands that reach them, plus the existing tests related to them.",
   },
 });
 
@@ -114,7 +114,9 @@ export const ProjectMapCheckInputSchema = z
         "Commit, branch or tag to compare the working tree with (HEAD, so the uncommitted changes, by default; main for a whole branch).",
       ),
   })
-  .strict();
+  // Agents that see the tool without its schema guess arguments (a path, the project root); the
+  // check always covers the whole working tree, so unknown ones are dropped rather than refused.
+  .strip();
 
 const locatorSchema = MapObjectLocatorSchema.describe(
   "Declaration location: path and UTF-16 start offset; include kind to distinguish declarations at the same offset.",
