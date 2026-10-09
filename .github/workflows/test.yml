@@ -34,7 +34,12 @@ jobs:
       # untracked, so the job writes the same choice: esbuild's, and sqlite's prebuilt binaries.
       - name: Allow dependency build scripts
         shell: bash
-        run: printf "allowBuilds:\n  '@photostructure/sqlite': false\n  esbuild: true\n" > pnpm-workspace.yaml
+        run: |
+          cat > pnpm-workspace.yaml <<'EOF'
+          allowBuilds:
+            '@photostructure/sqlite': false
+            esbuild: true
+          EOF
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
