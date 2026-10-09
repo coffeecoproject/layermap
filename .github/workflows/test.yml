@@ -30,6 +30,11 @@ jobs:
           distribution: temurin
           java-version: "21"
       - run: corepack enable
+      # pnpm runs a dependency's build script only when allowed; the repository keeps this file
+      # untracked, so the job writes the same choice: esbuild's, and sqlite's prebuilt binaries.
+      - name: Allow dependency build scripts
+        shell: bash
+        run: printf "allowBuilds:\n  '@photostructure/sqlite': false\n  esbuild: true\n" > pnpm-workspace.yaml
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
