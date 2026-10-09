@@ -95,7 +95,6 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 以下需求更适合用别的工具：
 
 - 需要更多语言：tree-sitter 代码图支持 30 种以上；
-- 需要支持 Windows；
 - 需要重命名、重构：用语言服务器；
 - 需要按含义搜代码：用向量检索；
 - 需要跨大量仓库搜索：用 Sourcegraph。
@@ -150,7 +149,7 @@ Claude Code 里，如果 agent 在本仓库里改了代码、之后还没做这�
 **运行要求**：
 
 - Node.js 22.22 或更高；
-- macOS 或 Linux（x64 或 arm64）；
+- macOS 或 Linux（x64 或 arm64）；Windows（x64 或 arm64）为实验性支持；
 - Git 仓库；
 - Java 项目另需 JDK 21 或更高。
 
@@ -191,7 +190,9 @@ npx layermap check --base main
 **有什么看不到？** 编译器无法静态解析的调用，比如依赖注入、它不认识的框架路由、反射和计算出的名字。追踪停在
 哪里工具会说明。另外，地图上没有某条关系，不代表它不存在。
 
-**支持 Windows 吗？** 暂不支持。
+**支持 Windows 吗？** 实验性支持。LayerMap 的测试在 Windows 上都能通过，但还没在真实的 Windows 电脑上配合
+Claude Code 或 Codex 试过，请先在自己的项目上测试，遇到问题请[反馈](https://github.com/coffeecoproject/layermap/issues)。
+Claude Code 插件的钩子需要 Git for Windows（在 Git Bash 里运行）；没装的话地图工具照常可用，只是开局提示和收尾检查不会运行。
 
 **Claude Code 的无人值守模式（`claude -p`）能用吗？** 截至 Claude Code 2.1，这个模式不会启动已安装插件自带的服务，
 所以没有地图工具，但插件的提醒仍会生效。可以自己指定这个服务：

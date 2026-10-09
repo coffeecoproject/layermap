@@ -99,7 +99,6 @@ in one local map:
 Another tool fits better if you need:
 
 - more languages, since tree-sitter graphs cover 30 or more;
-- Windows;
 - renaming and refactoring, from language servers;
 - search by meaning, from embedding search;
 - search across many repositories, with Sourcegraph.
@@ -159,7 +158,7 @@ other MCP client, run `npx -y layermap mcp` as a stdio server in the repository.
 **Requirements:**
 
 - Node.js 22.22 or later.
-- macOS or Linux (x64 or arm64).
+- macOS or Linux (x64 or arm64); Windows (x64 or arm64) is experimental.
 - A Git repository.
 - For Java projects, a JDK 21 or later.
 
@@ -201,7 +200,11 @@ npx layermap check --base main
 framework routing, reflection and computed names. The tools say where a trace stops, and a missing
 relationship does not prove absence.
 
-**Windows?** Not yet.
+**Windows?** Experimental. LayerMap's tests pass on Windows, but it has not yet been tried with
+Claude Code or Codex on a real Windows machine, so please test it on your own projects first and
+[report what breaks](https://github.com/coffeecoproject/layermap/issues). The Claude Code plugin's
+hooks need Git for Windows (they run in Git Bash); without it the map tools still work, and the
+session-start note and end-of-task check do not run.
 
 **Claude Code in print mode (`claude -p`)?** Print mode, as of Claude Code 2.1, does not start the
 servers that installed plugins bring, so the map tools are missing there while the plugin's hooks

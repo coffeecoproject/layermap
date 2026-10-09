@@ -255,8 +255,9 @@ everywhere (\`npx layermap remove claude\` takes it back).
 
 ## Requirements and support
 
-Node.js 22.22 or later, macOS, Linux or Windows, and a Git repository. On Windows the hooks run in
-Git Bash, which Git for Windows installs. The links:
+Node.js 22.22 or later, macOS or Linux, and a Git repository. Windows is experimental and not yet
+tried on a real machine: test it on your own projects first. There the hooks run in Git Bash, which
+Git for Windows installs. The links:
 
 - [Documentation](${LINKS.documentation})
 - [Issues](${LINKS.support})

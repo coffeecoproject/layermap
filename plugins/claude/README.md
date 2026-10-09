@@ -16,7 +16,7 @@ Start a session in a Git repository and ask as usual, for example:
 
 ## What it runs, fetches and sends
 
-- It runs the LayerMap MCP server on your machine (`npx -y layermap@0.1.13 mcp`).
+- It runs the LayerMap MCP server on your machine (`npx -y layermap@0.1.14 mcp`).
   Java analysis uses your local JDK 21 or later.
 - On first launch, npx downloads the pinned `layermap` package and its dependencies from the npm
   registry.
@@ -35,8 +35,9 @@ everywhere (`npx layermap remove claude` takes it back).
 
 ## Requirements and support
 
-Node.js 22.22 or later, macOS, Linux or Windows, and a Git repository. On Windows the hooks run in
-Git Bash, which Git for Windows installs. The links:
+Node.js 22.22 or later, macOS or Linux, and a Git repository. Windows is experimental and not yet
+tried on a real machine: test it on your own projects first. There the hooks run in Git Bash, which
+Git for Windows installs. The links:
 
 - [Documentation](https://github.com/coffeecoproject/layermap#readme)
 - [Issues](https://github.com/coffeecoproject/layermap/issues)

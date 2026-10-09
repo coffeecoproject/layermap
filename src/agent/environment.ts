@@ -28,6 +28,12 @@ export const packageVersion = async (): Promise<string> =>
 export const cacheDirectory = (env: NodeJS.ProcessEnv = process.env): string => {
   if (env.LAYERMAP_CACHE) return path.resolve(env.LAYERMAP_CACHE);
   if (process.platform === "darwin") return path.join(homedir(), "Library", "Caches", "layermap");
+  if (process.platform === "win32")
+    return path.join(
+      env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local"),
+      "layermap",
+      "Cache",
+    );
   return path.join(env.XDG_CACHE_HOME || path.join(homedir(), ".cache"), "layermap");
 };
 
