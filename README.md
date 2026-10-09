@@ -139,7 +139,9 @@ Claude Code asks once before each map tool runs in a project. Choose "don't ask 
 affects: the routes, jobs and commands that reach the changed functions, what the map cannot see,
 and the existing tests related to the change. When the changed code serves several areas (packages
 or modules), it names each one with its tests, and it names the existing tests the diff rewrote, so
-a change meant for one feature does not quietly change the others. It never writes or runs tests. In Claude Code the
+a change meant for one feature does not quietly change the others. Environment variables and
+configuration keys are linked by name only, which no compiler sees, so when the diff removes one
+from a file, the check names the files that still read or set the old name. It never writes or runs tests. In Claude Code the
 plugin asks the agent once, before it finishes, to run this check if it edited code in the repository
 and has not checked since (changes another session makes in the same work tree do not count); set
 `LAYERMAP_STOP_CHECK=0` to turn that off. Codex and DeepSeek Harness are told to run it.
@@ -176,7 +178,7 @@ nothing anywhere ([privacy](https://github.com/coffeecoproject/layermap/blob/mai
 | `project_explore_map` | A directory, a file, or a declaration's callers and callees (`direction` INCOMING or OUTGOING, `depth` up to 8). |
 | `project_search_map` | Find declarations by words in their names, paths or documentation. |
 | `project_find_references` | Every usage of a declaration, compiled from current source. |
-| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, the areas that share the changed code, what to check by hand, and related tests. |
+| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, the areas that share the changed code, environment variables and configuration keys it removed that other files still use, what to check by hand, and related tests. |
 
 The same from the command line:
 
