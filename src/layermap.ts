@@ -17,6 +17,7 @@ import { ProjectMapAnalyzer } from "./project-map-analyzer";
 import {
   mapChangeImpact,
   mapChangesText,
+  mapRouteClients,
   readMapChanges,
   resolveMapBase,
 } from "./project-map-changes";
@@ -256,10 +257,12 @@ export class LayerMap {
     )
       ? await this.versionAt(changes.commit, signal)
       : undefined;
+    const impact = mapChangeImpact(this.store, working, base, changes, this.project);
     return {
       text: mapChangesText(
         changes,
-        mapChangeImpact(this.store, working, base, changes, this.project),
+        impact,
+        await mapRouteClients(this.project, this.store, working, impact, signal),
       ),
     };
   }

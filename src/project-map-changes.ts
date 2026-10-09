@@ -3,6 +3,12 @@ import path from "node:path";
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError } from "./core";
 import { GitRunner } from "./git-runner";
+import {
+  type MapRouteClients,
+  routeClients,
+  routeClientsLine,
+  routeRegistrations,
+} from "./project-map-clients";
 import { mapLanguageOf } from "./project-map-language";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
@@ -244,6 +250,8 @@ export type MapChangeImpact = Readonly<{
     tests: readonly Readonly<{ path: string; names: readonly string[] }>[];
   }>[];
   unclear: readonly string[];
+  /** Routes the base registered in the changed files that they no longer register. */
+  removedRoutes: readonly string[];
   truncated: boolean;
 }>;
 
@@ -590,8 +598,17 @@ export function mapChangeImpact(
 
   // Declarations the diff removed or renamed: their callers in the base still expect them.
   const rewrittenTests: { path: string; names: string[] }[] = [];
+  const removedRoutes: string[] = [];
   if (base) {
     const before = new MapViewGraph(store, base);
+    const registered = new Set<string>();
+    for (const file of changes.files)
+      if (file.status !== "DELETED")
+        for (const route of routesIn(graph, file.path)) registered.add(route);
+    for (const file of changes.files)
+      if (file.basePath && file.status !== "ADDED")
+        for (const route of routesIn(before, file.basePath))
+          if (!registered.has(route) && !removedRoutes.includes(route)) removedRoutes.push(route);
     for (const file of changes.files)
       if (file.basePath && file.baseText !== undefined && testCode(file.basePath)) {
         const names = existingTestsChanged(before, graph, file, project);
@@ -675,6 +692,7 @@ export function mapChangeImpact(
       }))
       .sort((left, right) => right.tests.length - left.tests.length),
     unclear: [...new Set([...unclear, ...tracer.unclear])],
+    removedRoutes,
     truncated: tracer.truncated,
   };
 }
@@ -873,6 +891,7 @@ const LIST = Object.freeze({
   tests: 12,
   unclear: 20,
   stranded: 12,
+  clients: 8,
   names: 6,
   areas: 8,
   areaTests: 3,
@@ -881,7 +900,58 @@ const LIST = Object.freeze({
 });
 
 /** The check as an agent reads it: the conclusion first, then each list, then what it cannot see. */
-export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): string {
+// The routes a file registers: a call's route literal, or a decorator's route.
+function routesIn(graph: MapViewGraph, path: string): Set<string> {
+  const routes = new Set<string>();
+  for (const relation of graph.relationsFrom(graph.objectsAt(path).map((object) => object.id))) {
+    const route =
+      relation.kind === "DECORATED_BY" ? (relation.route ?? relation.argument) : relation.argument;
+    if (route && ROUTE.test(route)) routes.add(route);
+  }
+  return routes;
+}
+
+const routePath = (route: string) => route.slice(route.indexOf("/"));
+
+/**
+ * The code and templates outside the tests that request the routes the change reaches through
+ * their handlers (the handler itself or one call below it), and the routes it removed whose path
+ * no registration keeps.
+ */
+export async function mapRouteClients(
+  project: string,
+  store: CodeIndexStore,
+  working: string,
+  impact: MapChangeImpact,
+  signal: AbortSignal,
+): Promise<MapRouteClients[]> {
+  const affected = impact.entries.filter(
+    (entry) => entry.route && entry.certain && entry.chain.length <= 2,
+  );
+  if (!affected.length && !impact.removedRoutes.length) return [];
+  const registrations = routeRegistrations(store, working);
+  // A removed route's path is still served when a route with HTTP methods, or the same label,
+  // registers it; a class-level prefix with that path alone does not serve it.
+  const served = (route: string) =>
+    registrations.routes.has(route) ||
+    [...registrations.routes].some(
+      (other) => !other.startsWith("/") && routePath(other) === routePath(route),
+    );
+  const routes = [
+    ...affected.map((entry) => ({ route: entry.label, removed: false })),
+    ...impact.removedRoutes
+      .filter((route) => !served(route))
+      .map((route) => ({ route, removed: true })),
+  ];
+  if (!routes.length) return [];
+  return routeClients(routes, registrations, git, gitOptions(project, signal));
+}
+
+export function mapChangesText(
+  changes: MapChanges,
+  impact: MapChangeImpact,
+  clients: readonly MapRouteClients[] = [],
+): string {
   const files = changes.files.length;
   const direct = impact.tests.filter((test) => test.rank < 4);
   const indirect = impact.tests.filter((test) => test.rank >= 4);
@@ -957,6 +1027,17 @@ export function mapChangesText(changes: MapChanges, impact: MapChangeImpact): st
     impact.entries.filter((e) => !e.certain).map(entry),
     LIST.entries,
   );
+  // Requests by path, which no compiler links: a frontend, a generated client, a template.
+  if (clients.length) {
+    list(
+      "REQUESTED BY (code and templates outside the tests that request these routes' paths, found by text)",
+      clients.map(routeClientsLine),
+      LIST.clients,
+    );
+    lines.push(
+      "If the change alters what a route accepts or returns, or its path, these callers must change with it. Paths built at run time are not found.",
+    );
+  }
   list(
     "CHECK BY HAND (the map cannot see these)",
     [
