@@ -67,7 +67,7 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 | 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
 | 改完自检列出的失败测试（Go / Python，让函数失败） | **100% / 94–98%** | — |
 | 波及任务：没有碰坏别的功能测试的运行（Codex / Claude Code，4 道题，用地图各 6 次、不用各 3 次） | **24 次中 23 次** / 24 次中 11 次 | 12 次中 3 次 / 12 次中 4 次 |
-| 日常任务（不需要影响分析）：做对次数 / 用时（Claude Code 和 Codex，8 道题各 2 次） | 32 次中 32 次 / +20–22% | 32 次中 32 次 |
+| 日常任务（不需要影响分析）：做对次数 / 用时（Claude Code 和 Codex，8 道题各 2 次） | 32 次中 32 次 / +12–31% | 32 次中 32 次 |
 
 **怎么理解这些结果：**
 
