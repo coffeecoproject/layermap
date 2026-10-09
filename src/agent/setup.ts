@@ -18,6 +18,7 @@ export type SetupOptions = Readonly<{
   log: (line: string) => void;
 }>;
 
+import { commandInvocation } from "../platform";
 import { AGENT_MAP_NOTE } from "./tools";
 
 const SERVER = "layermap";
@@ -45,12 +46,22 @@ export const mcpLaunchCommand = (version: string): string[] => {
   return [process.execPath, ...execArgv, script, "mcp"];
 };
 
+// The agents' own CLIs: on Windows usually npm's .cmd shims, which run only through cmd.exe.
 const run = (command: string, args: string[], env: NodeJS.ProcessEnv) =>
-  new Promise<{ ok: boolean; output: string }>((resolve) =>
-    execFile(command, args, { env, timeout: 60_000 }, (error, stdout, stderr) =>
-      resolve({ ok: !error, output: `${stdout}${stderr}`.trim() }),
-    ),
-  );
+  new Promise<{ ok: boolean; output: string }>((resolve) => {
+    const invocation = commandInvocation(command, args, env);
+    execFile(
+      invocation.file,
+      invocation.args,
+      {
+        env,
+        timeout: 60_000,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      },
+      (error, stdout, stderr) => resolve({ ok: !error, output: `${stdout}${stderr}`.trim() }),
+    );
+  });
 
 /** Adds an allow rule for LayerMap's tools to a Claude Code settings file, keeping the rest. */
 export async function allowInClaudeSettings(file: string, rule = SETUP_RULE): Promise<boolean> {

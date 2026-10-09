@@ -149,23 +149,47 @@ test("the Codex server table gains approval and timeout keys once, other lines u
   await assert.rejects(configureCodexServer(file), /no \[mcp_servers\.layermap\] table/u);
 });
 
+// A stand-in for an agent's CLI on PATH: a Node script that records its arguments (codex also
+// writes its table), started by a sh wrapper, or on Windows by a .cmd shim as npm installs one.
+async function standIn(bin: string, agent: string, calls: string) {
+  const script = path.join(bin, `${agent}.mjs`);
+  await writeFile(
+    script,
+    `import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, \`${agent} \${args.join(" ")}\\n\`);
+if (${JSON.stringify(agent)} === "codex" && args[1] === "add")
+  appendFileSync(process.env.CODEX_HOME + "/config.toml", '[mcp_servers.layermap]\\ncommand = "node"\\n');
+`,
+  );
+  if (process.platform === "win32")
+    await writeFile(path.join(bin, `${agent}.cmd`), `@"${process.execPath}" "${script}" %*\r\n`);
+  else {
+    await writeFile(
+      path.join(bin, agent),
+      `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+    );
+    await chmod(path.join(bin, agent), 0o755);
+  }
+}
+
+// The environment with bin first on PATH, whatever case the platform spells PATH in.
+const withPath = (bin: string): NodeJS.ProcessEnv => {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
+  );
+  return { ...env, PATH: [bin, process.env.PATH].join(path.delimiter) };
+};
+
 test("setup registers the server through each agent's own command and approves its tools", async () => {
   const directory = await sandbox();
   const bin = path.join(directory, "bin");
   const calls = path.join(directory, "calls.log");
   await mkdir(bin);
   // Stand-ins for the agents' CLIs: they record their arguments; codex also writes its table.
-  for (const agent of ["claude", "codex"]) {
-    const script = path.join(bin, agent);
-    await writeFile(
-      script,
-      `#!/bin/sh\necho "${agent} $*" >> "${calls}"\nif [ "${agent}" = codex ] && [ "$2" = add ]; then printf '[mcp_servers.layermap]\\ncommand = "node"\\n' >> "$CODEX_HOME/config.toml"; fi\n`,
-    );
-    await chmod(script, 0o755);
-  }
+  for (const agent of ["claude", "codex"]) await standIn(bin, agent, calls);
   const env = {
-    ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...withPath(bin),
     CLAUDE_CONFIG_DIR: path.join(directory, "claude"),
     CODEX_HOME: path.join(directory, "codex"),
   };
@@ -227,8 +251,7 @@ test("remove undoes setup: the server, the approval and the note, keeping the us
   const bin = path.join(directory, "bin");
   const calls = path.join(directory, "calls.log");
   await mkdir(bin);
-  await writeFile(path.join(bin, "claude"), `#!/bin/sh\necho "claude $*" >> "${calls}"\n`);
-  await chmod(path.join(bin, "claude"), 0o755);
+  await standIn(bin, "claude", calls);
   const home = path.join(directory, "claude");
   await mkdir(home);
   await writeFile(path.join(home, "CLAUDE.md"), "Mine.\n");
@@ -242,7 +265,7 @@ test("remove undoes setup: the server, the approval and the note, keeping the us
     project: directory,
     version: "0.0.0",
     dryRun: false,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: home },
+    env: { ...withPath(bin), CLAUDE_CONFIG_DIR: home },
     log: () => {},
   };
   assert.equal(await setupAgent(options), true);

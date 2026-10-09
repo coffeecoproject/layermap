@@ -9,20 +9,65 @@ import path from "node:path";
 export const executableName = (name: string, platform: NodeJS.Platform = process.platform) =>
   platform === "win32" ? `${name}.exe` : name;
 
+// The PATH a child would search. Windows spells the variable Path, and process.env matches names
+// case-insensitively there while a copy of it does not.
+const searchPath = (env: NodeJS.ProcessEnv) =>
+  env.PATH ?? Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "";
+
+/** The first directory on PATH that holds one of the files, as a full path. */
+function findOnPath(
+  files: readonly string[],
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | undefined {
+  const join = platform === "win32" ? path.win32.join : path.posix.join;
+  for (const directory of searchPath(env).split(platform === "win32" ? ";" : ":"))
+    for (const file of files)
+      if (directory && existsSync(join(directory, file))) return join(directory, file);
+  return undefined;
+}
+
 /** The first directory on PATH that holds the executable, as a full path. */
-export function findExecutable(
+export const findExecutable = (
   name: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
-): string | undefined {
-  const file = executableName(name, platform);
-  const join = platform === "win32" ? path.win32.join : path.posix.join;
-  const delimiter = platform === "win32" ? ";" : ":";
-  // Windows spells the variable Path; process.env matches it case-insensitively, a copy does not.
-  const value = env.PATH ?? env.Path ?? "";
-  for (const directory of value.split(delimiter))
-    if (directory && existsSync(join(directory, file))) return join(directory, file);
-  return undefined;
+): string | undefined => findOnPath([executableName(name, platform)], env, platform);
+
+// cmd.exe's special characters, escaped with a caret; the quoting below follows cross-spawn's.
+const CMD_META = /([()\][%!^"`<>&|;, *?])/gu;
+const cmdArgument = (value: string) =>
+  `"${value.replace(/(\\*)"/gu, '$1$1\\"').replace(/(\\*)$/u, "$1$1")}"`
+    .replace(CMD_META, "^$1")
+    // npm's .cmd shims pass their arguments through cmd.exe a second time.
+    .replace(CMD_META, "^$1");
+
+/**
+ * How to run a command found on PATH. On Windows a CLI that npm installed is a .cmd shim, which
+ * Node starts only through cmd.exe, so the shim and its arguments are quoted for it; a program
+ * with an .exe runs directly. Elsewhere the command runs as given.
+ */
+export function commandInvocation(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): { file: string; args: string[]; windowsVerbatimArguments?: boolean } {
+  if (platform !== "win32") return { file: command, args: [...args] };
+  const program = findOnPath([`${command}.exe`, `${command}.cmd`, `${command}.bat`], env, platform);
+  if (!program || program.toLowerCase().endsWith(".exe"))
+    return { file: program ?? command, args: [...args] };
+  return cmdInvocation(program, args, env.ComSpec ?? process.env.ComSpec ?? "cmd.exe");
+}
+
+/** A .cmd or .bat script and its arguments, run through cmd.exe and quoted for it. */
+export function cmdInvocation(
+  script: string,
+  args: readonly string[],
+  comspec = "cmd.exe",
+): { file: string; args: string[]; windowsVerbatimArguments: true } {
+  const line = [script.replace(CMD_META, "^$1"), ...args.map(cmdArgument)].join(" ");
+  return { file: comspec, args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
 }
 
 // The variables a Windows process needs to start, load system libraries and find its temporary
