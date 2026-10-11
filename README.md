@@ -16,8 +16,8 @@
 <p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code asks which HTTP endpoints changing Storage.MarkFeedAsRead affects; one LayerMap call returns all four callers with their routes" width="100%"></p>
 <p align="center"><sub>A real Claude Code session on <a href="https://github.com/miniflux/v2">Miniflux</a>, replayed: one map call finds every endpoint, then the agent confirms them in source.</sub></p>
 
-A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex, DeepSeek
-Harness and other MCP clients read-only tools that answer, in one call, what an agent otherwise works out
+A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex, CodeBuddy
+Code, Pi, DeepSeek Harness and other MCP clients read-only tools that answer, in one call, what an agent otherwise works out
 with dozens of searches:
 
 - **What calls this, and what does changing it affect?** Callers traced up to 8 levels, to the
@@ -119,6 +119,19 @@ codex plugin marketplace add coffeecoproject/layermap
 codex plugin add layermap@layermap
 ```
 
+**CodeBuddy Code**
+
+```
+codebuddy plugin marketplace add coffeecoproject/layermap
+codebuddy plugin install layermap@layermap
+```
+
+**Pi**
+
+```
+pi install npm:layermap
+```
+
 **DeepSeek Harness**
 
 ```
@@ -142,10 +155,11 @@ a change meant for one feature does not quietly change the others. Environment v
 configuration keys are linked by name only, which no compiler sees, so when the diff removes one
 from a file, the check names the files that still read or set the old name. In the same way, when
 the change reaches a route's handler or renames a route, it names the code and templates that
-request that path: a frontend's fetch, a generated API client, a redirect or a link. It never writes or runs tests. In Claude Code the
-plugin asks the agent once, before it finishes, to run this check if it edited code in the repository
-and has not checked since (changes another session makes in the same work tree do not count); set
-`LAYERMAP_STOP_CHECK=0` to turn that off. Codex and DeepSeek Harness are told to run it.
+request that path: a frontend's fetch, a generated API client, a redirect or a link. It never writes or runs tests. In Claude Code and
+CodeBuddy Code the plugin asks the agent once, before it finishes, to run this check if it edited code in the repository
+and has not checked since (changes another session makes in the same work tree do not count); the
+Pi extension does the same after the agent's own edits. Set `LAYERMAP_STOP_CHECK=0` to turn that
+off. Codex and DeepSeek Harness are told to run it.
 
 **Without plugins:** run `npx layermap setup claude` or `npx layermap setup codex`. Setup does three
 things:
@@ -220,6 +234,8 @@ claude -p "..." --mcp-config '{"mcpServers":{"layermap":{"command":"npx","args":
 
 - Claude Code: `/plugin uninstall layermap@layermap`.
 - Codex: `codex plugin remove layermap@layermap`.
+- CodeBuddy Code: `codebuddy plugin uninstall layermap@layermap`.
+- Pi: `pi remove npm:layermap`.
 - Then delete the cache directory.
 
 ## Development

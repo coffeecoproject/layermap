@@ -28,6 +28,8 @@ if [ -f "$transcript" ]; then
   edited=$(grep -nE '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript" 2>/dev/null |
     while IFS= read -r line; do
       file=$(printf '%s' "$line" | sed -nE 's/.*"(file|notebook)_path": *"([^"]*)".*/\2/p' | sed 's/\\\\/\\/g')
+      # CodeBuddy records the arguments as a JSON string inside the line, so their quotes are escaped.
+      [ -n "$file" ] || file=$(printf '%s' "$line" | sed -nE 's/.*\\"(file|notebook)_path\\": *\\"(([^"\\]|\\\\\\\\)*)\\".*/\2/p' | sed 's/\\\\\\\\/\\/g')
       [ -n "$file" ] || continue
       printf '%s' "$file" | grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|go|py|java)$' || continue
       git -C "$dir" status --porcelain --untracked-files=all -- "$file" 2>/dev/null | grep -q . && printf '%s\n' "${line%%:*}"

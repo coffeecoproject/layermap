@@ -105,7 +105,7 @@ await writeFile(
       license: "Apache-2.0",
       type: "module",
       bin: { layermap: "dist/cli.mjs" },
-      files: ["dist", "analyzers", "LICENSE", "NOTICE", "README.md"],
+      files: ["dist", "analyzers", "pi", "LICENSE", "NOTICE", "README.md"],
       engines: { node: ">=22.22" },
       os: ["darwin", "linux", "win32"],
       dependencies: {
@@ -114,7 +114,19 @@ await writeFile(
       },
       homepage: "https://github.com/coffeecoproject/layermap",
       repository: { type: "git", url: "git+https://github.com/coffeecoproject/layermap.git" },
-      keywords: ["code-map", "call-graph", "impact-analysis", "mcp", "claude-code", "codex"],
+      keywords: [
+        "code-map",
+        "call-graph",
+        "impact-analysis",
+        "mcp",
+        "claude-code",
+        "codex",
+        "pi-package",
+      ],
+      // The Pi extension (`pi install npm:layermap`): Pi provides typebox to extensions.
+      pi: { extensions: ["./pi/layermap.mjs"] },
+      peerDependencies: { typebox: "*" },
+      peerDependenciesMeta: { typebox: { optional: true } },
     },
     null,
     2,
@@ -122,5 +134,10 @@ await writeFile(
 );
 for (const file of ["LICENSE", "NOTICE", "README.md"])
   await copyFile(path.join(packageRoot, file), path.join(target, file));
+await mkdir(path.join(target, "pi"), { recursive: true });
+await copyFile(
+  path.join(packageRoot, "plugins/pi/layermap.mjs"),
+  path.join(target, "pi/layermap.mjs"),
+);
 const { stdout } = await run("npm", ["pack", "--pack-destination", out], { cwd: target });
 process.stdout.write(`Packed ${path.join(out, stdout.trim().split("\n").at(-1) ?? "")}\n`);

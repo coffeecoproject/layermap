@@ -16,7 +16,7 @@
 <p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code 询问改动 Storage.MarkFeedAsRead 会影响哪些 HTTP 接口，一次 LayerMap 调用返回全部 4 个调用方和路由" width="100%"></p>
 <p align="center"><sub>在 <a href="https://github.com/miniflux/v2">Miniflux</a> 上的一次真实 Claude Code 会话回放：一次地图调用找全接口，agent 再到源码里逐一确认。</sub></p>
 
-给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、DeepSeek Harness 和其他 MCP 客户端提供几个只读工具，一次调用
+给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、CodeBuddy Code、Pi、DeepSeek Harness 和其他 MCP 客户端提供几个只读工具，一次调用
 就能回答 agent 平时要搜几十次才弄清的问题：
 
 - **谁调用了它，改它会影响什么？** 调用方最多追 8 层，一直追到作为起点的 HTTP 路由、处理函数、定时任务和
@@ -115,6 +115,19 @@ codex plugin marketplace add coffeecoproject/layermap
 codex plugin add layermap@layermap
 ```
 
+**CodeBuddy Code**
+
+```
+codebuddy plugin marketplace add coffeecoproject/layermap
+codebuddy plugin install layermap@layermap
+```
+
+**Pi**
+
+```
+pi install npm:layermap
+```
+
 **DeepSeek Harness**
 
 ```
@@ -134,7 +147,7 @@ Claude Code 在每个项目里第一次用到某个地图工具时会问一次�
 定时任务和命令，地图看不到、需要人工核对的地方，以及相关的已有测试。如果改动的代码被好几块功能（包或模块）
 共用，它会逐一列出每块功能和守护它的测试；改动了原有测试时，它也会点名这些测试，避免只想改一处、却悄悄改动了别的功能。环境变量和配置项只靠名字关联，编译器看不到，所以改动从某个文件里去掉一个环境变量名或配置键时，
 它会列出还在读或写这个旧名字的文件。同样，改动碰到接口的处理函数或改了接口路径时，它会列出请求这个地址的代码和模板：前端的 fetch、生成的 API 客户端、跳转和链接。它不会写测试，也不会运行测试。在
-Claude Code 里，如果 agent 在本仓库里改了代码、之后还没做这个检查，插件会在它结束前提醒一次（同一工作目录里其他会话的改动不算）；设置 `LAYERMAP_STOP_CHECK=0`
+Claude Code 和 CodeBuddy Code 里，如果 agent 在本仓库里改了代码、之后还没做这个检查，插件会在它结束前提醒一次（同一工作目录里其他会话的改动不算）；Pi 扩展在 agent 自己改了代码后也会这样提醒。设置 `LAYERMAP_STOP_CHECK=0`
 可以关掉。Codex 和 DeepSeek Harness 通过说明文字提示 agent 去做。
 
 **不用插件**：运行 `npx layermap setup claude` 或 `npx layermap setup codex`，它会：
@@ -205,6 +218,8 @@ claude -p "..." --mcp-config '{"mcpServers":{"layermap":{"command":"npx","args":
 
 - Claude Code：`/plugin uninstall layermap@layermap`
 - Codex：`codex plugin remove layermap@layermap`
+- CodeBuddy Code：`codebuddy plugin uninstall layermap@layermap`
+- Pi：`pi remove npm:layermap`
 
 卸载后再删掉缓存目录即可。
 

@@ -109,6 +109,35 @@ test("the stop hook asks only about this session's own edits, and not after it c
   assert.equal(JSON.parse(await hook("stop-check.sh", input, env)).decision, "block");
 });
 
+test("the stop hook reads CodeBuddy's transcript, whose arguments are a JSON string", async () => {
+  const { root, write } = await project({ "src/a.ts": "export const a = 1;\n" });
+  const git = (...args: string[]) =>
+    run("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root });
+  await git("add", "-A");
+  await git("commit", "-qm", "base");
+  const env = { TMPDIR: await sandbox() };
+  const transcript = path.join(await sandbox(), "transcript.jsonl");
+  const line = (name: string) =>
+    JSON.stringify({
+      type: "function_call",
+      name,
+      arguments: JSON.stringify({ file_path: path.join(root, "src/a.ts"), new_string: "x" }),
+    });
+  const input = { session_id: "s", cwd: root, transcript_path: transcript };
+  await hook("session-start.sh", input, env);
+
+  await write("src/a.ts", "export const a = 2;\n");
+  await writeFile(transcript, line("Edit"));
+  assert.equal(JSON.parse(await hook("stop-check.sh", input, env)).decision, "block");
+
+  await write("src/a.ts", "export const a = 3;\n");
+  await writeFile(
+    transcript,
+    [line("Edit"), line("mcp__layermap__project_check_changes")].join("\n"),
+  );
+  assert.equal(await hook("stop-check.sh", input, env), "");
+});
+
 test("outside a Git repository the hooks only print the note", async () => {
   const directory = path.join(await sandbox(), "plain");
   await mkdir(directory);
