@@ -915,11 +915,6 @@ function routesIn(graph: MapViewGraph, path: string): Set<string> {
 
 const routePath = (route: string) => route.slice(route.indexOf("/"));
 
-/**
- * The code and templates outside the tests that request the routes the change reaches through
- * their handlers (the handler itself or one call below it), and the routes it removed whose path
- * no registration keeps.
- */
 export type MapChangeCheckInput = Readonly<{
   /** The index holding the map of the working tree. */
   index: CodeIndex;
@@ -965,6 +960,11 @@ export async function checkMapChanges(
   };
 }
 
+/**
+ * The code and templates outside the tests that request the routes the change reaches through
+ * their handlers (the handler itself or one call below it), and the routes it removed whose path
+ * no registration keeps.
+ */
 export async function mapRouteClients(
   project: string,
   store: CodeIndexStore,
