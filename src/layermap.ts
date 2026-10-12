@@ -14,13 +14,7 @@ import {
 import type { CodeIndexSource, CodeIndexVersion } from "./code-index-types";
 import { ProjectEvidenceError } from "./core";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
-import {
-  mapChangeImpact,
-  mapChangesText,
-  mapRouteClients,
-  readMapChanges,
-  resolveMapBase,
-} from "./project-map-changes";
+import { checkMapChanges, resolveMapBase } from "./project-map-changes";
 import { GoMapAnalyzer } from "./project-map-language-go";
 import { JavaMapAnalyzer } from "./project-map-language-java";
 import { PythonMapAnalyzer } from "./project-map-language-python";
@@ -248,23 +242,16 @@ export class LayerMap {
    * see. The base commit's map is built only when the diff removes or changes lines there.
    */
   async checkChanges(input: { base?: string }, signal: AbortSignal): Promise<{ text: string }> {
-    const changes = await readMapChanges(this.project, input.base ?? "HEAD", signal);
-    const working = await this.refresh(signal);
-    // The base map tells what the diff removed, and which existing tests it changed.
-    const base = changes.files.some(
-      (file) =>
-        file.basePath !== undefined && (file.baseLines.length || file.baseText !== undefined),
-    )
-      ? await this.versionAt(changes.commit, signal)
-      : undefined;
-    const impact = mapChangeImpact(this.store, working, base, changes, this.project);
-    return {
-      text: mapChangesText(
-        changes,
-        impact,
-        await mapRouteClients(this.project, this.store, working, impact, signal),
-      ),
-    };
+    return checkMapChanges(
+      {
+        index: this.index,
+        project: this.project,
+        working: await this.refresh(signal),
+        base: input.base ?? "HEAD",
+        baseVersion: (commit, baseSignal) => this.versionAt(commit, baseSignal),
+      },
+      signal,
+    );
   }
 
   /**

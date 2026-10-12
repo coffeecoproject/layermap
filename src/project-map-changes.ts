@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { CodeIndex } from "./code-index";
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError } from "./core";
 import { GitRunner } from "./git-runner";
@@ -536,11 +537,12 @@ export function mapChangeImpact(
       if (file.status !== "DELETED") tracer.test(file.path, undefined, "changed in this diff", 1);
       continue;
     }
-    if (!objects.length) {
-      if (file.status !== "DELETED" && kind)
-        unclear.push(`${file.path} changed (${kind}): its effects are not mapped`);
-      continue;
-    }
+    // Files in a language the map does not analyze have no declarations; whether the capture kept
+    // them as files (a host may keep every file) does not make their changes code.
+    const analyzed = objects.length > 0 && mapLanguageOf(file.path) !== undefined;
+    if (!analyzed && file.status !== "DELETED" && kind)
+      unclear.push(`${file.path} changed (${kind}): its effects are not mapped`);
+    if (!objects.length) continue;
     // The innermost declarations around each changed line; top-level lines belong to the file.
     const hits = new Set<string>();
     let topLevel = false;
@@ -585,7 +587,7 @@ export function mapChangeImpact(
         unclear.push(
           `the registration of ${JSON.stringify(relation.argument)} at ${relation.anchor.path}:${relation.anchor.startLine} changed; check that the route still reaches the right handler`,
         );
-    if (topLevel && file.status !== "ADDED")
+    if (analyzed && topLevel && file.status !== "ADDED")
       unclear.push(`top-level code of ${file.path} changed (imports, constants or registrations)`);
     // A file's importers back up its callers: tests that import it, even without a mapped call.
     importerTests(graph, objects, tracer);
@@ -918,6 +920,51 @@ const routePath = (route: string) => route.slice(route.indexOf("/"));
  * their handlers (the handler itself or one call below it), and the routes it removed whose path
  * no registration keeps.
  */
+export type MapChangeCheckInput = Readonly<{
+  /** The index holding the map of the working tree. */
+  index: CodeIndex;
+  /** The directory that map was captured from; the diff against the base is read there. */
+  project: string;
+  /** The map version of that directory as it is now. */
+  working: string;
+  /** The commit, branch or tag to compare with. */
+  base: string;
+  /**
+   * The built map version of a commit of the same directory, captured with the same options as the
+   * working version; the host builds it, since it decides how versions are kept. Called only when
+   * the diff removes or changes lines that existed in the base.
+   */
+  baseVersion: (commit: string, signal: AbortSignal) => Promise<string>;
+}>;
+
+/**
+ * What the working tree's changes against a base commit affect, as project_check_changes reports
+ * it: the changed and removed declarations, the entry points and tests their callers reach, the
+ * code requesting affected routes, and what the map cannot see.
+ */
+export async function checkMapChanges(
+  input: MapChangeCheckInput,
+  signal: AbortSignal,
+): Promise<{ text: string }> {
+  const { index, project, working } = input;
+  const changes = await readMapChanges(project, input.base, signal);
+  await index.ensureIndex(working, signal);
+  // The base map tells what the diff removed, and which existing tests it changed.
+  const base = changes.files.some(
+    (file) => file.basePath !== undefined && (file.baseLines.length || file.baseText !== undefined),
+  )
+    ? await input.baseVersion(changes.commit, signal)
+    : undefined;
+  const impact = mapChangeImpact(index.store, working, base, changes, project);
+  return {
+    text: mapChangesText(
+      changes,
+      impact,
+      await mapRouteClients(project, index.store, working, impact, signal),
+    ),
+  };
+}
+
 export async function mapRouteClients(
   project: string,
   store: CodeIndexStore,

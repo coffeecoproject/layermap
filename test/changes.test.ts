@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { lstat, realpath } from "node:fs/promises";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { parseMapDiff } from "../src/project-map-changes";
-import { openMap, project, signal } from "./support";
+import { CodeIndex } from "../src/code-index";
+import { CodeIndexStore } from "../src/code-index-store";
+import type { CodeIndexSource } from "../src/code-index-types";
+import { mapDatabasePath, openMapDatabase } from "../src/layermap";
+import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
+import { checkMapChanges, parseMapDiff } from "../src/project-map-changes";
+import { GoMapAnalyzer } from "../src/project-map-language-go";
+import { JavaMapAnalyzer } from "../src/project-map-language-java";
+import { PythonMapAnalyzer } from "../src/project-map-language-python";
+import { TypeScriptMapAnalyzer } from "../src/project-map-language-typescript";
+import { analyzers, openMap, project, sandbox, signal } from "./support";
 
 const run = promisify(execFile);
 const commit = (root: string) =>
@@ -117,6 +127,89 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
   assert.ok(tests.indexOf("store.test.ts") < tests.indexOf("feeds.spec.ts"));
   assert.match(text, /If the change needs verifying, these existing tests are the ones to run\./u);
   assert.match(text, /does not prove the change is safe/u);
+});
+
+// Files the map keeps as files but does not analyze, by kind.
+const NOT_ANALYZED = {
+  "db/schema.sql": "create table feeds (id int);\n",
+  "web/feeds.html": "<p>feeds</p>\n",
+  "package.json": '{ "name": "feeds" }\n',
+  "web/style.css": "p { color: red; }\n",
+  "data/feeds.json": '{ "feeds": [] }\n',
+};
+
+test("a host embedding the index gets the same change check as LayerMap, whatever files it keeps", async (t) => {
+  const { root, write } = await project({ ...FILES, ...NOT_ANALYZED });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write(
+    "src/store.ts",
+    "export function markRead(id: number) {\n  return id + 1;\n}\n\nexport function legacyRenamed() {\n  return 1;\n}\n",
+  );
+  await write("config.yaml", "retries: 5\n");
+  for (const [file, content] of Object.entries(NOT_ANALYZED))
+    await write(file, content.replace("feeds", "items"));
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  // The host's own database and index, and its own way of building the base commit's map.
+  const store = new CodeIndexStore(
+    openMapDatabase(
+      mapDatabasePath(await sandbox(), root),
+    ) as unknown as CodeIndexStore["database"],
+  );
+  const { typescript, go, python, java } = await analyzers();
+  const index = new CodeIndex(
+    store,
+    undefined,
+    new ProjectMapAnalyzer([
+      new TypeScriptMapAnalyzer(typescript),
+      new GoMapAnalyzer(go),
+      new PythonMapAnalyzer(python),
+      new JavaMapAnalyzer(java),
+    ]),
+  );
+  t.after(async () => {
+    await index.quiesce();
+    index.close();
+    store.database.close();
+  });
+  const directory = await realpath(root);
+  const stat = await lstat(directory, { bigint: true });
+  const source: CodeIndexSource = {
+    kind: "WORKTREE",
+    projectRef: "host:project",
+    directory: { canonicalPath: directory, device: String(stat.dev), inode: String(stat.ino) },
+  };
+  const bases: string[] = [];
+  const { text } = await checkMapChanges(
+    {
+      index,
+      project: directory,
+      // Unlike LayerMap, this host keeps every file of the project, code or not.
+      working: (await index.prepare(source, signal())).version,
+      base: "HEAD",
+      baseVersion: async (commit, baseSignal) => {
+        bases.push(commit);
+        return (await index.prepare({ ...source, kind: "COMMIT", commit }, baseSignal)).version;
+      },
+    },
+    signal(),
+  );
+
+  assert.equal(
+    bases.length,
+    1,
+    "the base map is asked for once, since the diff removed a function",
+  );
+  assert.match(text, /REMOVED OR RENAMED/u);
+  // Changes to files the map does not analyze are named by kind, never as top-level code.
+  assert.match(text, /config\.yaml changed \(configuration\)/u);
+  assert.match(text, /db\/schema\.sql changed \(database migration or schema\)/u);
+  assert.match(text, /web\/feeds\.html changed \(template\)/u);
+  assert.match(text, /package\.json changed \(build or dependency file\)/u);
+  assert.doesNotMatch(text, /top-level code of (?!src\/)/u);
+  assert.equal(text, (await map.checkChanges({}, signal())).text);
 });
 
 const RESPONSES = (body: string) => `class Response:

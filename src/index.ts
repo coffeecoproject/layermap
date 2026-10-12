@@ -8,6 +8,7 @@ export * from "./core";
 export * from "./git-runner";
 export * from "./project-map-analyzer";
 export * from "./project-map-archived-navigation";
+export { checkMapChanges, type MapChangeCheckInput } from "./project-map-changes";
 export * from "./project-map-failure";
 export { PROJECT_MAP_ANALYZER } from "./project-map-language";
 export * from "./project-map-navigation";
