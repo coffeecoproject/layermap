@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { npxServerArgs } from "../src/agent/setup";
 import { AGENT_MAP_NOTE, AGENT_STOP_CHECK } from "../src/agent/tools";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -67,7 +68,7 @@ const piExtension = (version: string) =>
 /** The published server: the pinned package from npm, through npx. */
 const published = (version: string): ServerLaunch => ({
   command: "npx",
-  args: ["-y", `layermap@${version}`, "mcp"],
+  args: npxServerArgs(version),
 });
 
 // Claude Code starts a plugin's server without a shell, and on Windows npx is a .cmd script that

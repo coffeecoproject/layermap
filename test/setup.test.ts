@@ -231,7 +231,7 @@ test("a LayerMap run through npx registers npx, through cmd.exe on Windows", () 
   const script = process.argv[1];
   process.argv[1] = path.join(path.sep, "cache", "_npx", "1", "node_modules", "layermap", "cli.js");
   try {
-    const npx = ["npx", "-y", "layermap@1.2.3", "mcp"];
+    const npx = ["npx", "--prefer-offline", "-y", "layermap@1.2.3", "mcp"];
     assert.deepEqual(mcpLaunchCommand("1.2.3", "darwin"), npx);
     assert.deepEqual(mcpLaunchCommand("1.2.3", "win32"), ["cmd", "/c", ...npx]);
   } finally {

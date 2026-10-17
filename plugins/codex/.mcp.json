@@ -3,6 +3,7 @@
     "layermap": {
       "command": "npx",
       "args": [
+        "--prefer-offline",
         "-y",
         "layermap@0.1.17",
         "mcp"

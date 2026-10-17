@@ -68,6 +68,6 @@ process.stdin.on("end", () => {
     encoding: "utf8",
     env: { ...env, PATH: [directory, process.env.PATH].join(path.delimiter) },
   });
-  assert.equal(result.stdout, "-y layermap@1.2.3 mcp: ping\n", result.stderr);
+  assert.equal(result.stdout, "--prefer-offline -y layermap@1.2.3 mcp: ping\n", result.stderr);
   assert.equal(result.status, 3);
 });

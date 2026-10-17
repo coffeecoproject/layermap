@@ -38,7 +38,9 @@ const session = (open: () => Promise<LayerMap>, buildWaitMs?: number) => {
 
 test("an MCP client lists the read-only map tools and explores the project", async () => {
   const { root } = await project(FILES);
-  const client = session(() => openMap(root));
+  // This test is about the tools, not the build wait: a first build that must also build the
+  // language analyzers can take longer than the default wait.
+  const client = session(() => openMap(root), 10 * 60_000);
   try {
     const initialized = (await client.request("initialize", {
       protocolVersion: "2025-06-18",
