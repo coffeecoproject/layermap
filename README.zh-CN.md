@@ -138,7 +138,7 @@ npx layermap setup dsh
 可以撤销。
 
 不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。第一次
-启动时，npx 会从 npm 下载锁定版本的 `layermap`。
+启动时，npx 会从 npm 下载锁定版本的 `layermap`；之后直接用本机缓存，断网也能启动。
 
 Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；
 也可以运行一次 `npx layermap allow claude`，在所有项目里放行这些只读工具。

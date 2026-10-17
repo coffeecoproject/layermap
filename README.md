@@ -142,7 +142,8 @@ This adds LayerMap to every dsh profile. Each session maps the project dsh was s
 `npx layermap remove dsh` undoes it.
 
 In every agent, start a new session in a Git repository and ask as usual. LayerMap tells the agent
-when the map helps. On first launch, npx downloads the pinned `layermap` package from npm.
+when the map helps. On first launch, npx downloads the pinned `layermap` package from npm; later
+launches use the cached copy, even offline.
 
 Claude Code asks once before each map tool runs in a project. Choose "don't ask again", or run
 `npx layermap allow claude` to allow the plugin's read-only tools everywhere.
