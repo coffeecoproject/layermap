@@ -65,7 +65,7 @@ export class CodeIndex {
             throw new ProjectEvidenceError("PROJECT_EVIDENCE_STORE_CONFLICT", false);
           return existing;
         }
-        await this.buildMap(result, source, combined);
+        await this.buildMap(result, source, combined, options.startFromProjectRef);
         return this.store.requireVersion(result.version.version);
       })
       .catch((error: unknown) => {
@@ -87,6 +87,7 @@ export class CodeIndex {
     result: CodeIndexCaptureResult,
     source: CodeIndexSource,
     signal: AbortSignal,
+    startFromProjectRef: string | undefined,
   ): Promise<void> {
     this.assertAccepting(signal);
     const ref = result.version.version;
@@ -98,7 +99,7 @@ export class CodeIndex {
         if (!(error instanceof ProjectEvidenceError) || error.code !== "PROJECT_READ_CANCELLED")
           throw error;
       }
-      return this.buildMap(result, source, signal);
+      return this.buildMap(result, source, signal, startFromProjectRef);
     }
     if (existing) return this.awaitRebuild(existing, signal);
     if (this.store.getVersion(ref)) return;
@@ -143,7 +144,7 @@ export class CodeIndex {
         this.store.discardMapStage(stage);
       }
     };
-    const completion = run(this.mapParent(result)).finally(() => {
+    const completion = run(this.mapParent(result, startFromProjectRef)).finally(() => {
       if (this.mapBuilds.get(ref)?.completion === completion) this.mapBuilds.delete(ref);
     });
     const build = { controller, completion, waiters: new Set<symbol>() };
@@ -152,13 +153,21 @@ export class CodeIndex {
   }
 
   /**
-   * The recent map of the same project scope and analyzer whose files differ least from the new
-   * revision's: its contexts whose inputs did not change are replayed rather than analyzed.
+   * The recent map of the same project scope and analyzer, or of the project to start from, whose
+   * files differ least from the new revision's: its contexts whose inputs did not change are
+   * replayed rather than analyzed.
    */
-  private mapParent(result: CodeIndexCaptureResult): Omit<MapParent, "link"> | undefined {
+  private mapParent(
+    result: CodeIndexCaptureResult,
+    startFromProjectRef: string | undefined,
+  ): Omit<MapParent, "link"> | undefined {
     const digests = new Map(result.entries.map((entry) => [entry.path, entry.contentDigest]));
     let best: { version: string; entries: Map<string, string>; changed: number } | undefined;
-    for (const candidate of this.store.mapParentCandidates(result.version, 8)) {
+    for (const candidate of this.store.mapParentCandidates(
+      result.version,
+      8,
+      startFromProjectRef,
+    )) {
       const entries = new Map<string, string>();
       for (const entry of this.store.listEntries(candidate))
         if (entry.contentDigest) entries.set(entry.path, entry.contentDigest);

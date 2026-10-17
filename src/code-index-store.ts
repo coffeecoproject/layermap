@@ -579,16 +579,24 @@ export class CodeIndexStore {
     }
   }
 
-  /** Earlier versions of a project's scope built by the same analyzer, most recent first. */
-  mapParentCandidates(version: CodeIndexVersion, limit: number): readonly string[] {
+  /**
+   * Earlier versions of a project's scope built by the same analyzer, most recent first; with
+   * another project, that project's versions of the same scope and analyzer as well.
+   */
+  mapParentCandidates(
+    version: CodeIndexVersion,
+    limit: number,
+    otherProjectRef?: string,
+  ): readonly string[] {
     return this.database
       .prepare(`SELECT version.version_ref FROM project_code_versions version
         JOIN project_code_index_state state ON state.version_ref = version.version_ref
-        WHERE version.project_ref = ? AND version.analyzer = ? AND version.scope_json = ?
+        WHERE version.project_ref IN (?, ?) AND version.analyzer = ? AND version.scope_json = ?
           AND version.version_ref <> ?
         ORDER BY state.completed_at DESC LIMIT ?`)
       .all(
         version.projectRef,
+        otherProjectRef ?? version.projectRef,
         version.analyzer,
         canonicalJson(version.pathPrefixes),
         version.version,

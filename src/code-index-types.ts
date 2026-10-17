@@ -32,5 +32,10 @@ export type CodeIndexProgress = Readonly<{
 
 export type CodeIndexCaptureOptions = Readonly<{
   initialScope?: InitialEvidenceScope;
+  /**
+   * Another project in the same store whose recent maps of the same scope may seed this map, such
+   * as the project a copy or worktree was made from: what did not change is reused, not analyzed.
+   */
+  startFromProjectRef?: string;
   onProgress?: (progress: CodeIndexProgress) => void;
 }>;
