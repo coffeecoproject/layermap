@@ -7,7 +7,8 @@
 // asks the agent once, before it settles, to check what its code edits affect.
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -134,16 +135,64 @@ function routedRepository(start, given) {
   return repositoryAt(path.resolve(start.directory, normal));
 }
 
-// The uncommitted code changes as one hash, empty when there are none or no repository.
-async function codeChanges(cwd) {
-  if (!(await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]))) return "";
-  const diff = await git(cwd, ["diff", "HEAD", "--no-ext-diff", "--no-color", "--", ...CODE_GLOBS]);
-  const untracked = (
-    await git(cwd, ["ls-files", "--others", "--exclude-standard", "--", ...CODE_GLOBS])
-  ).trim();
-  const listed = untracked ? await git(cwd, ["hash-object", "--", ...untracked.split("\n")]) : "";
-  if (!diff && !untracked) return "";
-  return createHash("sha256").update(diff).update(untracked).update(listed).digest("hex");
+// A repository's uncommitted code files, each with a hash of its content ("" once deleted); empty
+// without a commit.
+async function changedCode(repository) {
+  const changed = new Map();
+  if (!(await git(repository, ["rev-parse", "--verify", "--quiet", "HEAD"]))) return changed;
+  const listed = await Promise.all([
+    git(repository, [
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      "HEAD",
+      "--name-only",
+      "--no-renames",
+      "--",
+      ...CODE_GLOBS,
+    ]),
+    git(repository, [
+      "-c",
+      "core.quotePath=false",
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "--",
+      ...CODE_GLOBS,
+    ]),
+  ]);
+  const files = [...new Set(listed.join("\n").split("\n").filter(Boolean))].sort();
+  for (const file of files) {
+    const content = await readFile(path.join(repository, file)).catch(() => undefined);
+    changed.set(file, content ? createHash("sha256").update(content).digest("hex") : "");
+  }
+  return changed;
+}
+
+// The changes as one hash, empty when there are none.
+const fingerprint = (changed) =>
+  changed.size
+    ? createHash("sha256")
+        .update(JSON.stringify([...changed]))
+        .digest("hex")
+    : "";
+
+// The folders a shell command names that exist, relative to the directory it runs in.
+async function namedFolders(cwd, command) {
+  const folders = new Set();
+  for (const word of command.split(/[^A-Za-z0-9._/~:@+,%-]+/).slice(0, 300)) {
+    if (!word) continue;
+    const named = word.startsWith("~/")
+      ? path.join(os.homedir(), word.slice(2))
+      : path.resolve(cwd, word);
+    for (const folder of [named, path.dirname(named)])
+      if ((await stat(folder).catch(() => undefined))?.isDirectory()) {
+        folders.add(folder);
+        break;
+      }
+    if (folders.size >= 20) break;
+  }
+  return folders;
 }
 
 export default function layermap(pi) {
@@ -154,15 +203,18 @@ export default function layermap(pi) {
   // Where the server resolves relative paths from: the repository the session started in, or its
   // directory outside one.
   let start = { directory: "", git: false };
-  // The stop check looks at each repository the agent may have changed files in: those of the
-  // files an edit, write or patch names, and for any other tool that can change files the one the
-  // session started in.
+  // The stop check looks at each repository the agent changed code in: those of the files an
+  // edit, write or patch names, and those in which any other tool that can change files (bash, …)
+  // changed code files while it ran, among the repository the session started in, those of the
+  // folders its command names and those already edited.
   // It compares a repository's uncommitted code changes with those it had before the session's
   // first such tool there and those the agent last checked in it, and all of them with those it
   // was last asked about; changes another session makes while this one reads do not count.
   const edited = new Set();
   const before = new Map();
   const checked = new Map();
+  // The code changes of each repository a running tool may change, by the tool call's id.
+  const running = new Map();
   let askedAbout = "";
 
   const ensureServer = async () => {
@@ -191,7 +243,7 @@ export default function layermap(pi) {
             if (result.isError) throw new Error(text);
             if (tool.name === CHECK_TOOL) {
               const repository = await routedRepository(start, params?.path);
-              if (repository) checked.set(repository, await codeChanges(repository));
+              if (repository) checked.set(repository, fingerprint(await changedCode(repository)));
             }
             return { content: [{ type: "text", text }], details: {} };
           },
@@ -212,6 +264,7 @@ export default function layermap(pi) {
     edited.clear();
     before.clear();
     checked.clear();
+    running.clear();
     askedAbout = "";
     await ensureServer().catch((error) =>
       ctx.ui?.notify?.(`LayerMap could not start: ${error.message}`, "warning"),
@@ -221,13 +274,41 @@ export default function layermap(pi) {
   pi.on("tool_call", async (event) => {
     if (READS.has(event.toolName) || registered.has(event.toolName) || !cwd) return;
     const files = namedFiles(event);
-    const repositories = files.length
-      ? await Promise.all(files.map((file) => repositoryAt(path.resolve(cwd, file))))
-      : [start.git && start.directory];
-    for (const repository of new Set(repositories)) {
-      if (!repository || edited.has(repository)) continue;
-      edited.add(repository);
-      before.set(repository, await codeChanges(repository));
+    if (files.length) {
+      const repositories = await Promise.all(
+        files.map((file) => repositoryAt(path.resolve(cwd, file))),
+      );
+      for (const repository of new Set(repositories)) {
+        if (!repository || edited.has(repository)) continue;
+        edited.add(repository);
+        before.set(repository, fingerprint(await changedCode(repository)));
+      }
+      return;
+    }
+    const command = event.input?.command;
+    const folders = typeof command === "string" ? await namedFolders(cwd, command) : [];
+    const repositories = new Set([
+      ...(start.git ? [start.directory] : []),
+      ...(await Promise.all([...folders].map(repositoryAt))),
+      ...edited,
+    ]);
+    const changes = new Map();
+    for (const repository of repositories)
+      if (repository) changes.set(repository, await changedCode(repository));
+    running.set(event.toolCallId, changes);
+  });
+
+  pi.on("tool_result", async (event) => {
+    const changes = running.get(event.toolCallId);
+    if (!changes) return;
+    running.delete(event.toolCallId);
+    for (const [repository, earlier] of changes) {
+      if (edited.has(repository)) continue;
+      const now = await changedCode(repository);
+      if ([...now].some(([file, content]) => earlier.get(file) !== content)) {
+        edited.add(repository);
+        before.set(repository, fingerprint(earlier));
+      }
     }
   });
 
@@ -235,7 +316,7 @@ export default function layermap(pi) {
     if (process.env.LAYERMAP_STOP_CHECK === "0") return;
     const due = [];
     for (const repository of edited) {
-      const changes = await codeChanges(repository);
+      const changes = fingerprint(await changedCode(repository));
       if (changes && changes !== before.get(repository) && changes !== checked.get(repository))
         due.push({ repository, changes });
     }

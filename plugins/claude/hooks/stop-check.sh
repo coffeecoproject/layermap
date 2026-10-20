@@ -5,16 +5,23 @@ input=$(cat 2>/dev/null | tr -d '\n')
 field() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | sed 's/\\\\/\\/g'; }
 session=$(field session_id | tr -cd 'A-Za-z0-9_-')
 [ -n "$session" ] || session=unknown
-dir=$(field cwd)
-[ -d "$dir" ] || dir=$PWD
-start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
 state="${TMPDIR:-/tmp}/layermap-claude"
 mkdir -p "$state" 2>/dev/null
+# Claude Code's shell directory, which follows the agent's cd; the session started where the
+# session-start hook first ran.
+here=$(field cwd)
+[ -d "$here" ] || here=$PWD
+dir=$(cat "$state/$session.dir" 2>/dev/null)
+[ -d "$dir" ] || dir=$here
+start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+# The name of each changed code file, and the checksum, size and name of each that still exists.
 code_changes() {
-  git -C "$1" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
-  git -C "$1" diff HEAD --no-ext-diff --no-color -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null
-  git -C "$1" ls-files --others --exclude-standard -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null |
-    while IFS= read -r file; do printf '%s %s\n' "$file" "$(git -C "$1" hash-object -- "$file" 2>/dev/null)"; done
+  files=$(git -C "$1" -c core.quotePath=false diff HEAD --name-only --no-renames -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null) || return 0
+  files=$({ printf '%s\n' "$files"
+    git -C "$1" -c core.quotePath=false ls-files --others --exclude-standard -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null; } | sed '/^$/d' | sort -u)
+  [ -n "$files" ] || return 0
+  printf '%s\n' "$files" | sed 's/^/? /'
+  printf '%s\n' "$files" | (cd "$1" && tr '\n' '\0' | xargs -0 cksum 2>/dev/null)
 }
 fingerprint() { printf '%s' "$1" | git hash-object --stdin 2>/dev/null; }
 case "$input" in *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exit 0 ;; esac
@@ -102,6 +109,8 @@ WHERE
         fi
         [ -n "$repo" ] && printf 'edit\t%s\t%s\t%s\n' "$line" "$repo" "$prefix${file##*/}"
       done
+    # The code files the session's commands changed, as the command hook noted them.
+    awk -F '\t' '{ print "edit\t" $0 }' "$state/$session.edits" 2>/dev/null
     checks | slashes | while read -r line named; do
       repo=$(repository "$named")
       [ -n "$repo" ] && printf 'check\t%s\t%s\n' "$line" "$repo"

@@ -281,3 +281,74 @@ test("the stop hook asks about each repository the session edited until a check 
   assert.equal(await stop(a, edit(path.join(b, "src/a.ts")), check({ path: "../b" }), check()), "");
   assert.equal(await stop(a, edit(path.join(b, "src/a.ts")), check({ path: "b" })), other);
 });
+
+test("the command hook notes the code files a shell command changes, for the stop hook", async () => {
+  const folder = await realpath(await sandbox());
+  const repo = async (name: string) => {
+    const { root } = await project(
+      { "src/a.ts": "export const a = 1;\n" },
+      path.join(folder, name),
+    );
+    const git = (...args: string[]) =>
+      run("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root });
+    await git("add", "-A");
+    await git("commit", "-qm", "base");
+    return root;
+  };
+  const [a, b] = [await repo("a"), await repo("b")];
+  const env = { TMPDIR: await sandbox() };
+  const transcript = path.join(await sandbox(), "transcript.jsonl");
+  const check = (input: Record<string, string>) =>
+    JSON.stringify({
+      message: {
+        content: [{ type: "tool_use", name: "mcp__layermap__project_check_changes", input }],
+      },
+    });
+  const lines = ['{"type":"user"}'];
+  const at = async (session: string, cwd: string, event: string, extra = {}) => {
+    await writeFile(transcript, lines.join("\n"));
+    const input = { session_id: session, cwd, transcript_path: transcript, ...extra };
+    const script = { SessionStart: "session-start.sh", Stop: "stop-check.sh" }[event];
+    return hook(script ?? "command-changes.sh", { ...input, hook_event_name: event }, env);
+  };
+  const command = (id: string, text: string) => ({
+    tool_name: "Bash",
+    tool_input: { command: text },
+    tool_use_id: id,
+  });
+  const reason = (output: string) =>
+    output ? (JSON.parse(output) as { reason: string }).reason : "";
+
+  // Started in the folder: a command run there names a file in b, last, then changes it.
+  await at("s1", folder, "SessionStart");
+  const sed = command("c1", "sed -i '' s/1/2/ b/src/a.ts");
+  await at("s1", folder, "PreToolUse", sed);
+  await writeFile(path.join(b, "src/a.ts"), "export const a = 2;\n");
+  await at("s1", folder, "PostToolUse", sed);
+  assert.ok(
+    reason(await at("s1", b, "Stop")).endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${b}.`),
+    "the command's change is the session's",
+  );
+  lines.push(check({ path: b }));
+  assert.equal(await at("s1", b, "Stop"), "", "and a check of b covers it");
+
+  // Started in a, which another session changed before the command: a command there that changes
+  // nothing adds no edit, and after cd b a check without a path is still a's.
+  await writeFile(path.join(a, "src/a.ts"), "export const a = 9;\n");
+  await at("s2", a, "SessionStart");
+  await writeFile(path.join(a, "src/b.ts"), "export const b = 1;\n");
+  const list = command("c2", "ls src");
+  await at("s2", a, "PreToolUse", list);
+  await at("s2", a, "PostToolUse", list);
+  assert.equal(
+    await at("s2", a, "Stop"),
+    "",
+    "a change made between commands is not the session's",
+  );
+  const touch = command("c3", "printf x >> src/b.ts");
+  await at("s2", a, "PreToolUse", touch);
+  await writeFile(path.join(a, "src/b.ts"), "export const b = 2;\n");
+  await at("s2", a, "PostToolUse", touch);
+  lines.push(check({}));
+  assert.equal(await at("s2", b, "Stop"), "", "the session started in a, though its shell is in b");
+});

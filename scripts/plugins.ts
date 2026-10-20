@@ -99,27 +99,87 @@ server.on("exit", (code) => process.exit(code ?? 1));
 const CODE_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "py", "java"];
 const CODE = CODE_EXTENSIONS.map((extension) => `'*.${extension}'`).join(" ");
 
-// Shell shared by the Claude Code hooks: the hook's input fields, the repository the session started
-// in (empty outside one), and a repository's uncommitted code changes (empty without a commit or
-// changes) and their fingerprint. Plain sh and git, so the hooks start no runtime and the plugin
-// directory's validator can read them.
+// Shell shared by the Claude Code hooks: the hook's input fields, where the hook runs, the
+// repository the session started in (empty outside one), and a repository's uncommitted code
+// changes (empty without a commit or changes) and their fingerprint. Plain sh and git, so the hooks
+// start no runtime and the plugin directory's validator can read them.
 const HOOK_SHELL = String.raw`input=$(cat 2>/dev/null | tr -d '\n')
 # JSON escapes a backslash as two; Windows paths (C:\\Users\\…) need them back as one.
 field() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | sed 's/\\\\/\\/g'; }
 session=$(field session_id | tr -cd 'A-Za-z0-9_-')
 [ -n "$session" ] || session=unknown
-dir=$(field cwd)
-[ -d "$dir" ] || dir=$PWD
-start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
 state="${"$"}{TMPDIR:-/tmp}/layermap-claude"
 mkdir -p "$state" 2>/dev/null
+# Claude Code's shell directory, which follows the agent's cd; the session started where the
+# session-start hook first ran.
+here=$(field cwd)
+[ -d "$here" ] || here=$PWD
+dir=$(cat "$state/$session.dir" 2>/dev/null)
+[ -d "$dir" ] || dir=$here
+start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+# The name of each changed code file, and the checksum, size and name of each that still exists.
 code_changes() {
-  git -C "$1" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
-  git -C "$1" diff HEAD --no-ext-diff --no-color -- ${CODE} 2>/dev/null
-  git -C "$1" ls-files --others --exclude-standard -- ${CODE} 2>/dev/null |
-    while IFS= read -r file; do printf '%s %s\n' "$file" "$(git -C "$1" hash-object -- "$file" 2>/dev/null)"; done
+  files=$(git -C "$1" -c core.quotePath=false diff HEAD --name-only --no-renames -- ${CODE} 2>/dev/null) || return 0
+  files=$({ printf '%s\n' "$files"
+    git -C "$1" -c core.quotePath=false ls-files --others --exclude-standard -- ${CODE} 2>/dev/null; } | sed '/^$/d' | sort -u)
+  [ -n "$files" ] || return 0
+  printf '%s\n' "$files" | sed 's/^/? /'
+  printf '%s\n' "$files" | (cd "$1" && tr '\n' '\0' | xargs -0 cksum 2>/dev/null)
 }
 fingerprint() { printf '%s' "$1" | git hash-object --stdin 2>/dev/null; }`;
+
+// The command hook after HOOK_SHELL, before and after each shell command: the code files the
+// command changed, in the repository the session started in, the one the command runs in, those
+// of the folders it names and those the session's commands changed before. Each is noted with the
+// transcript's length then, for the stop hook, as an edit there.
+const COMMAND_SHELL = String.raw`call=$(field tool_use_id | tr -cd 'A-Za-z0-9_-')
+[ -n "$call" ] || exit 0
+before="$state/$session.$call.before"
+# Each repository on a line of its own, then its code changes, each line led by the repository.
+snapshot() {
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    printf '%s\t\n' "$repo"
+    code_changes "$repo" | R=$repo awk '{ print ENVIRON["R"] "\t" $0 }'
+  done
+}
+case "$input" in
+*'"hook_event_name":"PreToolUse"'* | *'"hook_event_name": "PreToolUse"'*)
+  command=$(printf '%s' "$input" | sed -nE 's/.*"command": *"(([^"\\]|\\.)*)".*/\1/p')
+  known=$({ printf '%s\n' "$start"
+    [ "$here" = "$start" ] || git -C "$here" rev-parse --show-toplevel 2>/dev/null
+    cat "$state/$session.repos" 2>/dev/null; } | sed '/^$/d' | sort -u)
+  {
+    printf '%s\n' "$known"
+    # The repositories of the folders the command names, outside those already known.
+    printf '%s\n' "$command" | sed 's/\\[nrt"]/ /g' | tr -cs 'A-Za-z0-9._/~:@+,%-' '\n' | head -n 300 |
+      while IFS= read -r word; do
+        case "$word" in
+        "~/"*) named="$HOME/${"$"}{word#\~/}" ;;
+        /*) named=$word ;;
+        *) named="$here/$word" ;;
+        esac
+        if [ -d "$named" ]; then printf '%s\n' "$named"; elif [ -d "${"$"}{named%/*}" ]; then printf '%s\n' "${"$"}{named%/*}"; fi
+      done | sort -u | head -n 20 | while IFS= read -r folder; do
+        inside=
+        while IFS= read -r repo; do [ -n "$repo" ] && case "$folder/" in "$repo"/*) inside=1 ;; esac; done <<KNOWN
+$known
+KNOWN
+        [ -n "$inside" ] || git -C "$folder" rev-parse --show-toplevel 2>/dev/null
+      done
+  } | sed '/^$/d' | sort -u | snapshot > "$before"
+  ;;
+*)
+  [ -f "$before" ] || exit 0
+  transcript=$(field transcript_path)
+  [ -f "$transcript" ] && line=$(wc -l < "$transcript" | tr -d ' ')
+  awk -F '\t' '$2 == "" { print $1 }' "$before" | snapshot | grep -vxF -f "$before" |
+    awk -F '\t' -v line="${"$"}{line:-0}" '$2 != "" { name = $2; if (!sub(/^\? /, "", name)) sub(/^[0-9]+ [0-9]+ /, "", name)
+      print line "\t" $1 "\t" name }' >> "$state/$session.edits"
+  cut -f 2 "$state/$session.edits" 2>/dev/null | sort -u > "$state/$session.repos"
+  rm -f "$before"
+  ;;
+esac`;
 
 // Single-quoted for sh.
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
@@ -215,6 +275,8 @@ WHERE
         fi
         [ -n "$repo" ] && printf 'edit\t%s\t%s\t%s\n' "$line" "$repo" "$prefix${"$"}{file##*/}"
       done
+    # The code files the session's commands changed, as the command hook noted them.
+    awk -F '\t' '{ print "edit\t" $0 }' "$state/$session.edits" 2>/dev/null
     checks | slashes | while read -r line named; do
       repo=$(repository "$named")
       [ -n "$repo" ] && printf 'check\t%s\t%s\n' "$line" "$repo"
@@ -318,7 +380,8 @@ export function generatedFiles(version: string, dev?: ServerLaunch): Record<stri
     // instead of written into the user's CLAUDE.md. The tools ask before their first use; the user
     // may allow them for good with `layermap allow claude`.
     // The stop hook asks Claude, once per set of code changes made in the session, to check what
-    // they affect before finishing; LAYERMAP_STOP_CHECK=0 turns it off.
+    // they affect before finishing; the command hook notes the code files shell commands change.
+    // LAYERMAP_STOP_CHECK=0 turns both off.
     "plugins/claude/hooks/hooks.json": json({
       description: "Tells Claude when the map helps, and to check what its code changes affect.",
       hooks: {
@@ -330,6 +393,24 @@ export function generatedFiles(version: string, dev?: ServerLaunch): Record<stri
             ],
           },
         ],
+        ...Object.fromEntries(
+          ["PreToolUse", "PostToolUse"].map((event) => [
+            event,
+            [
+              {
+                matcher: "Bash",
+                hooks: [
+                  {
+                    type: "command",
+                    // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands it when it runs the hook.
+                    command: 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/command-changes.sh"',
+                    timeout: 30,
+                  },
+                ],
+              },
+            ],
+          ]),
+        ),
         Stop: [
           {
             hooks: [
@@ -344,14 +425,23 @@ export function generatedFiles(version: string, dev?: ServerLaunch): Record<stri
         ],
       },
     }),
-    // Notes the code changes the session starts with, so the stop hook asks only about the ones
-    // made in it, and prints when the map helps.
+    // Notes where the session starts and the code changes it starts with, so the stop hook asks
+    // only about the ones made in it, and prints when the map helps.
     "plugins/claude/hooks/session-start.sh": `# Generated by scripts/plugins.ts.
 ${HOOK_SHELL}
-[ -n "$start" ] && fingerprint "$(code_changes "$start")" > "$state/$session.start" 2>/dev/null
+if [ ! -f "$state/$session.dir" ]; then
+  printf '%s' "$here" > "$state/$session.dir" 2>/dev/null
+  [ -n "$start" ] && fingerprint "$(code_changes "$start")" > "$state/$session.start" 2>/dev/null
+fi
 cat <<'EOF'
 ${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: AGENT_MAP_NOTE } })}
 EOF
+`,
+    // Notes the code files each shell command changes, for the stop hook.
+    "plugins/claude/hooks/command-changes.sh": `# Generated by scripts/plugins.ts.
+[ "\${LAYERMAP_STOP_CHECK:-1}" = 0 ] && exit 0
+${HOOK_SHELL}
+${COMMAND_SHELL}
 `,
     // Stops Claude once to check the code changes the session made in each repository it edited.
     "plugins/claude/hooks/stop-check.sh": `# Generated by scripts/plugins.ts.
@@ -383,8 +473,9 @@ ${PROMPTS.map((prompt) => `- "${prompt}"`).join("\n")}
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
 - When Claude is about to finish after editing code in a repository it has not checked since, a stop hook asks it
-  once to run \`project_check_changes\` for each such repository and check what the changes affect. It only asks git whether code
-  changed and never runs tests or edits anything. Set \`LAYERMAP_STOP_CHECK=0\` to turn it off.
+  once to run \`project_check_changes\` for each such repository and check what the changes affect. Edits made by shell
+  commands count too: a hook notes which code files each command changed. It only asks git whether code changed and never
+  runs tests or edits anything. Set \`LAYERMAP_STOP_CHECK=0\` to turn it off.
 
 ## Permissions
 

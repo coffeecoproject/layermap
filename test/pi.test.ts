@@ -94,10 +94,13 @@ test("the Pi extension serves LayerMap's tools from its server and asks once to 
     (await settle({ entries: [] }, ctx)) as
       | { entries: { content: string }[]; continue: boolean }
       | undefined;
-  // No edit yet: nothing to ask. An edit to code, then a settle: ask once for these changes.
+  // No edit yet: nothing to ask. A command that changes code, then a settle: ask once for these
+  // changes.
   assert.equal(await ask(), undefined);
-  await handlers.get("tool_call")?.({ toolName: "apply_patch", input: { patch: "…" } }, ctx);
+  const command = { toolName: "bash", toolCallId: "c1", input: { command: "sed -i … a.ts" } };
+  await handlers.get("tool_call")?.(command, ctx);
   await writeFile(path.join(repo, "a.ts"), "export const a = 2;\n");
+  await handlers.get("tool_result")?.(command, ctx);
   const asked = await ask();
   assert.equal(asked?.continue, true);
   assert.equal(asked?.entries[0]?.content, AGENT_STOP_CHECK);
@@ -222,4 +225,63 @@ test("the Pi extension takes the repositories of the files an apply_patch patch 
     await session(a, "*** Begin Patch\n*** Update File: ../b/a.ts\n@@\n-x\n+y\n*** End Patch\n"),
     `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${b}.`,
   );
+});
+
+test("the Pi extension takes the repositories in which a shell command changed code", async (t) => {
+  const pkg = await installed();
+  const folder = await realpath(await sandbox());
+  const repo = async (name: string) => {
+    const root = path.join(folder, name);
+    await mkdir(root);
+    await writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+    await run("git", ["init", "-q"], { cwd: root });
+    await run("git", ["add", "-A"], { cwd: root });
+    await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+      cwd: root,
+    });
+    return root;
+  };
+  const [a, b] = [await repo("a"), await repo("b")];
+  const { default: extension } = await import(
+    `${pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href}?command`
+  );
+  const session = async (cwd: string) => {
+    const handlers = new Map<string, Handler>();
+    extension({ on: (name: string, h: Handler) => handlers.set(name, h), registerTool: () => {} });
+    const ctx = { cwd, ui: { notify: () => {} } };
+    await handlers.get("session_start")?.({}, ctx);
+    t.after(() => handlers.get("session_shutdown")?.({}, ctx));
+    let calls = 0;
+    return {
+      // A bash call of the command, during which change() runs.
+      run: async (command: string, change = async () => {}) => {
+        calls += 1;
+        const event = { toolName: "bash", toolCallId: `c${calls}`, input: { command } };
+        await handlers.get("tool_call")?.(event, ctx);
+        await change();
+        await handlers.get("tool_result")?.(event, ctx);
+      },
+      ask: async () =>
+        (
+          (await (handlers.get("agent_before_settle") as Handler)({ entries: [] }, ctx)) as
+            | { entries: { content: string }[] }
+            | undefined
+        )?.entries[0]?.content,
+    };
+  };
+
+  // In the folder: the repository of a folder the command names, when the command changed it.
+  const inFolder = await session(folder);
+  await inFolder.run("cd b && sed -i '' s/1/2/ a.ts", () =>
+    writeFile(path.join(b, "a.ts"), "export const a = 2;\n"),
+  );
+  assert.equal(await inFolder.ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${b}.`);
+
+  // In a: a change made between commands is not the session's; one made during a command is.
+  const inA = await session(a);
+  await writeFile(path.join(a, "a.ts"), "export const a = 9;\n");
+  await inA.run("ls");
+  assert.equal(await inA.ask(), undefined);
+  await inA.run("npm run generate", () => writeFile(path.join(a, "b.ts"), "export const b = 1;\n"));
+  assert.equal(await inA.ask(), AGENT_STOP_CHECK);
 });

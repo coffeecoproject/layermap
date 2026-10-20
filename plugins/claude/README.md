@@ -24,8 +24,9 @@ Start a session in a Git repository and ask as usual, for example:
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
 - When Claude is about to finish after editing code in a repository it has not checked since, a stop hook asks it
-  once to run `project_check_changes` for each such repository and check what the changes affect. It only asks git whether code
-  changed and never runs tests or edits anything. Set `LAYERMAP_STOP_CHECK=0` to turn it off.
+  once to run `project_check_changes` for each such repository and check what the changes affect. Edits made by shell
+  commands count too: a hook notes which code files each command changed. It only asks git whether code changed and never
+  runs tests or edits anything. Set `LAYERMAP_STOP_CHECK=0` to turn it off.
 
 ## Permissions
 

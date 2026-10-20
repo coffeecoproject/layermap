@@ -160,8 +160,8 @@ from a file, the check names the files that still read or set the old name. In t
 the change reaches a route's handler or renames a route, it names the code and templates that
 request that path: a frontend's fetch, a generated API client, a redirect or a link. It never writes or runs tests. In Claude Code and
 CodeBuddy Code the plugin asks the agent once, before it finishes, to run this check for each repository it edited code in
-and has not checked since (changes another session makes in the same work tree do not count); the
-Pi extension does the same after the agent's own edits. Set `LAYERMAP_STOP_CHECK=0` to turn that
+and has not checked since, whether through its edit tools or shell commands (changes another session makes in the same
+work tree do not count); the Pi extension does the same after the agent's own edits. Set `LAYERMAP_STOP_CHECK=0` to turn that
 off. Codex and DeepSeek Harness are told to run it.
 
 **Without plugins:** run `npx layermap setup claude` or `npx layermap setup codex`. Setup does three
