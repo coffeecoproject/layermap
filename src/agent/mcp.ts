@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import type { LayerMap } from "../layermap";
+import { projectDirectory } from "./environment";
 import { routeMapCall, type SessionStart } from "./projects";
 import {
   AGENT_MAP_INSTRUCTIONS,
@@ -16,11 +18,18 @@ type Message = {
   id?: string | number | null;
   method?: string;
   params?: Record<string, unknown>;
+  result?: Record<string, unknown>;
 };
+
+// How long the session's start waits for the client to list its roots.
+const ROOTS_WAIT_MS = 5_000;
 
 export type McpServerOptions = Readonly<{
   version: string;
-  /** Where the session started; tool calls without a path are about its repository. */
+  /**
+   * Where the server was started; tool calls without a path are about its repository unless the
+   * client lists the roots it works in.
+   */
   start: SessionStart;
   /** Opens a repository's map; the first call starts building it. */
   open: (project: string) => Promise<LayerMap>;
@@ -48,6 +57,33 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
   // client that connects only to probe the server is not kept waiting.
   const maps = new Map<string, Readonly<{ opened: Promise<LayerMap>; built: Promise<unknown> }>>();
   const session = new AbortController();
+  // A client may start its servers somewhere other than where the session works: Claude Code's
+  // desktop app starts them in the main checkout of a session working in a linked worktree. A
+  // client that lists its roots names that place, so its first root is where the session started.
+  let start = options.start;
+  let rooted: Promise<unknown> = Promise.resolve();
+  let listsRoots = false;
+  const replies = new Map<string | number, (message: Message) => void>();
+  let requested = 0;
+  const readRoots = () => {
+    const id = `layermap-roots-${++requested}`;
+    const reply = new Promise<Message>((resolve) => replies.set(id, resolve));
+    send({ id, method: "roots/list" });
+    rooted = Promise.race([reply, delay(ROOTS_WAIT_MS, undefined, { ref: false })])
+      .then(async (message) => {
+        replies.delete(id);
+        const roots = message?.result?.roots;
+        const root = Array.isArray(roots)
+          ? roots.find((item) => typeof item?.uri === "string" && item.uri.startsWith("file:"))
+          : undefined;
+        if (!root) return;
+        const directory = await projectDirectory(fileURLToPath(root.uri));
+        // A later list, after the roots changed again, outranks this one.
+        if (id === `layermap-roots-${requested}`) start = directory;
+      })
+      .catch(() => {});
+    return rooted;
+  };
   const map = (project: string) => {
     let entry = maps.get(project);
     if (!entry) {
@@ -91,7 +127,8 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
     try {
       const parsed = parseMapToolCall(name, params.arguments);
       if ("text" in parsed) return respond(parsed.text, parsed.isError);
-      const routed = await routeMapCall(options.start, parsed);
+      await rooted;
+      const routed = await routeMapCall(start, parsed);
       if (typeof routed === "string") return respond(routed, true);
       project = routed.project;
       const { opened, built } = map(project);
@@ -121,15 +158,23 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
 
   const handle = (message: Message) => {
     const { id, method, params = {} } = message;
-    if (method === undefined) return;
+    if (method === undefined) {
+      if (id !== undefined && id !== null) replies.get(id)?.(message);
+      return;
+    }
     if (id === undefined || id === null) {
-      if (method === "notifications/initialized" && options.start.git) map(options.start.directory);
+      if (method === "notifications/initialized")
+        void (listsRoots ? readRoots() : rooted).then(() => {
+          if (start.git) map(start.directory);
+        });
+      if (method === "notifications/roots/list_changed" && listsRoots) void readRoots();
       if (method === "notifications/cancelled")
         calls.get(params.requestId as string | number)?.abort();
       return;
     }
     switch (method) {
       case "initialize":
+        listsRoots = Boolean((params.capabilities as { roots?: unknown } | undefined)?.roots);
         return send({
           id,
           result: {

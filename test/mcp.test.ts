@@ -5,6 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { serveMcp } from "../src/agent/mcp";
 import type { SessionStart } from "../src/agent/projects";
@@ -15,6 +16,8 @@ const session = (
   start: SessionStart,
   open: (project: string) => Promise<LayerMap>,
   buildWaitMs?: number,
+  // The directories the client says it works in, when it lists them.
+  roots?: { directories: string[] },
 ) => {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -30,7 +33,17 @@ const session = (
   const pending = new Map<number, (message: Record<string, unknown>) => void>();
   createInterface({ input: output }).on("line", (line) => {
     const message = JSON.parse(line);
-    pending.get(message.id)?.(message);
+    if (message.method === "roots/list" && roots)
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            roots: roots.directories.map((directory) => ({ uri: pathToFileURL(directory).href })),
+          },
+        })}\n`,
+      );
+    else pending.get(message.id)?.(message);
   });
   let id = 0;
   const request = (method: string, params?: unknown) =>
@@ -295,6 +308,38 @@ test("a session that moves to another repository maps it when given its path", a
     const absolute = await explore(path.join(b, "src", "target.ts"));
     assert.ok(named(absolute, b));
     assert.deepEqual(opened, [a, b]);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a session works where its client's roots say, not where the client started the server", async () => {
+  // Claude Code's desktop app starts the server in the main checkout of a session that works in a
+  // linked worktree, and lists the worktree as its root.
+  const { a, b, opened, open } = await workspace();
+  const roots = { directories: [b] };
+  const client = session({ directory: a, git: true }, open, 10 * 60_000, roots);
+  const call = (args: Record<string, unknown>) =>
+    client.request("tools/call", {
+      name: "project_explore_map",
+      arguments: { name: "target", direction: "INCOMING", ...args },
+    }) as Promise<CallResult>;
+  try {
+    await client.request("initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: { roots: { listChanged: true } },
+    });
+    client.notify("notifications/initialized");
+    const here = await call({ path: "src/target.ts" });
+    assert.equal(here.result.isError, false, here.result.content[0]?.text ?? "");
+    assert.ok(named(here, b), "a relative path is the root's repository's");
+    assert.deepEqual(opened, [b], "the map of where the server started is not built");
+
+    roots.directories = [path.join(a, "src")];
+    client.notify("notifications/roots/list_changed");
+    const moved = await call({ path: "src/target.ts" });
+    assert.ok(named(moved, a), "a changed root is where the session works");
+    assert.deepEqual(opened, [b, a]);
   } finally {
     await client.close();
   }
