@@ -2,3 +2,5 @@ node_modules/
 .pack/
 # Build approvals are local: the plugin directory blocks package-manager config in the repository.
 pnpm-workspace.yaml
+# Like pnpm-workspace.yaml, the lockfile stays local; dependencies are pinned in package.json.
+pnpm-lock.yaml
