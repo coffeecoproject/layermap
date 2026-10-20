@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { AGENT_STOP_CHECK, AGENT_STOP_CHECK_REPOSITORIES } from "../src/agent/tools";
-import { project, sandbox } from "./support";
+import { gitRoot, project, sandbox } from "./support";
 
 const run = promisify(execFile);
 const hooks = fileURLToPath(new URL("../plugins/claude/hooks/", import.meta.url));
@@ -220,6 +220,8 @@ test("the stop hook asks about each repository the session edited until a check 
     return root;
   };
   const [a, b] = [await repo("a"), await repo("b")];
+  // Each repository as Git names it, and so the reminder: C:/… on Windows.
+  const [gitA, gitB] = [await gitRoot(a), await gitRoot(b)];
   const env = { TMPDIR: await sandbox() };
   const transcript = path.join(await sandbox(), "transcript.jsonl");
   const edit = (file: string) =>
@@ -250,10 +252,10 @@ test("the stop hook asks about each repository the session edited until a check 
 
   // Started in the folder holding both: each edited repository is named, as a check needs a path.
   const both = await stop(folder, edit(path.join(a, "src/a.ts")), edit(path.join(b, "src/a.ts")));
-  assert.ok(both.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${a}, ${b}.`), both);
+  assert.ok(both.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${gitA}, ${gitB}.`), both);
   const unchecked = await stop(folder, edit(path.join(a, "src/a.ts")), check());
   assert.ok(
-    unchecked.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${a}.`),
+    unchecked.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${gitA}.`),
     "a check needs a path here",
   );
   const left = await stop(
@@ -262,7 +264,7 @@ test("the stop hook asks about each repository the session edited until a check 
     edit(path.join(b, "src/a.ts")),
     check({ path: "a/src" }),
   );
-  assert.ok(left.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${b}.`), left);
+  assert.ok(left.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${gitB}.`), left);
   assert.equal(
     await stop(
       folder,
@@ -277,7 +279,7 @@ test("the stop hook asks about each repository the session edited until a check 
   // Started in a: a check without a path or with a relative one is a's, and ../b is b's.
   assert.equal(await stop(a, edit(path.join(a, "src/a.ts"))), AGENT_STOP_CHECK);
   const other = await stop(a, edit(path.join(b, "src/a.ts")), check());
-  assert.ok(other.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${b}.`), other);
+  assert.ok(other.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${gitB}.`), other);
   assert.equal(await stop(a, edit(path.join(b, "src/a.ts")), check({ path: "../b" }), check()), "");
   assert.equal(await stop(a, edit(path.join(b, "src/a.ts")), check({ path: "b" })), other);
 });
@@ -296,6 +298,8 @@ test("the command hook notes the code files a shell command changes, for the sto
     return root;
   };
   const [a, b] = [await repo("a"), await repo("b")];
+  // The repository as Git names it, and so the reminder: C:/… on Windows.
+  const gitB = await gitRoot(b);
   const env = { TMPDIR: await sandbox() };
   const transcript = path.join(await sandbox(), "transcript.jsonl");
   const check = (input: Record<string, string>) =>
@@ -326,7 +330,7 @@ test("the command hook notes the code files a shell command changes, for the sto
   await writeFile(path.join(b, "src/a.ts"), "export const a = 2;\n");
   await at("s1", folder, "PostToolUse", sed);
   assert.ok(
-    reason(await at("s1", b, "Stop")).endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${b}.`),
+    reason(await at("s1", b, "Stop")).endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${gitB}.`),
     "the command's change is the session's",
   );
   lines.push(check({ path: b }));

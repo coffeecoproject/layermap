@@ -17,6 +17,11 @@ export async function sandbox(): Promise<string> {
   return realpath(await mkdtemp(path.join(tmpdir(), "layermap-")));
 }
 
+/** A Git work tree's root as Git prints it, and LayerMap names it: C:/… rather than C:\… on Windows. */
+export async function gitRoot(directory: string): Promise<string> {
+  return (await run("git", ["rev-parse", "--show-toplevel"], { cwd: directory })).stdout.trim();
+}
+
 /** A Git work tree holding the given files, in a directory of its own unless root names one. */
 export async function project(
   files: Record<string, string>,

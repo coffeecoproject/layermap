@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { serveMcp } from "../src/agent/mcp";
 import type { SessionStart } from "../src/agent/projects";
 import type { LayerMap } from "../src/layermap";
-import { FILES, openMap, project, sandbox } from "./support";
+import { FILES, gitRoot, openMap, project, sandbox } from "./support";
 
 const session = (
   start: SessionStart,
@@ -212,7 +212,9 @@ async function workspace() {
     opened.push(directory);
     return openMap(directory);
   };
-  return { folder, a: path.join(folder, "a"), b: path.join(folder, "b"), opened, open };
+  // As Git names them, and so the map server and each result: C:/… on Windows.
+  const [a, b] = [await gitRoot(path.join(folder, "a")), await gitRoot(path.join(folder, "b"))];
+  return { folder, a, b, opened, open };
 }
 
 const named = (call: CallResult, project: string) =>

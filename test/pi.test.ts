@@ -11,7 +11,7 @@ import {
   AGENT_STOP_CHECK,
   AGENT_STOP_CHECK_REPOSITORIES,
 } from "../src/agent/tools";
-import { sandbox } from "./support";
+import { gitRoot, sandbox } from "./support";
 
 const run = promisify(execFile);
 
@@ -138,6 +138,8 @@ test("the Pi extension asks about each repository an edit names until a check of
     return root;
   };
   const [a, b] = [await repo("a"), await repo("b")];
+  // Each repository as Git names it, and so the reminder: C:/… on Windows.
+  const [gitA, gitB] = [await gitRoot(a), await gitRoot(b)];
   await mkdir(path.join(folder, "notes"));
 
   const handlers = new Map<string, Handler>();
@@ -167,12 +169,15 @@ test("the Pi extension asks about each repository an edit names until a check of
   assert.equal(await ask(), undefined);
   await edit("a/a.ts");
   await edit("b/a.ts");
-  assert.equal(await ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${a}, ${b}.`);
+  assert.equal(
+    await ask(),
+    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitA}, ${gitB}.`,
+  );
   // A check without a path checks no repository here; one with a path checks its repository.
   await writeFile(path.join(a, "a.ts"), "export const a = 3;\n");
   await tools[0]?.execute("1", {}, undefined);
   await tools[0]?.execute("2", { path: "b" }, undefined);
-  assert.equal(await ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${a}.`);
+  assert.equal(await ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitA}.`);
   await tools[0]?.execute("3", { path: path.join(a, "a.ts") }, undefined);
   assert.equal(await ask(), undefined);
 });
@@ -192,6 +197,8 @@ test("the Pi extension takes the repositories of the files an apply_patch patch 
     return root;
   };
   const [a, b] = [await repo("a"), await repo("b")];
+  // Each repository as Git names it, and so the reminder: C:/… on Windows.
+  const [gitA, gitB] = [await gitRoot(a), await gitRoot(b)];
   const { default: extension } = await import(
     `${pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href}?patch`
   );
@@ -218,12 +225,12 @@ test("the Pi extension takes the repositories of the files an apply_patch patch 
       folder,
       "*** Begin Patch\n*** Add File: a/b.ts\n+x\n*** Update File: b/a.ts\n@@\n-x\n+y\n*** End Patch\n",
     ),
-    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${a}, ${b}.`,
+    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitA}, ${gitB}.`,
   );
   await run("git", ["checkout", "-q", "."], { cwd: b });
   assert.equal(
     await session(a, "*** Begin Patch\n*** Update File: ../b/a.ts\n@@\n-x\n+y\n*** End Patch\n"),
-    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${b}.`,
+    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitB}.`,
   );
 });
 
@@ -242,6 +249,8 @@ test("the Pi extension takes the repositories in which a shell command changed c
     return root;
   };
   const [a, b] = [await repo("a"), await repo("b")];
+  // The repository as Git names it, and so the reminder: C:/… on Windows.
+  const gitB = await gitRoot(b);
   const { default: extension } = await import(
     `${pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href}?command`
   );
@@ -275,7 +284,10 @@ test("the Pi extension takes the repositories in which a shell command changed c
   await inFolder.run("cd b && sed -i '' s/1/2/ a.ts", () =>
     writeFile(path.join(b, "a.ts"), "export const a = 2;\n"),
   );
-  assert.equal(await inFolder.ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${b}.`);
+  assert.equal(
+    await inFolder.ask(),
+    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitB}.`,
+  );
 
   // In a: a change made between commands is not the session's; one made during a command is.
   const inA = await session(a);
