@@ -137,7 +137,7 @@ npx layermap setup dsh
 这条命令会把 LayerMap 加到 dsh 的所有配置里。每个会话分析的是启动 dsh 时所在的项目。`npx layermap remove dsh`
 可以撤销。
 
-不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。第一次
+不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。在装着多个仓库的总文件夹里开会话，或会话中途换到别的仓库，也能用：每次调用地图工具，都按传入的路径找到对应的仓库。第一次
 启动时，npx 会从 npm 下载锁定版本的 `layermap`；之后直接用本机缓存，断网也能启动。
 
 Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；

@@ -8,7 +8,7 @@ import {
 } from "./agent/environment";
 import { serveMcp } from "./agent/mcp";
 import { allowAgent, removeAgent, type SetupAgent, setupAgent } from "./agent/setup";
-import { describeMapError, runMapTool } from "./agent/tools";
+import { describeMapError, parseMapToolCall, runMapTool } from "./agent/tools";
 import { ProjectEvidenceError } from "./core";
 import { LayerMap } from "./layermap";
 import { MAP_TOOL_NAMES } from "./tools";
@@ -28,7 +28,8 @@ Usage:
   layermap refs PATH NAME [--line N] [--path DIR] [--max N] [--cursor C]
   layermap check [--base REF]             what the uncommitted changes (or those since REF) affect
 
-The project is the Git work tree around the current directory unless --project names one.
+The project is the Git work tree around the current directory unless --project names one; the MCP
+server also maps any other repository a tool call's path names.
 Maps are kept in ${cacheDirectory()}.`;
 
 const log = (line: string) => process.stderr.write(`${line}\n`);
@@ -71,10 +72,9 @@ async function main(argv: string[]): Promise<number> {
   if (values.help || !command) return usage(command ? 0 : 1);
   const { directory: project, git } = await projectDirectory(values.project ?? process.cwd());
   const cache = cacheDirectory();
-  const open = async () => {
-    if (!git) throw new ProjectEvidenceError("LAYERMAP_NOT_A_GIT_REPOSITORY", false);
+  const open = async (directory: string) => {
     const map = await LayerMap.open({
-      project,
+      project: directory,
       cacheDirectory: cache,
       analyzers: await resolveAnalyzers(cache, log),
     });
@@ -100,12 +100,13 @@ async function main(argv: string[]): Promise<number> {
     return done ? 0 : 1;
   }
   if (command === "mcp") {
-    await serveMcp({ version, open, log });
+    await serveMcp({ version, start: { directory: project, git }, open, log });
     return 0;
   }
 
   const number = (value: string | undefined) => (value === undefined ? undefined : Number(value));
-  const map = await open();
+  if (!git) throw new ProjectEvidenceError("LAYERMAP_NOT_A_GIT_REPOSITORY", false);
+  const map = await open(project);
   const signal = new AbortController().signal;
   try {
     if (command === "index") {
@@ -165,7 +166,8 @@ async function main(argv: string[]): Promise<number> {
               : field,
           ]),
       );
-    const result = await runMapTool(map, tool, defined(args), signal);
+    const parsed = parseMapToolCall(tool, defined(args));
+    const result = "text" in parsed ? parsed : await runMapTool(map, parsed, signal);
     (result.isError ? process.stderr : process.stdout).write(`${result.text}\n`);
     return result.isError ? 1 : 0;
   } finally {

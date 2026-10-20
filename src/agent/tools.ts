@@ -72,7 +72,7 @@ const HINTS: Readonly<Record<string, string>> = {
     "No such commit, branch or tag. Leave base out to compare with HEAD, or name an existing one such as main.",
   LAYERMAP_BASE_INVALID: "base names a commit, branch or tag, such as HEAD or main.",
   LAYERMAP_NOT_A_GIT_REPOSITORY:
-    "LayerMap maps Git repositories, and the agent was started outside one. Start it in a repository, or run layermap with --project naming one.",
+    "LayerMap maps Git repositories. Run it in one, or name one with --project.",
 };
 
 /** A failure as an agent should read it: the code, and what to do about it when known. */
@@ -81,12 +81,11 @@ export const describeMapError = (error: unknown): string | undefined =>
     ? `${error.code}${HINTS[error.code] ? `: ${HINTS[error.code]}` : ""}`
     : undefined;
 
-export async function runMapTool(
-  map: LayerMap,
-  name: string,
-  args: unknown,
-  signal: AbortSignal,
-): Promise<MapToolResult> {
+/** A map tool call whose arguments its schema accepted, with their defaults filled in. */
+export type MapToolCall = Readonly<{ name: string; args: Record<string, unknown> }>;
+
+/** The call as its tool's schema reads it, or what an agent reads about why it cannot be made. */
+export function parseMapToolCall(name: string, args: unknown): MapToolCall | MapToolResult {
   const tool = agentMapTools.find((candidate) => candidate.name === name);
   if (!tool) return { text: `Unknown tool ${name}.`, isError: true };
   const parsed = tool.schema.safeParse(args ?? {});
@@ -95,9 +94,17 @@ export async function runMapTool(
       text: `Invalid arguments: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "(arguments)"}: ${issue.message}`).join("; ")}`,
       isError: true,
     };
+  return { name, args: parsed.data as Record<string, unknown> };
+}
+
+export async function runMapTool(
+  map: LayerMap,
+  { name, args }: MapToolCall,
+  signal: AbortSignal,
+): Promise<MapToolResult> {
   try {
     if (name === MAP_TOOL_NAMES.explore) {
-      const input = parsed.data as z.infer<typeof ProjectMapExploreInputSchema>;
+      const input = args as unknown as z.infer<typeof ProjectMapExploreInputSchema>;
       const declaration = input.name !== undefined || input.line !== undefined;
       const page = await map.explore(
         {
@@ -114,15 +121,16 @@ export async function runMapTool(
       return { text: page.text + more(page.nextOffset), isError: false };
     }
     if (name === MAP_TOOL_NAMES.check) {
-      const input = parsed.data as z.infer<typeof ProjectMapCheckInputSchema>;
-      return { text: (await map.checkChanges(input, signal)).text, isError: false };
+      const input = args as unknown as z.infer<typeof ProjectMapCheckInputSchema>;
+      // The path chose the repository; the check covers its whole working tree.
+      return { text: (await map.checkChanges({ base: input.base }, signal)).text, isError: false };
     }
     if (name === MAP_TOOL_NAMES.search) {
-      const input = parsed.data as z.infer<typeof ProjectMapSearchInputSchema>;
+      const input = args as unknown as z.infer<typeof ProjectMapSearchInputSchema>;
       const page = await map.search({ ...input, path: mapDirectoryPath(input.path) }, signal);
       return { text: page.text + more(page.nextOffset), isError: false };
     }
-    const input = parsed.data as z.infer<typeof ReferencesInputSchema>;
+    const input = args as unknown as z.infer<typeof ReferencesInputSchema>;
     return { text: JSON.stringify(await map.references(input, signal)), isError: false };
   } catch (error) {
     const text = describeMapError(error);
@@ -133,7 +141,7 @@ export async function runMapTool(
 
 /** What an agent is told about the map once, when it connects. */
 export const AGENT_MAP_INSTRUCTIONS =
-  "Use the LayerMap tools instead of grep whenever a task needs to know what calls something, what a change could affect beyond the code at hand, where something is used, or how the code is organized; a change confined to code you have read does not need them: project_explore_map on a declaration with direction INCOMING and depth up to 8 traces its callers up to the entry points (HTTP routes, handlers, jobs, commands) in one call, which grep can only approximate one name at a time. LayerMap is a static, layered map of this repository for TypeScript/JavaScript, Go, Python and Java: directories and modules, each file's declarations, and each declaration's callers and callees up to 8 hops. path \".\" shows what exists. Continue from any NOT EXPANDED declarations a view names, then confirm entry points in source. When the edits are done, call project_check_changes once before reporting the work done, not after every edit: it lists the entry points and existing tests the changes reach, and the existing tests the diff rewrote. The map is static: dynamic dispatch, framework wiring and unresolved targets need source reading, and a missing relationship does not prove absence. The first call on a project builds its map, which can take minutes on a large repository; later calls update only what changed.";
+  "Use the LayerMap tools instead of grep whenever a task needs to know what calls something, what a change could affect beyond the code at hand, where something is used, or how the code is organized; a change confined to code you have read does not need them: project_explore_map on a declaration with direction INCOMING and depth up to 8 traces its callers up to the entry points (HTTP routes, handlers, jobs, commands) in one call, which grep can only approximate one name at a time. LayerMap is a static, layered map of this repository for TypeScript/JavaScript, Go, Python and Java: directories and modules, each file's declarations, and each declaration's callers and callees up to 8 hops. path \".\" shows what exists. Continue from any NOT EXPANDED declarations a view names, then confirm entry points in source. When the edits are done, call project_check_changes once before reporting the work done, not after every edit: it lists the entry points and existing tests the changes reach, and the existing tests the diff rewrote. The map is static: dynamic dispatch, framework wiring and unresolved targets need source reading, and a missing relationship does not prove absence. The first call on a project builds its map, which can take minutes on a large repository; later calls update only what changed. Each result names the Git repository it maps, and its paths are relative to that repository's root. The paths you give are relative to the repository the session started in, or to the starting folder when that is not a repository (such as a folder holding several); for a file in another repository, such as after changing directory, give its absolute path. Give project_check_changes a path in the repository to check when the session works in more than one.";
 
 /**
  * One sentence for an agent's own instructions file. Codex shows MCP tools only when it searches for

@@ -113,9 +113,15 @@ export const ProjectMapCheckInputSchema = z
       .describe(
         "Commit, branch or tag to compare the working tree with (HEAD, so the uncommitted changes, by default; main for a whole branch).",
       ),
+    path: z
+      .string()
+      .optional()
+      .describe(
+        "A file or directory in the repository to check, when the session works in more than one; the check covers that repository's whole working tree.",
+      ),
   })
-  // Agents that see the tool without its schema guess arguments (a path, the project root); the
-  // check always covers the whole working tree, so unknown ones are dropped rather than refused.
+  // Agents that see the tool without its schema guess arguments (the project root); the check
+  // always covers the whole working tree, so unknown ones are dropped rather than refused.
   .strip();
 
 const locatorSchema = MapObjectLocatorSchema.describe(

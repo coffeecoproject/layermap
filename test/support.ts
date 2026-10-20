@@ -17,12 +17,15 @@ export async function sandbox(): Promise<string> {
   return realpath(await mkdtemp(path.join(tmpdir(), "layermap-")));
 }
 
-/** A Git work tree holding the given files. */
-export async function project(files: Record<string, string>): Promise<{
+/** A Git work tree holding the given files, in a directory of its own unless root names one. */
+export async function project(
+  files: Record<string, string>,
+  root?: string,
+): Promise<{
   root: string;
   write: (name: string, content: string) => Promise<void>;
 }> {
-  const root = path.join(await sandbox(), "project");
+  root ??= path.join(await sandbox(), "project");
   await mkdir(root);
   await run("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root });
   const write = async (name: string, content: string) => {
