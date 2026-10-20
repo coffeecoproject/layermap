@@ -169,7 +169,7 @@ export default function layermap(pi) {
     if (server && !server.dead) return server;
     starting ??= (async () => {
       const next = new MapServer(cwd);
-      const tools = await next.start("0.1.19");
+      const tools = await next.start("0.1.20");
       for (const tool of tools) {
         if (registered.has(tool.name)) continue;
         registered.add(tool.name);
