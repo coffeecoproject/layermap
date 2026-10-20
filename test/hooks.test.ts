@@ -298,8 +298,8 @@ test("the command hook notes the code files a shell command changes, for the sto
     return root;
   };
   const [a, b] = [await repo("a"), await repo("b")];
-  // The repository as Git names it, and so the reminder: C:/… on Windows.
-  const gitB = await gitRoot(b);
+  // Each repository as Git names it, and so the reminder and the notes: C:/… on Windows.
+  const [gitA, gitB] = [await gitRoot(a), await gitRoot(b)];
   const env = { TMPDIR: await sandbox() };
   const transcript = path.join(await sandbox(), "transcript.jsonl");
   const check = (input: Record<string, string>) =>
@@ -376,6 +376,6 @@ test("the command hook notes the code files a shell command changes, for the sto
           .map((line) => line.split("\t").slice(1).join(" ")),
       ),
     ],
-    [`${a} src/generated.ts`],
+    [`${gitA} src/generated.ts`],
   );
 });
