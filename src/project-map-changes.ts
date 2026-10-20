@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { CodeIndex } from "./code-index";
 import type { CodeIndexStore } from "./code-index-store";
@@ -13,6 +14,7 @@ import {
 import { type MapModuleDependency, newModuleDependencies } from "./project-map-dependencies";
 import { mapLanguageOf } from "./project-map-language";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
+import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
@@ -905,6 +907,8 @@ const LIST = Object.freeze({
   through: 2,
   dependencies: 12,
   sites: 2,
+  similar: 10,
+  similarNames: 3,
 });
 
 /** The check as an agent reads it: the conclusion first, then each list, then what it cannot see. */
@@ -962,6 +966,9 @@ export async function checkMapChanges(
       changes,
       impact,
       await mapRouteClients(project, index.store, working, impact, signal),
+      await similarCode(index.store, working, base, changes.files, (file) =>
+        readFile(path.join(project, file), "utf8").catch(() => undefined),
+      ),
     ),
   };
 }
@@ -1004,6 +1011,7 @@ export function mapChangesText(
   changes: MapChanges,
   impact: MapChangeImpact,
   clients: readonly MapRouteClients[] = [],
+  similar: readonly MapSimilarCode[] = [],
 ): string {
   const files = changes.files.length;
   const direct = impact.tests.filter((test) => test.rank < 4);
@@ -1094,6 +1102,38 @@ export function mapChangesText(
     );
     lines.push(
       `Decide for each whether it runs the way the project's layers do: code others build on (shared types, storage, utilities) should not import the features or interfaces built on it.${impact.dependencies.some((dependency) => dependency.back) ? " A cycle ties the modules together, so neither can change or be tested alone." : ""} If one runs the wrong way, move what both need into the lower module or pass it in, rather than import upward.`,
+    );
+  }
+  // Code the diff adds that the project already has: reuse it, or retire the old copy.
+  if (similar.length) {
+    const declaration = (item: { path: string; name: string; label: string }) =>
+      `${item.path}: ${item.name} ${item.label}`;
+    // A file that repeats much of another reads best as one line.
+    const pairs = new Map<string, MapSimilarCode[]>();
+    for (const item of similar) {
+      const key = `${item.path}\u0000${item.like.path}`;
+      pairs.set(key, [...(pairs.get(key) ?? []), item]);
+    }
+    list(
+      "EXISTING CODE LIKE THE NEW CODE (declarations the diff adds whose code reads almost the same as code the project already has)",
+      [...pairs.values()].flatMap((items) => {
+        const [first] = items as [MapSimilarCode];
+        if (items.length < 3)
+          return items.map(
+            (item) =>
+              `${declaration(item)} ~ ${declaration(item.like)}${item.others ? ` (+${item.others} more alike)` : ""}`,
+          );
+        const names = items
+          .slice(0, LIST.similarNames)
+          .map((item) => `${item.name} ~ ${item.like.name}`);
+        return [
+          `${first.path} repeats ${first.like.path} in ${items.length} declarations: ${names.join(", ")}${items.length > LIST.similarNames ? ", …" : ""}`,
+        ];
+      }),
+      LIST.similar,
+    );
+    lines.push(
+      "Use the existing code rather than a copy, or, if the new code replaces it, remove the old; keep both only when they are meant to differ. Code that does the same in other words is not found.",
     );
   }
   const entry = (item: MapChangeEntry) =>

@@ -361,3 +361,65 @@ test("a change names the imports it adds between modules, and the ones that make
   );
   assert.doesNotMatch(text, /cycle/u);
 });
+
+test("a change names the code it adds that reads almost the same as code the project has", async (t) => {
+  const money =
+    'export function formatMoney(cents: number) {\n  const dollars = Math.floor(cents / 100);\n  const rest = String(cents % 100).padStart(2, "0");\n  return "$" + dollars + "." + rest;\n}\n';
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/util/money.ts": money,
+    "src/util/dates.ts":
+      "export function formatDate(date: Date) {\n  const day = date.toISOString();\n  return day.slice(0, 10);\n}\n",
+    "src/store.ts":
+      "export class Store {\n  private rows = new Map<string, number>();\n  load(key: string) {\n    const row = this.rows.get(key);\n    return row ?? 0;\n  }\n  save(key: string, value: number) {\n    this.rows.set(key, value);\n    return value;\n  }\n}\n",
+    "src/page.ts":
+      'import { formatMoney } from "./util/money";\n\nexport function page(cents: number) {\n  const label = formatMoney(cents);\n  return "<b>" + label + "</b>";\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const similar = async () => {
+    const { text } = await map.checkChanges({}, signal());
+    const at = text.indexOf("EXISTING CODE LIKE THE NEW CODE");
+    return at < 0
+      ? ""
+      : text.slice(at, text.indexOf("\n", text.indexOf("Use the existing code", at)));
+  };
+
+  // A copy under another name, in a new file; a test's copy is not the project's code.
+  await write("src/checkout/price.ts", money.replace("formatMoney", "priceLabel"));
+  await write("test/helpers.ts", money.replace("formatMoney", "money"));
+  const text = await similar();
+  assert.match(
+    text,
+    /^ {2}src\/checkout\/price\.ts: priceLabel f1-5 ~ src\/util\/money\.ts: formatMoney f1-5$/mu,
+  );
+  assert.doesNotMatch(text, /test\/helpers/u);
+
+  // Code that calls the one it resembles uses it; a new method like its class's others follows
+  // their pattern; neither is a copy.
+  await write(
+    "src/checkout/price.ts",
+    'import { formatMoney } from "../util/money";\n\nexport function priceLabel(cents: number) {\n  const dollars = Math.floor(cents / 100);\n  const rest = String(cents % 100).padStart(2, "0");\n  return dollars < 0 ? "-" : formatMoney(cents);\n}\n',
+  );
+  await write(
+    "src/store.ts",
+    "export class Store {\n  private rows = new Map<string, number>();\n  load(key: string) {\n    const row = this.rows.get(key);\n    return row ?? 0;\n  }\n  save(key: string, value: number) {\n    this.rows.set(key, value);\n    return value;\n  }\n  loadValue(key: string) {\n    const row = this.rows.get(key);\n    return row ?? 0;\n  }\n}\n",
+  );
+  assert.equal(await similar(), "");
+
+  // Moved to another file, not copied, though a copy is already there: the diff took it out of the
+  // old file, so it adds nothing.
+  await run("git", ["checkout", "--", "."], { cwd: root });
+  await run("git", ["clean", "-qfd"], { cwd: root });
+  await write("src/checkout/price.ts", money.replace("formatMoney", "priceLabel"));
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write("src/util/money.ts", "export {};\n");
+  await write("src/util/currency.ts", money);
+  assert.equal(await similar(), "");
+});
