@@ -5,7 +5,7 @@
       "args": [
         "--prefer-offline",
         "-y",
-        "layermap@0.1.21",
+        "layermap@0.1.22",
         "mcp"
       ],
       "default_tools_approval_mode": "approve"
