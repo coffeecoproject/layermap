@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -351,4 +351,27 @@ test("the command hook notes the code files a shell command changes, for the sto
   await at("s2", a, "PostToolUse", touch);
   lines.push(check({}));
   assert.equal(await at("s2", b, "Stop"), "", "the session started in a, though its shell is in b");
+
+  // A command that ran over a minute: what another session changed meanwhile is not the session's,
+  // the file the command names is.
+  await at("s3", a, "SessionStart");
+  const generate = command("c4", "node scripts/generate.mjs src/generated.ts");
+  await at("s3", a, "PreToolUse", generate);
+  const started = path.join(env.TMPDIR, "layermap-claude", "s3.c4.before.time");
+  await writeFile(started, `${Math.floor(Date.now() / 1000) - 120}\n`);
+  await writeFile(path.join(a, "src/a.ts"), "export const a = 10;\n");
+  await writeFile(path.join(a, "src/generated.ts"), "export const g = 1;\n");
+  await at("s3", a, "PostToolUse", generate);
+  const edits = await readFile(path.join(env.TMPDIR, "layermap-claude", "s3.edits"), "utf8");
+  assert.deepEqual(
+    [
+      ...new Set(
+        edits
+          .trim()
+          .split("\n")
+          .map((line) => line.split("\t").slice(1).join(" ")),
+      ),
+    ],
+    [`${a} src/generated.ts`],
+  );
 });

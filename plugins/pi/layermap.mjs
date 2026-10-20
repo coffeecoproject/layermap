@@ -177,6 +177,9 @@ const fingerprint = (changed) =>
         .digest("hex")
     : "";
 
+// How long a command runs (ms) before only the files it names count as its changes.
+const LONG_COMMAND = 60_000;
+
 // The folders a shell command names that exist, relative to the directory it runs in.
 async function namedFolders(cwd, command) {
   const folders = new Set();
@@ -209,11 +212,14 @@ export default function layermap(pi) {
   // folders its command names and those already edited.
   // It compares a repository's uncommitted code changes with those it had before the session's
   // first such tool there and those the agent last checked in it, and all of them with those it
-  // was last asked about; changes another session makes while this one reads do not count.
+  // was last asked about; changes another session makes while this one reads do not count. A
+  // command that ran longer than a minute (tests, builds, scripts) leaves time for another session
+  // to change the same work tree, so only the files it names count.
   const edited = new Set();
   const before = new Map();
   const checked = new Map();
-  // The code changes of each repository a running tool may change, by the tool call's id.
+  // The code changes of each repository a running tool may change, when it started and its
+  // command, by the tool call's id.
   const running = new Map();
   let askedAbout = "";
 
@@ -295,17 +301,27 @@ export default function layermap(pi) {
     const changes = new Map();
     for (const repository of repositories)
       if (repository) changes.set(repository, await changedCode(repository));
-    running.set(event.toolCallId, changes);
+    running.set(event.toolCallId, {
+      changes,
+      started: Date.now(),
+      command: typeof command === "string" ? command : "",
+    });
   });
 
   pi.on("tool_result", async (event) => {
-    const changes = running.get(event.toolCallId);
-    if (!changes) return;
+    const call = running.get(event.toolCallId);
+    if (!call) return;
     running.delete(event.toolCallId);
-    for (const [repository, earlier] of changes) {
+    const long = Date.now() - call.started > LONG_COMMAND;
+    for (const [repository, earlier] of call.changes) {
       if (edited.has(repository)) continue;
       const now = await changedCode(repository);
-      if ([...now].some(([file, content]) => earlier.get(file) !== content)) {
+      if (
+        [...now].some(
+          ([file, content]) =>
+            earlier.get(file) !== content && (!long || call.command.includes(path.basename(file))),
+        )
+      ) {
         edited.add(repository);
         before.set(repository, fingerprint(earlier));
       }

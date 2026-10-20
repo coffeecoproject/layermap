@@ -131,10 +131,13 @@ fingerprint() { printf '%s' "$1" | git hash-object --stdin 2>/dev/null; }`;
 // The command hook after HOOK_SHELL, before and after each shell command: the code files the
 // command changed, in the repository the session started in, the one the command runs in, those
 // of the folders it names and those the session's commands changed before. Each is noted with the
-// transcript's length then, for the stop hook, as an edit there.
+// transcript's length then, for the stop hook, as an edit there. A command that ran longer than a
+// minute (tests, builds, scripts) leaves time for another session to change the same work tree,
+// so only the files it names count.
 const COMMAND_SHELL = String.raw`call=$(field tool_use_id | tr -cd 'A-Za-z0-9_-')
 [ -n "$call" ] || exit 0
 before="$state/$session.$call.before"
+command=$(printf '%s' "$input" | sed -nE 's/.*"command": *"(([^"\\]|\\.)*)".*/\1/p')
 # Each repository on a line of its own, then its code changes, each line led by the repository.
 snapshot() {
   while IFS= read -r repo; do
@@ -145,7 +148,7 @@ snapshot() {
 }
 case "$input" in
 *'"hook_event_name":"PreToolUse"'* | *'"hook_event_name": "PreToolUse"'*)
-  command=$(printf '%s' "$input" | sed -nE 's/.*"command": *"(([^"\\]|\\.)*)".*/\1/p')
+  date +%s > "$before.time" 2>/dev/null
   known=$({ printf '%s\n' "$start"
     [ "$here" = "$start" ] || git -C "$here" rev-parse --show-toplevel 2>/dev/null
     cat "$state/$session.repos" 2>/dev/null; } | sed '/^$/d' | sort -u)
@@ -173,11 +176,16 @@ KNOWN
   [ -f "$before" ] || exit 0
   transcript=$(field transcript_path)
   [ -f "$transcript" ] && line=$(wc -l < "$transcript" | tr -d ' ')
+  started=$(cat "$before.time" 2>/dev/null)
+  long=0
+  [ -n "$started" ] && [ $(($(date +%s) - started)) -gt 60 ] && long=1
   awk -F '\t' '$2 == "" { print $1 }' "$before" | snapshot | grep -vxF -f "$before" |
-    awk -F '\t' -v line="${"$"}{line:-0}" '$2 != "" { name = $2; if (!sub(/^\? /, "", name)) sub(/^[0-9]+ [0-9]+ /, "", name)
+    C=$command awk -F '\t' -v line="${"$"}{line:-0}" -v long=$long '$2 != "" { name = $2; if (!sub(/^\? /, "", name)) sub(/^[0-9]+ [0-9]+ /, "", name)
+      file = name; sub(/.*\//, "", file)
+      if (long && !index(ENVIRON["C"], file)) next
       print line "\t" $1 "\t" name }' >> "$state/$session.edits"
   cut -f 2 "$state/$session.edits" 2>/dev/null | sort -u > "$state/$session.repos"
-  rm -f "$before"
+  rm -f "$before" "$before.time"
   ;;
 esac`;
 
