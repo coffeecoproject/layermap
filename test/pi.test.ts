@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { generatedFiles } from "../scripts/plugins";
-import { AGENT_MAP_NOTE, AGENT_STOP_CHECK } from "../src/agent/tools";
+import {
+  AGENT_MAP_NOTE,
+  AGENT_STOP_CHECK,
+  AGENT_STOP_CHECK_REPOSITORIES,
+} from "../src/agent/tools";
 import { sandbox } from "./support";
 
 const run = promisify(execFile);
@@ -114,4 +118,108 @@ test("the generated Pi extension carries the notes and this version", () => {
   assert.ok(source.includes(JSON.stringify(AGENT_STOP_CHECK)));
   assert.ok(source.includes('"1.2.3"'));
   assert.doesNotMatch(source, /__[A-Z_]+__/u);
+});
+
+test("the Pi extension asks about each repository an edit names until a check of it", async (t) => {
+  const pkg = await installed();
+  const folder = await realpath(await sandbox());
+  const repo = async (name: string) => {
+    const root = path.join(folder, name);
+    await mkdir(root);
+    await writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+    await run("git", ["init", "-q"], { cwd: root });
+    await run("git", ["add", "-A"], { cwd: root });
+    await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+      cwd: root,
+    });
+    return root;
+  };
+  const [a, b] = [await repo("a"), await repo("b")];
+  await mkdir(path.join(folder, "notes"));
+
+  const handlers = new Map<string, Handler>();
+  const tools: Tool[] = [];
+  const pi = {
+    on: (name: string, h: Handler) => handlers.set(name, h),
+    registerTool: (tool: Tool) => tools.push(tool),
+  };
+  const { default: extension } = await import(
+    `${pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href}?several`
+  );
+  extension(pi);
+  const ctx = { cwd: folder, ui: { notify: () => {} } };
+  await handlers.get("session_start")?.({}, ctx);
+  t.after(() => handlers.get("session_shutdown")?.({}, ctx));
+  const settle = handlers.get("agent_before_settle") as Handler;
+  const ask = async () =>
+    ((await settle({ entries: [] }, ctx)) as { entries: { content: string }[] } | undefined)
+      ?.entries[0]?.content;
+  const edit = async (file: string) => {
+    await handlers.get("tool_call")?.({ toolName: "edit", input: { path: file } }, ctx);
+    await writeFile(path.join(folder, file), "export const a = 2;\n");
+  };
+
+  // Started in the folder holding both: other tools name no repository, edits name theirs.
+  await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "…" } }, ctx);
+  assert.equal(await ask(), undefined);
+  await edit("a/a.ts");
+  await edit("b/a.ts");
+  assert.equal(await ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${a}, ${b}.`);
+  // A check without a path checks no repository here; one with a path checks its repository.
+  await writeFile(path.join(a, "a.ts"), "export const a = 3;\n");
+  await tools[0]?.execute("1", {}, undefined);
+  await tools[0]?.execute("2", { path: "b" }, undefined);
+  assert.equal(await ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${a}.`);
+  await tools[0]?.execute("3", { path: path.join(a, "a.ts") }, undefined);
+  assert.equal(await ask(), undefined);
+});
+
+test("the Pi extension takes the repositories of the files an apply_patch patch names", async (t) => {
+  const pkg = await installed();
+  const folder = await realpath(await sandbox());
+  const repo = async (name: string) => {
+    const root = path.join(folder, name);
+    await mkdir(root);
+    await writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+    await run("git", ["init", "-q"], { cwd: root });
+    await run("git", ["add", "-A"], { cwd: root });
+    await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+      cwd: root,
+    });
+    return root;
+  };
+  const [a, b] = [await repo("a"), await repo("b")];
+  const { default: extension } = await import(
+    `${pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href}?patch`
+  );
+  // A session in cwd that patches the files, as pi-codex-tools' apply_patch takes them.
+  const session = async (cwd: string, patch: string) => {
+    const handlers = new Map<string, Handler>();
+    extension({
+      on: (name: string, h: Handler) => handlers.set(name, h),
+      registerTool: () => {},
+    });
+    const ctx = { cwd, ui: { notify: () => {} } };
+    await handlers.get("session_start")?.({}, ctx);
+    t.after(() => handlers.get("session_shutdown")?.({}, ctx));
+    await handlers.get("tool_call")?.({ toolName: "apply_patch", input: { patch } }, ctx);
+    for (const [, file] of patch.matchAll(/^\*\*\* (?:Add|Update) File: (.+)$/gm))
+      await writeFile(path.resolve(cwd, file as string), "export const a = 2;\n");
+    const settle = handlers.get("agent_before_settle") as Handler;
+    return ((await settle({ entries: [] }, ctx)) as { entries: { content: string }[] } | undefined)
+      ?.entries[0]?.content;
+  };
+
+  assert.equal(
+    await session(
+      folder,
+      "*** Begin Patch\n*** Add File: a/b.ts\n+x\n*** Update File: b/a.ts\n@@\n-x\n+y\n*** End Patch\n",
+    ),
+    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${a}, ${b}.`,
+  );
+  await run("git", ["checkout", "-q", "."], { cwd: b });
+  assert.equal(
+    await session(a, "*** Begin Patch\n*** Update File: ../b/a.ts\n@@\n-x\n+y\n*** End Patch\n"),
+    `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${b}.`,
+  );
 });

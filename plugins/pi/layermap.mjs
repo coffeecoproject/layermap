@@ -7,6 +7,7 @@
 // asks the agent once, before it settles, to check what its code edits affect.
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -14,10 +15,17 @@ import { Type } from "typebox";
 
 const MAP_NOTE = "The layermap MCP server is available here. When a task needs to know what calls a function, what a change could affect beyond the code you are editing, or where code is used, use its project_explore_map tool (direction INCOMING, depth up to 8) instead of grep, then confirm in source; a change confined to code you have read does not need it. When the edits are done, call its project_check_changes tool once before reporting the work done.";
 const STOP_CHECK = "Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it lists EXISTING TESTS CHANGED or code SHARED BY several areas, decide which of them the request is about; for the others, restore their tests and narrow the change. If you already checked these changes, say so briefly and finish.";
+const STOP_CHECK_REPOSITORIES = "The changes are in more than one repository, or not in the one the session started in: call project_check_changes once for each, with its path set to the repository: ";
 const CHECK_TOOL = "project_check_changes";
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.mjs");
 // Tools that only read; any other tool call (edit, write, apply_patch, bash, …) may change files.
 const READS = new Set(["read", "grep", "find", "ls"]);
+// Tools that change the one file their path names, relative to the session's directory.
+const WRITES = new Set(["edit", "write"]);
+// The Codex patch tool (pi-codex-tools), which replaces them for OpenAI models: its patch names
+// each file it adds, updates, deletes or moves one to, relative to the session's directory.
+const PATCH = "apply_patch";
+const PATCH_FILES = /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm;
 const CODE_GLOBS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "py", "java"].map(
   (e) => `*.${e}`,
 );
@@ -99,6 +107,33 @@ const git = (cwd, args) =>
     ),
   );
 
+// The Git repository around a path, or the nearest directory of it that exists; empty outside one.
+async function repositoryAt(given) {
+  let directory = given;
+  while (!(await stat(directory).catch(() => undefined))?.isDirectory()) {
+    if (path.dirname(directory) === directory) return "";
+    directory = path.dirname(directory);
+  }
+  return (await git(directory, ["rev-parse", "--show-toplevel"])).trim();
+}
+
+// The files a tool call names to change, relative to the session's directory.
+function namedFiles({ toolName, input }) {
+  if (WRITES.has(toolName)) return typeof input?.path === "string" ? [input.path] : [];
+  if (toolName === PATCH && typeof input?.patch === "string")
+    return [...input.patch.matchAll(PATCH_FILES)].map((match) => match[1].trim());
+  return [];
+}
+
+// The repository LayerMap's server routes a tool call's path to: a relative path that stays in the
+// repository the session started in is that one's, and any other is resolved from where it started.
+function routedRepository(start, given) {
+  const normal = path.normalize(given || ".");
+  const escapes = normal === ".." || normal.startsWith(`..${path.sep}`);
+  if (start.git && !path.isAbsolute(normal) && !escapes) return Promise.resolve(start.directory);
+  return repositoryAt(path.resolve(start.directory, normal));
+}
+
 // The uncommitted code changes as one hash, empty when there are none or no repository.
 async function codeChanges(cwd) {
   if (!(await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]))) return "";
@@ -116,13 +151,19 @@ export default function layermap(pi) {
   let starting;
   let cwd;
   const registered = new Set();
-  // The stop check compares the uncommitted code changes with those the session began with, those
-  // the agent last checked and those it was last asked about. It asks only when the agent used a
-  // tool that can change files, so changes another session makes while this one reads do not count.
-  let startChanges = "";
-  let checkedChanges = "";
+  // Where the server resolves relative paths from: the repository the session started in, or its
+  // directory outside one.
+  let start = { directory: "", git: false };
+  // The stop check looks at each repository the agent may have changed files in: those of the
+  // files an edit, write or patch names, and for any other tool that can change files the one the
+  // session started in.
+  // It compares a repository's uncommitted code changes with those it had before the session's
+  // first such tool there and those the agent last checked in it, and all of them with those it
+  // was last asked about; changes another session makes while this one reads do not count.
+  const edited = new Set();
+  const before = new Map();
+  const checked = new Map();
   let askedAbout = "";
-  let mayHaveEdited = false;
 
   const ensureServer = async () => {
     if (server && !server.dead) return server;
@@ -148,7 +189,10 @@ export default function layermap(pi) {
             );
             const text = (result.content ?? []).map((part) => part.text ?? "").join("\n");
             if (result.isError) throw new Error(text);
-            if (tool.name === CHECK_TOOL) checkedChanges = await codeChanges(cwd);
+            if (tool.name === CHECK_TOOL) {
+              const repository = await routedRepository(start, params?.path);
+              if (repository) checked.set(repository, await codeChanges(repository));
+            }
             return { content: [{ type: "text", text }], details: {} };
           },
         });
@@ -163,31 +207,51 @@ export default function layermap(pi) {
 
   pi.on("session_start", async (_event, ctx) => {
     cwd = ctx.cwd;
-    startChanges = await codeChanges(cwd);
-    checkedChanges = "";
+    const repository = await repositoryAt(cwd);
+    start = repository ? { directory: repository, git: true } : { directory: cwd, git: false };
+    edited.clear();
+    before.clear();
+    checked.clear();
     askedAbout = "";
-    mayHaveEdited = false;
     await ensureServer().catch((error) =>
       ctx.ui?.notify?.(`LayerMap could not start: ${error.message}`, "warning"),
     );
   });
 
   pi.on("tool_call", async (event) => {
-    if (!READS.has(event.toolName) && !registered.has(event.toolName)) mayHaveEdited = true;
+    if (READS.has(event.toolName) || registered.has(event.toolName) || !cwd) return;
+    const files = namedFiles(event);
+    const repositories = files.length
+      ? await Promise.all(files.map((file) => repositoryAt(path.resolve(cwd, file))))
+      : [start.git && start.directory];
+    for (const repository of new Set(repositories)) {
+      if (!repository || edited.has(repository)) continue;
+      edited.add(repository);
+      before.set(repository, await codeChanges(repository));
+    }
   });
 
   pi.on("agent_before_settle", async (event) => {
-    if (process.env.LAYERMAP_STOP_CHECK === "0" || !mayHaveEdited || !cwd) return;
-    const changes = await codeChanges(cwd);
-    if (!changes || [startChanges, checkedChanges, askedAbout].includes(changes)) return;
-    askedAbout = changes;
+    if (process.env.LAYERMAP_STOP_CHECK === "0") return;
+    const due = [];
+    for (const repository of edited) {
+      const changes = await codeChanges(repository);
+      if (changes && changes !== before.get(repository) && changes !== checked.get(repository))
+        due.push({ repository, changes });
+    }
+    const asked = JSON.stringify(due);
+    if (!due.length || asked === askedAbout) return;
+    askedAbout = asked;
+    const elsewhere = due.some(({ repository }) => !start.git || repository !== start.directory);
     return {
       entries: [
         ...event.entries,
         {
           type: "custom_message",
           customType: "layermap-check",
-          content: STOP_CHECK,
+          content: elsewhere
+            ? `${STOP_CHECK} ${STOP_CHECK_REPOSITORIES}${due.map(({ repository }) => repository).join(", ")}.`
+            : STOP_CHECK,
           display: false,
         },
       ],

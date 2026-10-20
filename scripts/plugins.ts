@@ -8,7 +8,11 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { npxServerArgs } from "../src/agent/setup";
-import { AGENT_MAP_NOTE, AGENT_STOP_CHECK } from "../src/agent/tools";
+import {
+  AGENT_MAP_NOTE,
+  AGENT_STOP_CHECK,
+  AGENT_STOP_CHECK_REPOSITORIES,
+} from "../src/agent/tools";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const REPOSITORY = "https://github.com/coffeecoproject/layermap";
@@ -63,6 +67,7 @@ const piExtension = (version: string) =>
   )
     .replace("__MAP_NOTE__", JSON.stringify(AGENT_MAP_NOTE))
     .replace("__STOP_CHECK__", JSON.stringify(AGENT_STOP_CHECK))
+    .replace("__STOP_CHECK_REPOSITORIES__", JSON.stringify(AGENT_STOP_CHECK_REPOSITORIES))
     .replace("__VERSION__", JSON.stringify(version))}`;
 
 /** The published server: the pinned package from npm, through npx. */
@@ -94,9 +99,10 @@ server.on("exit", (code) => process.exit(code ?? 1));
 const CODE_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "py", "java"];
 const CODE = CODE_EXTENSIONS.map((extension) => `'*.${extension}'`).join(" ");
 
-// Shell shared by the Claude Code hooks: the hook's input fields, and a fingerprint of the working
-// tree's uncommitted code changes (empty outside a repository or without changes). Plain sh and
-// git, so the hooks start no runtime and the plugin directory's validator can read them.
+// Shell shared by the Claude Code hooks: the hook's input fields, the repository the session started
+// in (empty outside one), and a repository's uncommitted code changes (empty without a commit or
+// changes) and their fingerprint. Plain sh and git, so the hooks start no runtime and the plugin
+// directory's validator can read them.
 const HOOK_SHELL = String.raw`input=$(cat 2>/dev/null | tr -d '\n')
 # JSON escapes a backslash as two; Windows paths (C:\\Users\\…) need them back as one.
 field() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | sed 's/\\\\/\\/g'; }
@@ -104,16 +110,154 @@ session=$(field session_id | tr -cd 'A-Za-z0-9_-')
 [ -n "$session" ] || session=unknown
 dir=$(field cwd)
 [ -d "$dir" ] || dir=$PWD
+start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
 state="${"$"}{TMPDIR:-/tmp}/layermap-claude"
 mkdir -p "$state" 2>/dev/null
 code_changes() {
-  git -C "$dir" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
-  git -C "$dir" diff HEAD --no-ext-diff --no-color -- ${CODE} 2>/dev/null
-  git -C "$dir" ls-files --others --exclude-standard -- ${CODE} 2>/dev/null |
-    while IFS= read -r file; do printf '%s %s\n' "$file" "$(git -C "$dir" hash-object -- "$file" 2>/dev/null)"; done
+  git -C "$1" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
+  git -C "$1" diff HEAD --no-ext-diff --no-color -- ${CODE} 2>/dev/null
+  git -C "$1" ls-files --others --exclude-standard -- ${CODE} 2>/dev/null |
+    while IFS= read -r file; do printf '%s %s\n' "$file" "$(git -C "$1" hash-object -- "$file" 2>/dev/null)"; done
 }
-changes=$(code_changes)
-fingerprint=$(printf '%s' "$changes" | git hash-object --stdin 2>/dev/null)`;
+fingerprint() { printf '%s' "$1" | git hash-object --stdin 2>/dev/null; }`;
+
+// Single-quoted for sh.
+const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
+// Inside a JSON string, without its quotes.
+const jsonText = (text: string) => JSON.stringify(text).slice(1, -1);
+
+// The end of a sed script that unescapes the path a line's JSON gives (claude) or the JSON string in
+// it gives (buddy), then prints the line.
+const UNESCAPE = String.raw`:claude
+s/\\\\/\\/g
+p
+d
+:buddy
+s/\\\\\\\\/\\/g
+p`;
+
+// The stop hook after HOOK_SHELL: the repositories with code changes to check, and the request to
+// check them. With the session's transcript, they are the repositories with a code file the session
+// edited that git still sees changed, each unless a check of that repository followed its last
+// edit; a check's repository is the one the map server routes its path to. Without a transcript,
+// the repository the session started in. Not the changes it started with, nor the same changes
+// twice.
+const STOP_SHELL = String.raw`case "$input" in *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exit 0 ;; esac
+# The repository a path is in, as the map server routes a tool call's path: a relative path that
+# stays in the repository the session started in is that one's, and any other is resolved from
+# where the session started. Nothing outside any repository.
+repository() {
+  base=$start
+  [ -n "$base" ] || base=$dir
+  case "$1" in
+  /* | [A-Za-z]:*) target=$1 ;;
+  .. | ../*) target="$base/$1" ;;
+  *) [ -n "$start" ] && { printf '%s\n' "$start"; return; }; target="$base/$1" ;;
+  esac
+  while [ ! -d "$target" ]; do
+    parent=$(dirname "$target")
+    [ "$parent" = "$target" ] && return
+    target=$parent
+  done
+  git -C "$target" rev-parse --show-toplevel 2>/dev/null
+}
+# Lines of a number and a path, with a Windows path's slashes forward, as Git and sh take it.
+slashes() { sed -E '/^[0-9]+ [A-Za-z]:/s|\\|/|g'; }
+transcript=$(field transcript_path)
+if [ -f "$transcript" ]; then
+  # The edits and checks in the transcript, each as its line's number and the path its arguments
+  # give, unescaped; grep picks out only the parts of each line these need. CodeBuddy records the
+  # arguments as a JSON string inside the line, so their quotes are escaped; on a line with both,
+  # the escaped ones are text the arguments hold. An edit's path is the last on its line; a check
+  # without a path is given ".". Claude Code also keeps there a copy of each message it sends the
+  # model, which can hold several calls on one line; only the lines of the calls themselves count.
+  entries() {
+    grep -nE "$1" "$transcript" 2>/dev/null | grep -vE '^[0-9]+:\{"type": *"api-request'
+  }
+  edits() {
+    entries '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' |
+      grep -oE '^[0-9]+:|"(file|notebook)_path": *"[^"]*"|\\"(file|notebook)_path\\": *\\"[^"]*' |
+      awk '/^[0-9]+:$/ { line = substr($0, 1, length($0) - 1); next }
+        /^"/ { plain[line] = $0; next } { escaped[line] = $0 }
+        END { for (line in escaped) if (!(line in plain)) print line ":" escaped[line]
+          for (line in plain) print line ":" plain[line] }' |
+      sed -nE 's/^([0-9]+):"(file|notebook)_path": *"(.*)"$/\1 \3/
+t claude
+s/^([0-9]+):\\"(file|notebook)_path\\": *\\"(.*)\\$/\1 \3/
+t buddy
+d
+${UNESCAPE}'
+  }
+  checks() {
+    entries '"name": *"[^"]*project_check_changes"' |
+      grep -oE '^[0-9]+:|"name": *"[^"]*project_check_changes"[^}]*' |
+      awk '/^[0-9]+:$/ { line = $0; next } { print line $0 }' |
+      sed -nE 's/^([0-9]+):.*"path": *"([^"]*)".*/\1 \2/
+t claude
+s/^([0-9]+):.*\\"path\\": *\\"(([^"\\]|\\\\\\\\)*)\\".*/\1 \2/
+t buddy
+s/^([0-9]+):.*/\1 ./p
+d
+${UNESCAPE}'
+  }
+  # Each code file the session edited, at its last edit: the line, its repository, its path there.
+  # Each check: the line and the repository of its path.
+  calls=$({
+    edits | slashes | grep -E ' .*\.(${CODE_EXTENSIONS.join("|")})$' |
+      awk '{ line = $1; sub(/^[0-9]+ /, ""); if (line + 0 > last[$0] + 0) last[$0] = line } END { for (file in last) print last[file], file }' |
+      sort -k 2 | while read -r line file; do
+        folder=${"$"}{file%/*}
+        if [ "$folder" != "$seen" ]; then
+          seen=$folder
+          { read -r repo; read -r prefix; } <<WHERE
+$(git -C "$folder" rev-parse --show-toplevel --show-prefix 2>/dev/null)
+WHERE
+        fi
+        [ -n "$repo" ] && printf 'edit\t%s\t%s\t%s\n' "$line" "$repo" "$prefix${"$"}{file##*/}"
+      done
+    checks | slashes | while read -r line named; do
+      repo=$(repository "$named")
+      [ -n "$repo" ] && printf 'check\t%s\t%s\n' "$line" "$repo"
+    done
+  })
+  # The repositories with an edit to a file git still sees changed and no check of them after it.
+  due=$({
+    printf '%s\n' "$calls" | awk -F '\t' '$1 == "edit" { print $3 }' | sort -u | while IFS= read -r repo; do
+      { git -C "$repo" -c core.quotePath=false diff HEAD --name-only --no-renames 2>/dev/null
+        git -C "$repo" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null; } |
+        while IFS= read -r name; do printf 'changed\t%s\t%s\n' "$repo" "$name"; done
+    done
+    printf '%s\n' "$calls"
+  } | awk -F '\t' '$1 == "changed" { changed[$2 "\t" $3] = 1; next }
+    $1 == "edit" { if (($3 "\t" $4) in changed && $2 + 0 > edit[$3] + 0) edit[$3] = $2 + 0; next }
+    $1 == "check" { if ($2 + 0 > check[$3] + 0) check[$3] = $2 + 0 }
+    END { for (repo in edit) if (check[repo] + 0 <= edit[repo]) print repo }' | sort)
+else
+  due=$start
+fi
+asked=
+listed=
+others=
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  changes=$(code_changes "$repo")
+  [ -n "$changes" ] || continue
+  [ "$repo" = "$start" ] && [ "$(fingerprint "$changes")" = "$(cat "$state/$session.start" 2>/dev/null)" ] && continue
+  asked="$asked$repo
+$changes
+"
+  if [ -n "$listed" ]; then listed="$listed, $repo"; else listed=$repo; fi
+  [ "$repo" = "$start" ] || others=1
+done <<REPOSITORIES
+$due
+REPOSITORIES
+[ -n "$asked" ] || exit 0
+asked=$(fingerprint "$asked")
+[ "$asked" = "$(cat "$state/$session.checked" 2>/dev/null)" ] && exit 0
+printf '%s' "$asked" > "$state/$session.checked" 2>/dev/null
+reason=${shellQuote(jsonText(AGENT_STOP_CHECK))}
+[ -n "$others" ] && reason="$reason "${shellQuote(jsonText(AGENT_STOP_CHECK_REPOSITORIES))}"$(printf '%s' "$listed" | sed 's/\\/\\\\/g; s/"/\\"/g')."
+printf '{"decision":"block","reason":"%s"}\n' "$reason"`;
 
 /**
  * Every file of both plugins, both marketplaces and the MCP Registry entry, by path relative to the
@@ -204,42 +348,16 @@ export function generatedFiles(version: string, dev?: ServerLaunch): Record<stri
     // made in it, and prints when the map helps.
     "plugins/claude/hooks/session-start.sh": `# Generated by scripts/plugins.ts.
 ${HOOK_SHELL}
-printf '%s' "$fingerprint" > "$state/$session.start" 2>/dev/null
+[ -n "$start" ] && fingerprint "$(code_changes "$start")" > "$state/$session.start" 2>/dev/null
 cat <<'EOF'
 ${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: AGENT_MAP_NOTE } })}
 EOF
 `,
-    // Stops Claude once to check code changes made in the session: never while it is already
-    // continuing for a stop hook, without changes, for the changes the session started with, twice
-    // for the same changes, when the transcript shows no edit of its own to this repository (another
-    // session sharing the work tree may have made them), or when it checked after its last edit.
+    // Stops Claude once to check the code changes the session made in each repository it edited.
     "plugins/claude/hooks/stop-check.sh": `# Generated by scripts/plugins.ts.
 [ "\${LAYERMAP_STOP_CHECK:-1}" = 0 ] && exit 0
 ${HOOK_SHELL}
-case "$input" in *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exit 0 ;; esac
-[ -n "$changes" ] || exit 0
-[ "$fingerprint" = "$(cat "$state/$session.start" 2>/dev/null)" ] && exit 0
-[ "$fingerprint" = "$(cat "$state/$session.checked" 2>/dev/null)" ] && exit 0
-printf '%s' "$fingerprint" > "$state/$session.checked" 2>/dev/null
-transcript=$(field transcript_path)
-if [ -f "$transcript" ]; then
-  # The last edit this session made to a file among the code changes git sees.
-  edited=$(grep -nE '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript" 2>/dev/null |
-    while IFS= read -r line; do
-      file=$(printf '%s' "$line" | sed -nE 's/.*"(file|notebook)_path": *"([^"]*)".*/\\2/p' | sed 's/\\\\\\\\/\\\\/g')
-      # CodeBuddy records the arguments as a JSON string inside the line, so their quotes are escaped.
-      [ -n "$file" ] || file=$(printf '%s' "$line" | sed -nE 's/.*\\\\"(file|notebook)_path\\\\": *\\\\"(([^"\\\\]|\\\\\\\\\\\\\\\\)*)\\\\".*/\\2/p' | sed 's/\\\\\\\\\\\\\\\\/\\\\/g')
-      [ -n "$file" ] || continue
-      printf '%s' "$file" | grep -qE '\\.(${CODE_EXTENSIONS.join("|")})$' || continue
-      git -C "$dir" status --porcelain --untracked-files=all -- "$file" 2>/dev/null | grep -q . && printf '%s\\n' "\${line%%:*}"
-    done | tail -n 1)
-  [ -n "$edited" ] || exit 0
-  checked=$(grep -nE '"name": *"[^"]*project_check_changes"' "$transcript" 2>/dev/null | tail -n 1 | cut -d: -f1)
-  [ -n "$checked" ] && [ "$checked" -gt "$edited" ] && exit 0
-fi
-cat <<'EOF'
-${JSON.stringify({ decision: "block", reason: AGENT_STOP_CHECK })}
-EOF
+${STOP_SHELL}
 `,
     "plugins/claude/README.md": `# LayerMap
 
@@ -264,8 +382,8 @@ ${PROMPTS.map((prompt) => `- "${prompt}"`).join("\n")}
 - LayerMap itself makes no network requests. Maps stay in your user cache, never in the repository.
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
-- When Claude is about to finish after editing code in the repository itself, a stop hook asks it once to run
-  \`project_check_changes\` and check what the changes affect. It only asks git whether code
+- When Claude is about to finish after editing code in a repository it has not checked since, a stop hook asks it
+  once to run \`project_check_changes\` for each such repository and check what the changes affect. It only asks git whether code
   changed and never runs tests or edits anything. Set \`LAYERMAP_STOP_CHECK=0\` to turn it off.
 
 ## Permissions

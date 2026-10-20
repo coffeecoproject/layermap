@@ -158,3 +158,10 @@ export const AGENT_MAP_NOTE =
  */
 export const AGENT_STOP_CHECK =
   "Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it lists EXISTING TESTS CHANGED or code SHARED BY several areas, decide which of them the request is about; for the others, restore their tests and narrow the change. If you already checked these changes, say so briefly and finish.";
+
+/**
+ * Added to AGENT_STOP_CHECK, followed by the repositories, when the changes to check are not all in
+ * the repository the session started in: a check without a path covers only that one.
+ */
+export const AGENT_STOP_CHECK_REPOSITORIES =
+  "The changes are in more than one repository, or not in the one the session started in: call project_check_changes once for each, with its path set to the repository: ";

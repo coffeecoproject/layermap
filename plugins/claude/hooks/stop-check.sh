@@ -7,37 +7,141 @@ session=$(field session_id | tr -cd 'A-Za-z0-9_-')
 [ -n "$session" ] || session=unknown
 dir=$(field cwd)
 [ -d "$dir" ] || dir=$PWD
+start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
 state="${TMPDIR:-/tmp}/layermap-claude"
 mkdir -p "$state" 2>/dev/null
 code_changes() {
-  git -C "$dir" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
-  git -C "$dir" diff HEAD --no-ext-diff --no-color -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null
-  git -C "$dir" ls-files --others --exclude-standard -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null |
-    while IFS= read -r file; do printf '%s %s\n' "$file" "$(git -C "$dir" hash-object -- "$file" 2>/dev/null)"; done
+  git -C "$1" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
+  git -C "$1" diff HEAD --no-ext-diff --no-color -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null
+  git -C "$1" ls-files --others --exclude-standard -- '*.ts' '*.tsx' '*.mts' '*.cts' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.go' '*.py' '*.java' 2>/dev/null |
+    while IFS= read -r file; do printf '%s %s\n' "$file" "$(git -C "$1" hash-object -- "$file" 2>/dev/null)"; done
 }
-changes=$(code_changes)
-fingerprint=$(printf '%s' "$changes" | git hash-object --stdin 2>/dev/null)
+fingerprint() { printf '%s' "$1" | git hash-object --stdin 2>/dev/null; }
 case "$input" in *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exit 0 ;; esac
-[ -n "$changes" ] || exit 0
-[ "$fingerprint" = "$(cat "$state/$session.start" 2>/dev/null)" ] && exit 0
-[ "$fingerprint" = "$(cat "$state/$session.checked" 2>/dev/null)" ] && exit 0
-printf '%s' "$fingerprint" > "$state/$session.checked" 2>/dev/null
+# The repository a path is in, as the map server routes a tool call's path: a relative path that
+# stays in the repository the session started in is that one's, and any other is resolved from
+# where the session started. Nothing outside any repository.
+repository() {
+  base=$start
+  [ -n "$base" ] || base=$dir
+  case "$1" in
+  /* | [A-Za-z]:*) target=$1 ;;
+  .. | ../*) target="$base/$1" ;;
+  *) [ -n "$start" ] && { printf '%s\n' "$start"; return; }; target="$base/$1" ;;
+  esac
+  while [ ! -d "$target" ]; do
+    parent=$(dirname "$target")
+    [ "$parent" = "$target" ] && return
+    target=$parent
+  done
+  git -C "$target" rev-parse --show-toplevel 2>/dev/null
+}
+# Lines of a number and a path, with a Windows path's slashes forward, as Git and sh take it.
+slashes() { sed -E '/^[0-9]+ [A-Za-z]:/s|\\|/|g'; }
 transcript=$(field transcript_path)
 if [ -f "$transcript" ]; then
-  # The last edit this session made to a file among the code changes git sees.
-  edited=$(grep -nE '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' "$transcript" 2>/dev/null |
-    while IFS= read -r line; do
-      file=$(printf '%s' "$line" | sed -nE 's/.*"(file|notebook)_path": *"([^"]*)".*/\2/p' | sed 's/\\\\/\\/g')
-      # CodeBuddy records the arguments as a JSON string inside the line, so their quotes are escaped.
-      [ -n "$file" ] || file=$(printf '%s' "$line" | sed -nE 's/.*\\"(file|notebook)_path\\": *\\"(([^"\\]|\\\\\\\\)*)\\".*/\2/p' | sed 's/\\\\\\\\/\\/g')
-      [ -n "$file" ] || continue
-      printf '%s' "$file" | grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|go|py|java)$' || continue
-      git -C "$dir" status --porcelain --untracked-files=all -- "$file" 2>/dev/null | grep -q . && printf '%s\n' "${line%%:*}"
-    done | tail -n 1)
-  [ -n "$edited" ] || exit 0
-  checked=$(grep -nE '"name": *"[^"]*project_check_changes"' "$transcript" 2>/dev/null | tail -n 1 | cut -d: -f1)
-  [ -n "$checked" ] && [ "$checked" -gt "$edited" ] && exit 0
+  # The edits and checks in the transcript, each as its line's number and the path its arguments
+  # give, unescaped; grep picks out only the parts of each line these need. CodeBuddy records the
+  # arguments as a JSON string inside the line, so their quotes are escaped; on a line with both,
+  # the escaped ones are text the arguments hold. An edit's path is the last on its line; a check
+  # without a path is given ".". Claude Code also keeps there a copy of each message it sends the
+  # model, which can hold several calls on one line; only the lines of the calls themselves count.
+  entries() {
+    grep -nE "$1" "$transcript" 2>/dev/null | grep -vE '^[0-9]+:\{"type": *"api-request'
+  }
+  edits() {
+    entries '"name": *"(Edit|Write|MultiEdit|NotebookEdit)"' |
+      grep -oE '^[0-9]+:|"(file|notebook)_path": *"[^"]*"|\\"(file|notebook)_path\\": *\\"[^"]*' |
+      awk '/^[0-9]+:$/ { line = substr($0, 1, length($0) - 1); next }
+        /^"/ { plain[line] = $0; next } { escaped[line] = $0 }
+        END { for (line in escaped) if (!(line in plain)) print line ":" escaped[line]
+          for (line in plain) print line ":" plain[line] }' |
+      sed -nE 's/^([0-9]+):"(file|notebook)_path": *"(.*)"$/\1 \3/
+t claude
+s/^([0-9]+):\\"(file|notebook)_path\\": *\\"(.*)\\$/\1 \3/
+t buddy
+d
+:claude
+s/\\\\/\\/g
+p
+d
+:buddy
+s/\\\\\\\\/\\/g
+p'
+  }
+  checks() {
+    entries '"name": *"[^"]*project_check_changes"' |
+      grep -oE '^[0-9]+:|"name": *"[^"]*project_check_changes"[^}]*' |
+      awk '/^[0-9]+:$/ { line = $0; next } { print line $0 }' |
+      sed -nE 's/^([0-9]+):.*"path": *"([^"]*)".*/\1 \2/
+t claude
+s/^([0-9]+):.*\\"path\\": *\\"(([^"\\]|\\\\\\\\)*)\\".*/\1 \2/
+t buddy
+s/^([0-9]+):.*/\1 ./p
+d
+:claude
+s/\\\\/\\/g
+p
+d
+:buddy
+s/\\\\\\\\/\\/g
+p'
+  }
+  # Each code file the session edited, at its last edit: the line, its repository, its path there.
+  # Each check: the line and the repository of its path.
+  calls=$({
+    edits | slashes | grep -E ' .*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|go|py|java)$' |
+      awk '{ line = $1; sub(/^[0-9]+ /, ""); if (line + 0 > last[$0] + 0) last[$0] = line } END { for (file in last) print last[file], file }' |
+      sort -k 2 | while read -r line file; do
+        folder=${file%/*}
+        if [ "$folder" != "$seen" ]; then
+          seen=$folder
+          { read -r repo; read -r prefix; } <<WHERE
+$(git -C "$folder" rev-parse --show-toplevel --show-prefix 2>/dev/null)
+WHERE
+        fi
+        [ -n "$repo" ] && printf 'edit\t%s\t%s\t%s\n' "$line" "$repo" "$prefix${file##*/}"
+      done
+    checks | slashes | while read -r line named; do
+      repo=$(repository "$named")
+      [ -n "$repo" ] && printf 'check\t%s\t%s\n' "$line" "$repo"
+    done
+  })
+  # The repositories with an edit to a file git still sees changed and no check of them after it.
+  due=$({
+    printf '%s\n' "$calls" | awk -F '\t' '$1 == "edit" { print $3 }' | sort -u | while IFS= read -r repo; do
+      { git -C "$repo" -c core.quotePath=false diff HEAD --name-only --no-renames 2>/dev/null
+        git -C "$repo" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null; } |
+        while IFS= read -r name; do printf 'changed\t%s\t%s\n' "$repo" "$name"; done
+    done
+    printf '%s\n' "$calls"
+  } | awk -F '\t' '$1 == "changed" { changed[$2 "\t" $3] = 1; next }
+    $1 == "edit" { if (($3 "\t" $4) in changed && $2 + 0 > edit[$3] + 0) edit[$3] = $2 + 0; next }
+    $1 == "check" { if ($2 + 0 > check[$3] + 0) check[$3] = $2 + 0 }
+    END { for (repo in edit) if (check[repo] + 0 <= edit[repo]) print repo }' | sort)
+else
+  due=$start
 fi
-cat <<'EOF'
-{"decision":"block","reason":"Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it lists EXISTING TESTS CHANGED or code SHARED BY several areas, decide which of them the request is about; for the others, restore their tests and narrow the change. If you already checked these changes, say so briefly and finish."}
-EOF
+asked=
+listed=
+others=
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  changes=$(code_changes "$repo")
+  [ -n "$changes" ] || continue
+  [ "$repo" = "$start" ] && [ "$(fingerprint "$changes")" = "$(cat "$state/$session.start" 2>/dev/null)" ] && continue
+  asked="$asked$repo
+$changes
+"
+  if [ -n "$listed" ]; then listed="$listed, $repo"; else listed=$repo; fi
+  [ "$repo" = "$start" ] || others=1
+done <<REPOSITORIES
+$due
+REPOSITORIES
+[ -n "$asked" ] || exit 0
+asked=$(fingerprint "$asked")
+[ "$asked" = "$(cat "$state/$session.checked" 2>/dev/null)" ] && exit 0
+printf '%s' "$asked" > "$state/$session.checked" 2>/dev/null
+reason='Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it lists EXISTING TESTS CHANGED or code SHARED BY several areas, decide which of them the request is about; for the others, restore their tests and narrow the change. If you already checked these changes, say so briefly and finish.'
+[ -n "$others" ] && reason="$reason "'The changes are in more than one repository, or not in the one the session started in: call project_check_changes once for each, with its path set to the repository: '"$(printf '%s' "$listed" | sed 's/\\/\\\\/g; s/"/\\"/g')."
+printf '{"decision":"block","reason":"%s"}\n' "$reason"

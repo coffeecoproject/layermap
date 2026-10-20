@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { AGENT_STOP_CHECK, AGENT_STOP_CHECK_REPOSITORIES } from "../src/agent/tools";
 import { project, sandbox } from "./support";
 
 const run = promisify(execFile);
@@ -109,6 +110,47 @@ test("the stop hook asks only about this session's own edits, and not after it c
   assert.equal(JSON.parse(await hook("stop-check.sh", input, env)).decision, "block");
 });
 
+test("the stop hook reads the calls, not Claude Code's copies of the messages it sent", async () => {
+  const { root, write } = await project({ "src/a.ts": "export const a = 1;\n" });
+  const git = (...args: string[]) =>
+    run("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root });
+  await git("add", "-A");
+  await git("commit", "-qm", "base");
+  const env = { TMPDIR: await sandbox() };
+  const transcript = path.join(await sandbox(), "transcript.jsonl");
+  const edit = {
+    type: "tool_use",
+    name: "Edit",
+    input: { file_path: path.join(root, "src/a.ts") },
+  };
+  const check = { type: "tool_use", name: "mcp__layermap__project_check_changes", input: {} };
+  // As Claude Code 2.1.300 writes them: each call of a reply on a line of its own, and the reply
+  // once more, whole, as a copy of the request that sent it back.
+  const entry = (call: object) =>
+    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call] } });
+  const copy = (...calls: object[]) =>
+    JSON.stringify({
+      type: "api-request-blob",
+      sessionId: "s",
+      hash: "h",
+      message: { role: "assistant", content: calls },
+    });
+  await write("src/a.ts", "export const a = 2;\n");
+
+  let sessions = 0;
+  const stop = async (...lines: string[]) => {
+    await writeFile(transcript, lines.join("\n"));
+    sessions += 1;
+    const input = { session_id: `s${sessions}`, cwd: root, transcript_path: transcript };
+    return hook("stop-check.sh", input, env);
+  };
+  assert.equal(await stop(entry(edit), entry(check), copy(edit, check)), "");
+  assert.equal(
+    JSON.parse(await stop(entry(check), entry(edit), copy(check, edit))).decision,
+    "block",
+  );
+});
+
 test("the stop hook reads CodeBuddy's transcript, whose arguments are a JSON string", async () => {
   const { root, write } = await project({ "src/a.ts": "export const a = 1;\n" });
   const git = (...args: string[]) =>
@@ -162,4 +204,80 @@ test("hook fields are unescaped, so Windows paths reach git with single backslas
   });
   await new Promise((resolve) => child.on("close", resolve));
   assert.equal(output.trim(), "C:\\Users\\me\\project");
+});
+
+test("the stop hook asks about each repository the session edited until a check of it", async () => {
+  const folder = await realpath(await sandbox());
+  const repo = async (name: string) => {
+    const { root } = await project(
+      { "src/a.ts": "export const a = 1;\n" },
+      path.join(folder, name),
+    );
+    const git = (...args: string[]) =>
+      run("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root });
+    await git("add", "-A");
+    await git("commit", "-qm", "base");
+    return root;
+  };
+  const [a, b] = [await repo("a"), await repo("b")];
+  const env = { TMPDIR: await sandbox() };
+  const transcript = path.join(await sandbox(), "transcript.jsonl");
+  const edit = (file: string) =>
+    JSON.stringify({
+      message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: file } }] },
+    });
+  const check = (input: Record<string, string> = {}) =>
+    JSON.stringify({
+      message: {
+        content: [
+          { type: "tool_use", name: "mcp__plugin_layermap_layermap__project_check_changes", input },
+        ],
+      },
+    });
+  let sessions = 0;
+  const stop = async (cwd: string, ...lines: string[]) => {
+    await writeFile(transcript, lines.join("\n"));
+    sessions += 1;
+    const output = await hook(
+      "stop-check.sh",
+      { session_id: `s${sessions}`, cwd, transcript_path: transcript },
+      env,
+    );
+    return output ? (JSON.parse(output) as { reason: string }).reason : "";
+  };
+  await writeFile(path.join(a, "src/a.ts"), "export const a = 2;\n");
+  await writeFile(path.join(b, "src/a.ts"), "export const a = 2;\n");
+
+  // Started in the folder holding both: each edited repository is named, as a check needs a path.
+  const both = await stop(folder, edit(path.join(a, "src/a.ts")), edit(path.join(b, "src/a.ts")));
+  assert.ok(both.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${a}, ${b}.`), both);
+  const unchecked = await stop(folder, edit(path.join(a, "src/a.ts")), check());
+  assert.ok(
+    unchecked.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${a}.`),
+    "a check needs a path here",
+  );
+  const left = await stop(
+    folder,
+    edit(path.join(a, "src/a.ts")),
+    edit(path.join(b, "src/a.ts")),
+    check({ path: "a/src" }),
+  );
+  assert.ok(left.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${b}.`), left);
+  assert.equal(
+    await stop(
+      folder,
+      edit(path.join(a, "src/a.ts")),
+      edit(path.join(b, "src/a.ts")),
+      check({ path: "a/src" }),
+      check({ path: b }),
+    ),
+    "",
+  );
+
+  // Started in a: a check without a path or with a relative one is a's, and ../b is b's.
+  assert.equal(await stop(a, edit(path.join(a, "src/a.ts"))), AGENT_STOP_CHECK);
+  const other = await stop(a, edit(path.join(b, "src/a.ts")), check());
+  assert.ok(other.endsWith(`${AGENT_STOP_CHECK_REPOSITORIES}${b}.`), other);
+  assert.equal(await stop(a, edit(path.join(b, "src/a.ts")), check({ path: "../b" }), check()), "");
+  assert.equal(await stop(a, edit(path.join(b, "src/a.ts")), check({ path: "b" })), other);
 });
