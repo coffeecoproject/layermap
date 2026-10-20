@@ -286,3 +286,78 @@ test("a change to code several areas use names each area and its tests; construc
   // JSONResponse's super().__init__ runs Response.__init__, never FileResponse.__init__.
   assert.doesNotMatch(text, /make_json|JSONResponse/u);
 });
+
+test("a change names the imports it adds between modules, and the ones that make two modules depend on each other", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/core/store.ts": "export function load() {\n  return 1;\n}\n",
+    "src/core/format.ts": "export function format(value: number) {\n  return String(value);\n}\n",
+    "src/feature/page.ts":
+      'import { load } from "../core/store";\n\nexport function page() {\n  return load();\n}\n',
+    "test/page.test.ts": 'import { page } from "../src/feature/page";\n\npage();\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const dependencies = async () => {
+    const { text } = await map.checkChanges({}, signal());
+    const at = text.indexOf("NEW MODULE DEPENDENCIES");
+    return at < 0 ? "" : text.slice(at, text.indexOf("\n", text.indexOf("Decide for each", at)));
+  };
+
+  // Lines added only, so no base map is built: the imports on the other lines are the base's.
+  await write(
+    "src/core/format.ts",
+    'import { page } from "../feature/page";\nimport { trim } from "../util/text";\n\nexport function format(value: number) {\n  return String(value);\n}\nexport const both = (value: number) => trim(format(value)) + page();\n',
+  );
+  await write(
+    "src/util/text.ts",
+    "export function trim(value: string) {\n  return value.trim();\n}\n",
+  );
+  let text = await dependencies();
+  assert.match(
+    text,
+    /^ {2}src\/core\/ → src\/feature\/ \(src\/core\/format\.ts:1\); now a cycle, back through src\/feature\/ → src\/core\/$/mu,
+  );
+  assert.match(text, /^ {2}src\/core\/ → src\/util\/ \(src\/core\/format\.ts:2\)$/mu);
+  assert.doesNotMatch(text, /^ {2}src\/feature\/ → src\/core\/|^ {2}test\//mu);
+  assert.match(text, /A cycle ties the modules together/u);
+
+  // An import line the diff edits was there before; the base map tells.
+  await write(
+    "src/feature/page.ts",
+    'import { load as read } from "../core/store";\n\nexport function page() {\n  return read();\n}\n',
+  );
+  text = await dependencies();
+  assert.doesNotMatch(text, /^ {2}src\/feature\/ → src\/core\//mu);
+  assert.match(text, /^ {2}src\/core\/ → src\/feature\/ .*now a cycle/mu);
+
+  // A dependency the base already had, or a cycle it already had, is not new.
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write(
+    "src/core/store.ts",
+    'import { page } from "../feature/page";\n\nexport function load() {\n  return 1;\n}\nexport const again = () => page();\n',
+  );
+  assert.equal(await dependencies(), "");
+  await write(
+    "src/feature/page.ts",
+    'import { load as read } from "../core/store";\nimport { trim } from "../util/text";\n\nexport function page() {\n  return trim(String(read()));\n}\n',
+  );
+  // A module the diff adds: its imports on one line.
+  await write(
+    "src/report/summary.ts",
+    'import { load } from "../core/store";\nimport { page } from "../feature/page";\n\nexport const summary = () => load() + page();\n',
+  );
+  text = await dependencies();
+  assert.match(text, /^ {2}src\/feature\/ → src\/util\/ \(src\/feature\/page\.ts:2\)$/mu);
+  assert.match(
+    text,
+    /^ {2}src\/report\/ \(a module this diff adds\) → src\/core\/, src\/feature\/$/mu,
+  );
+  assert.doesNotMatch(text, /cycle/u);
+});

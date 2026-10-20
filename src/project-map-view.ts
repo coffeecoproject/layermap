@@ -248,6 +248,25 @@ export function mapModules(directory: string, files: readonly string[]): Module[
   );
 }
 
+/** The module a code file belongs to in the overview of the whole project, by its label; tests have none. */
+export function mapProjectModules(
+  entries: readonly ProjectEvidenceRevisionFileEntryV1[],
+): (path: string) => string | undefined {
+  const modules = mapModules(
+    ".",
+    entries
+      .filter(
+        (entry) => entry.state === "TEXT" && mapCodePath(entry.path) && !mapTestPath(entry.path),
+      )
+      .map((entry) => entry.path),
+  );
+  return (path) => {
+    if (mapTestPath(path)) return undefined;
+    const module = modules.find((candidate) => inModule(path, candidate));
+    return module && moduleLabel(module);
+  };
+}
+
 type CallResolution = { resolved: number; unresolved: number; external: number };
 type DirectoryFacts = Readonly<{
   files: ReadonlyMap<string, Readonly<{ lines: number; parsed: boolean; language?: string }>>;
@@ -263,6 +282,25 @@ type DirectoryFacts = Readonly<{
 
 // Whole-version reads scan rows in storage order: walking a version index would fetch every
 // row at random. Versions are immutable, so one scan serves every directory view.
+// Import statements by source file, target file and specifier; the target is null outside the map.
+type MapImports = DirectoryFacts["imports"];
+function loadImports(store: CodeIndexStore, version: string): MapImports {
+  return store.database
+    .prepare(`SELECT r.path AS source, t.path AS target,
+        json_extract(r.relation_json, '$.target') AS specifier, count(*) AS count
+      FROM project_map_relations r NOT INDEXED
+      LEFT JOIN project_map_objects t ON t.version_ref = r.version_ref AND t.entity_ref = r.to_ref
+      WHERE r.version_ref = ? AND json_extract(r.relation_json, '$.kind') IN ('IMPORTS', 'TEST_IMPORTS')
+      GROUP BY source, target, specifier`)
+    .all(version)
+    .map((row) => ({
+      source: String(row.source),
+      target: row.target === null ? null : String(row.target),
+      specifier: String(row.specifier),
+      count: Number(row.count),
+    }));
+}
+
 function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFacts {
   const files = new Map<string, { lines: number; parsed: boolean; language?: string }>();
   const declarations: {
@@ -343,20 +381,7 @@ function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFa
     ]);
   }
   for (const list of exported.values()) list.sort((left, right) => left.start - right.start);
-  const imports = store.database
-    .prepare(`SELECT r.path AS source, t.path AS target,
-        json_extract(r.relation_json, '$.target') AS specifier, count(*) AS count
-      FROM project_map_relations r NOT INDEXED
-      LEFT JOIN project_map_objects t ON t.version_ref = r.version_ref AND t.entity_ref = r.to_ref
-      WHERE r.version_ref = ? AND json_extract(r.relation_json, '$.kind') IN ('IMPORTS', 'TEST_IMPORTS')
-      GROUP BY source, target, specifier`)
-    .all(version)
-    .map((row) => ({
-      source: String(row.source),
-      target: row.target === null ? null : String(row.target),
-      specifier: String(row.specifier),
-      count: Number(row.count),
-    }));
+  const imports = loadImports(store, version);
   // Calls into the standard library or into declarations that are not loaded (usually packages)
   // have no project target; the rest either link to a project declaration or have an unknown callee.
   const calls = new Map<string, CallResolution>();
@@ -487,6 +512,7 @@ function loadCoverageNotes(store: CodeIndexStore, version: string): MapCoverageN
 
 export class MapViewCache {
   private readonly facts = new VersionCache(loadDirectoryFacts);
+  private readonly importRows = new VersionCache(loadImports);
   private readonly calls = new VersionCache(loadMemberCalls);
   private readonly coverage = new VersionCache(loadCoverageNotes);
 
@@ -498,12 +524,17 @@ export class MapViewCache {
     return this.coverage.get(store, version);
   }
 
+  imports(store: CodeIndexStore, version: string): MapImports {
+    return this.importRows.get(store, version);
+  }
+
   memberCalls(store: CodeIndexStore, version: string): MemberCalls {
     return this.calls.get(store, version);
   }
 
   clear(): void {
     this.facts.clear();
+    this.importRows.clear();
     this.calls.clear();
     this.coverage.clear();
   }

@@ -158,7 +158,9 @@ a change meant for one feature does not quietly change the others. Environment v
 configuration keys are linked by name only, which no compiler sees, so when the diff removes one
 from a file, the check names the files that still read or set the old name. In the same way, when
 the change reaches a route's handler or renames a route, it names the code and templates that
-request that path: a frontend's fetch, a generated API client, a redirect or a link. It never writes or runs tests. In Claude Code and
+request that path: a frontend's fetch, a generated API client, a redirect or a link. When the change adds
+an import between two modules of the project overview, it names it, and says when the two now
+depend on each other; whether that direction suits the project's layers is for the agent to judge. It never writes or runs tests. In Claude Code and
 CodeBuddy Code the plugin asks the agent once, before it finishes, to run this check for each repository it edited code in
 and has not checked since, whether through its edit tools or shell commands (changes another session makes in the same
 work tree do not count); the Pi extension does the same after the agent's own edits. Set `LAYERMAP_STOP_CHECK=0` to turn that
@@ -196,7 +198,7 @@ nothing anywhere ([privacy](https://github.com/coffeecoproject/layermap/blob/mai
 | `project_explore_map` | A directory, a file, or a declaration's callers and callees (`direction` INCOMING or OUTGOING, `depth` up to 8). |
 | `project_search_map` | Find declarations by words in their names, paths or documentation. |
 | `project_find_references` | Every usage of a declaration, compiled from current source. |
-| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, the areas that share the changed code, environment variables and configuration keys it removed that other files still use, code and templates that request the affected routes, what to check by hand, and related tests. |
+| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, the areas that share the changed code, environment variables and configuration keys it removed that other files still use, code and templates that request the affected routes, new dependencies between modules and the cycles they close, what to check by hand, and related tests. |
 
 The same from the command line:
 

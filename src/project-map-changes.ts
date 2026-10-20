@@ -10,6 +10,7 @@ import {
   routeClientsLine,
   routeRegistrations,
 } from "./project-map-clients";
+import { type MapModuleDependency, newModuleDependencies } from "./project-map-dependencies";
 import { mapLanguageOf } from "./project-map-language";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
@@ -253,6 +254,8 @@ export type MapChangeImpact = Readonly<{
   unclear: readonly string[];
   /** Routes the base registered in the changed files that they no longer register. */
   removedRoutes: readonly string[];
+  /** Imports between the overview's modules that the base did not have. */
+  dependencies: readonly MapModuleDependency[];
   truncated: boolean;
 }>;
 
@@ -695,6 +698,7 @@ export function mapChangeImpact(
       .sort((left, right) => right.tests.length - left.tests.length),
     unclear: [...new Set([...unclear, ...tracer.unclear])],
     removedRoutes,
+    dependencies: newModuleDependencies(store, cache, working, base, changes.files),
     truncated: tracer.truncated,
   };
 }
@@ -899,6 +903,8 @@ const LIST = Object.freeze({
   areaTests: 3,
   areaNames: 3,
   through: 2,
+  dependencies: 12,
+  sites: 2,
 });
 
 /** The check as an agent reads it: the conclusion first, then each list, then what it cannot see. */
@@ -1060,6 +1066,34 @@ export function mapChangesText(
     );
     lines.push(
       "Each area's tests pin its current behavior. Decide which areas the request is about: a failing test of another area means the change reached a feature the request may not cover; if it does not, narrow the change, for example to code only the requested area uses, rather than rewriting that test.",
+    );
+  }
+  // Which way the changed code now depends: the project's layers decide whether that is allowed.
+  if (impact.dependencies.length) {
+    const sites = (dependency: MapModuleDependency) =>
+      `${dependency.sites.slice(0, LIST.sites).join(", ")}${dependency.sites.length > LIST.sites ? `, +${dependency.sites.length - LIST.sites} more` : ""}`;
+    // A module the diff adds imports everything anew: its imports read best as one line.
+    const fresh = new Map<string, string[]>();
+    for (const dependency of impact.dependencies)
+      if (dependency.added && !dependency.back)
+        fresh.set(dependency.from, [...(fresh.get(dependency.from) ?? []), dependency.to]);
+    list(
+      "NEW MODULE DEPENDENCIES (imports between the modules of the project overview that the base did not have)",
+      [
+        ...impact.dependencies
+          .filter((dependency) => !fresh.has(dependency.from) || dependency.back)
+          .map(
+            (dependency) =>
+              `${dependency.from} → ${dependency.to} (${sites(dependency)})${dependency.back ? `; now a cycle, back through ${dependency.back.join(" → ")}` : ""}`,
+          ),
+        ...[...fresh].map(
+          ([from, targets]) => `${from} (a module this diff adds) → ${targets.join(", ")}`,
+        ),
+      ],
+      LIST.dependencies,
+    );
+    lines.push(
+      `Decide for each whether it runs the way the project's layers do: code others build on (shared types, storage, utilities) should not import the features or interfaces built on it.${impact.dependencies.some((dependency) => dependency.back) ? " A cycle ties the modules together, so neither can change or be tested alone." : ""} If one runs the wrong way, move what both need into the lower module or pass it in, rather than import upward.`,
     );
   }
   const entry = (item: MapChangeEntry) =>
