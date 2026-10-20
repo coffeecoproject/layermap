@@ -533,6 +533,15 @@ export function mapChangeImpact(
     g.objectsAt(path).filter((object) => !mapIsModule(object) && g.isAddressable(object));
   let changedCount = 0;
   const starts: string[] = [];
+  // Read once for all changed files, as a large change (thousands of files nobody has added to
+  // Git yet) would otherwise query the same importers, and every mapped path, once per file.
+  const importers = new Map<string, Importer[]>();
+  let mapped: string[] | undefined;
+  const mappedPaths = () =>
+    (mapped ??= store.database
+      .prepare("SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ?")
+      .all(working)
+      .map((row) => String(row.path)));
 
   for (const file of changes.files) {
     if (file.binary) continue;
@@ -595,9 +604,9 @@ export function mapChangeImpact(
     if (analyzed && topLevel && file.status !== "ADDED")
       unclear.push(`top-level code of ${file.path} changed (imports, constants or registrations)`);
     // A file's importers back up its callers: tests that import it, even without a mapped call.
-    importerTests(graph, objects, tracer);
-    sameDirectoryTests(store, working, file.path, tracer);
-    mirroredTests(store, working, file.path, tracer);
+    importerTests(graph, objects, tracer, importers);
+    sameDirectoryTests(mappedPaths(), file.path, tracer);
+    mirroredTests(mappedPaths(), file.path, tracer);
   }
   tracer.trace(starts);
   if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
@@ -761,28 +770,44 @@ function existingTestsChanged(
     .sort();
 }
 
-// Tests that import a changed file, directly or through up to two importing modules.
-function importerTests(graph: MapViewGraph, objects: readonly MapObject[], tracer: Tracer) {
+// A module importing another: the file holding the import, and the importing module.
+type Importer = Readonly<{ path: string; module: string }>;
+
+// Tests that import a changed file, directly or through up to two importing modules. Each module's
+// importers are read once and kept for the other changed files.
+function importerTests(
+  graph: MapViewGraph,
+  objects: readonly MapObject[],
+  tracer: Tracer,
+  importers: Map<string, Importer[]>,
+) {
   let modules = objects.filter((object) => mapIsModule(object)).map((object) => object.id);
   const seen = new Set(modules);
   for (let hop = 0; hop < 3 && modules.length; hop++) {
-    const next: string[] = [];
-    for (const relation of graph.relationsTo(modules)) {
-      if (!IMPORT_KINDS.has(relation.kind)) continue;
+    const unread = modules.filter((module) => !importers.has(module));
+    for (const module of unread) importers.set(module, []);
+    for (const relation of graph.relationsTo(unread)) {
+      if (!IMPORT_KINDS.has(relation.kind) || !relation.to) continue;
       const importer = graph.object(relation.from);
-      const module = mapIsModule(importer) ? importer.id : graph.owner(relation.from);
-      if (testCode(relation.anchor.path))
-        tracer.test(
-          relation.anchor.path,
-          undefined,
-          hop ? "imports a changed file indirectly" : "imports a changed file",
-          hop ? 4 : 2,
-        );
-      else if (!seen.has(module)) {
-        seen.add(module);
-        next.push(module);
-      }
+      importers.get(relation.to)?.push({
+        path: relation.anchor.path,
+        module: mapIsModule(importer) ? importer.id : graph.owner(relation.from),
+      });
     }
+    const next: string[] = [];
+    for (const imported of modules)
+      for (const { path, module } of importers.get(imported) ?? [])
+        if (testCode(path))
+          tracer.test(
+            path,
+            undefined,
+            hop ? "imports a changed file indirectly" : "imports a changed file",
+            hop ? 4 : 2,
+          );
+        else if (!seen.has(module)) {
+          seen.add(module);
+          next.push(module);
+        }
     modules = next;
   }
 }
@@ -803,16 +828,12 @@ function supportTests(store: CodeIndexStore, version: string, tracer: Tracer) {
 }
 
 // Tests of the same module in a mirrored test tree: tests/file/ for polar/file/service.py.
-function mirroredTests(store: CodeIndexStore, version: string, file: string, tracer: Tracer) {
+function mirroredTests(paths: readonly string[], file: string, tracer: Tracer) {
   const directories = file.split("/").slice(0, -1);
   const module = directories.at(-1);
   if (!module || directories.length < 1) return;
-  for (const row of store.database
-    .prepare(
-      "SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ? AND instr(path, ?) > 0",
-    )
-    .all(version, `/${module}/`)) {
-    const candidate = String(row.path);
+  for (const candidate of paths) {
+    if (!candidate.includes(`/${module}/`)) continue;
     const parts = candidate.split("/");
     const at = parts.lastIndexOf(module);
     if (at < 1 || at !== parts.length - 2) continue;
@@ -870,15 +891,11 @@ function routeTests(
 }
 
 // Test files beside a changed file, as Go's _test.go files and many projects keep them.
-function sameDirectoryTests(store: CodeIndexStore, version: string, path: string, tracer: Tracer) {
+function sameDirectoryTests(paths: readonly string[], path: string, tracer: Tracer) {
   const slash = path.lastIndexOf("/");
   const directory = slash < 0 ? "" : path.slice(0, slash + 1);
-  for (const row of store.database
-    .prepare(
-      "SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ? AND path LIKE ? ESCAPE '\\'",
-    )
-    .all(version, `${directory.replace(/[\\%_]/gu, (c) => `\\${c}`)}%`)) {
-    const candidate = String(row.path);
+  for (const candidate of paths) {
+    if (!candidate.startsWith(directory)) continue;
     if (candidate.slice(directory.length).includes("/") || !mapTestPath(candidate)) continue;
     tracer.test(candidate, undefined, "in the same directory", 3);
   }
