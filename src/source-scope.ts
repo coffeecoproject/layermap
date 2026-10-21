@@ -52,13 +52,18 @@ const sourceExtensions = Object.freeze([
   ".ts",
   ".tsx",
 ]);
-// Dependency trees and caches, including Python virtual environments committed by mistake.
+// Dependency trees and caches, including Python virtual environments committed by mistake, and
+// coding agents' own directories, where they keep worktrees, reviews and copies of the project.
 const excludedSegments = Object.freeze([
   "node_modules",
   "vendor",
   ".venv",
   "__pycache__",
   "site-packages",
+  ".claude",
+  ".codex",
+  ".cursor",
+  ".pi",
 ]);
 
 /** Which files a map reads: source, documentation, workspace and language configuration. */
@@ -88,6 +93,14 @@ export const SOURCE_POLICY = Object.freeze({
 const extensions = new Set(sourceExtensions);
 const excluded = new Set(excludedSegments);
 
+/** Whether a path lies in a directory a map never reads, such as dependencies or an agent's own. */
+export const inExcludedDirectory = (relativePath: string): boolean =>
+  relativePath
+    .toLowerCase()
+    .split("/")
+    .slice(0, -1)
+    .some((segment) => excluded.has(segment));
+
 export const initialEvidenceScopeContains = (
   allowed: InitialEvidenceScope,
   admitted: InitialEvidenceScope,
@@ -115,10 +128,9 @@ export const includesInitialEvidencePath = (
     )
   )
     return false;
-  if (isProjectEvidenceTraversalExcluded(relativePath)) return false;
-  const segments = relativePath.toLowerCase().split("/");
-  if (segments.slice(0, -1).some((segment) => excluded.has(segment))) return false;
-  const basename = segments.at(-1) ?? "";
+  if (isProjectEvidenceTraversalExcluded(relativePath) || inExcludedDirectory(relativePath))
+    return false;
+  const basename = relativePath.toLowerCase().split("/").at(-1) ?? "";
   return (
     extensions.has(path.posix.extname(basename)) ||
     SOURCE_POLICY.documentationFiles.includes(basename) ||

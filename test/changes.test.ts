@@ -109,7 +109,11 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
   );
   await write("config.yaml", "retries: 5\n");
   await write("app/billing/service.py", "def charge(amount):\n    return amount * 2\n");
+  // What a coding agent leaves in its own directory is not a change to the project.
+  await write(".claude/reviews/store.test.ts", FILES["test/store.test.ts"]);
+  await write(".claude/settings.local.json", "{}\n");
   const { text } = await map.checkChanges({}, signal());
+  assert.doesNotMatch(text, /\.claude/u);
 
   assert.match(text, /^CHANGED\n {2}app\/billing\/service\.py: charge f1-2/mu);
   assert.match(text, /src\/store\.ts: markRead f1-3/u);

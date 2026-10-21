@@ -39,6 +39,27 @@ test("a project directory is mapped on first use and queried by directory, decla
   assert.ok(references.references.some((reference) => reference.anchor.path === "src/helper.ts"));
 });
 
+test("coding agents' own directories, with their worktrees and copies of the project, are not mapped", async (t) => {
+  const { root } = await project({
+    ...FILES,
+    ".claude/worktrees/fix/src/helper.ts": FILES["src/helper.ts"],
+    ".claude/reviews/copy.ts":
+      'import { target } from "../../src/target";\n\nexport const copy = () => target(1);\n',
+    ".codex/check.ts":
+      'import { target } from "../src/target";\n\nexport const check = () => target(2);\n',
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const overview = await map.explore({ path: "." }, signal());
+  assert.doesNotMatch(overview.text, /\.claude|\.codex/u);
+  const callers = await map.explore(
+    { path: "src/target.ts", name: "target", direction: "INCOMING", depth: 3 },
+    signal(),
+  );
+  assert.match(callers.text, /← called by src\/helper\.ts: helper/u);
+  assert.doesNotMatch(callers.text, /\.claude|\.codex/u);
+});
+
 test("a query after an edit sees the edited source, and an unchanged directory keeps its map", async (t) => {
   const { root, write } = await project(FILES);
   const map = await openMap(root);

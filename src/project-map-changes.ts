@@ -18,6 +18,7 @@ import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
+import { inExcludedDirectory } from "./source-scope";
 
 // "What does this change affect?": the declarations a diff touches, the entry points and tests
 // their callers reach, and what a static map cannot see. It borrows test impact analysis practice:
@@ -111,7 +112,9 @@ export async function readMapChanges(
       gitOptions(project, signal),
     )
   ).stdout.toString("utf8");
-  const files = parseMapDiff(diff);
+  // A map never reads dependencies or coding agents' own directories, so their files are not
+  // changes to check.
+  const files = parseMapDiff(diff).filter((file) => !inExcludedDirectory(file.path));
   for (const [index, file] of files.entries())
     if (file.basePath && file.status !== "ADDED" && !file.binary && testCode(file.basePath))
       files[index] = {
@@ -125,7 +128,7 @@ export async function readMapChanges(
   ).stdout
     .toString("utf8")
     .split("\0")
-    .filter(Boolean);
+    .filter((path) => path && !inExcludedDirectory(path));
   for (const path of untracked)
     files.push({ path, status: "ADDED", lines: [EVERYTHING], baseLines: [], binary: false });
   const stranded = await strandedNames(
