@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync, type DatabaseSyncInstance } from "@photostructure/sqlite";
@@ -40,6 +40,10 @@ export type LayerMapAnalyzers = Readonly<{
 const SCHEMA_VERSION = 2;
 /** Versions kept per project: the current one and recent ones a rebuild can replay from. */
 const KEEP_VERSIONS = 3;
+/** How long a map waits for another process that holds it. */
+const BUSY_TIMEOUT = "PRAGMA busy_timeout = 30000;";
+/** The write-ahead log a map leaves after a capture before it is emptied. */
+const JOURNAL_LIMIT = 32 * 1024 * 1024;
 
 /**
  * Opens a map database owned by LayerMap alone, with the SQLite LayerMap ships (Node's own may lack
@@ -50,7 +54,7 @@ export function openMapDatabase(file: string): DatabaseSyncInstance {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const database = new DatabaseSync(file);
   try {
-    database.exec("PRAGMA busy_timeout = 30000;");
+    database.exec(BUSY_TIMEOUT);
     const version = Number(database.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > SCHEMA_VERSION) throw new ProjectEvidenceError("LAYERMAP_DATABASE_NEWER", false);
     // Only an empty file takes a vacuum mode without being rewritten, before WAL writes its header.
@@ -118,6 +122,7 @@ export class LayerMap {
     private readonly store: CodeIndexStore,
     private readonly index: CodeIndex,
     private readonly budget: MapQueryOutputBudget,
+    private readonly journal: string,
   ) {}
 
   static async open(options: LayerMapOptions): Promise<LayerMap> {
@@ -131,10 +136,9 @@ export class LayerMap {
     };
     // LayerMap's SQLite implements node:sqlite's API; the two declare a few members the store does
     // not use (expandedSQL, serialize) differently.
+    const file = mapDatabasePath(options.cacheDirectory, project);
     const store = new CodeIndexStore(
-      openMapDatabase(
-        mapDatabasePath(options.cacheDirectory, project),
-      ) as unknown as CodeIndexStore["database"],
+      openMapDatabase(file) as unknown as CodeIndexStore["database"],
     );
     const { typescript, go, python, java } = options.analyzers;
     const index = new CodeIndex(
@@ -147,10 +151,14 @@ export class LayerMap {
         new JavaMapAnalyzer(java),
       ]),
     );
-    return new LayerMap(project, source, store, index, {
-      maxBytes: options.maxOutputBytes ?? 96 * 1024,
-      envelopeBytes: 0,
-    });
+    return new LayerMap(
+      project,
+      source,
+      store,
+      index,
+      { maxBytes: options.maxOutputBytes ?? 96 * 1024, envelopeBytes: 0 },
+      `${file}-wal`,
+    );
   }
 
   /** The map version of the directory as it is now, built or updated if needed. */
@@ -160,6 +168,7 @@ export class LayerMap {
         initialScope: DEFAULT_INITIAL_EVIDENCE_SCOPE,
       });
       this.prune(version);
+      this.tidyJournal();
       return version.version;
     });
   }
@@ -193,6 +202,22 @@ export class LayerMap {
       ...this.store.mapParentCandidates(version, KEEP_VERSIONS - 1),
     ]);
     this.store.database.exec("PRAGMA incremental_vacuum;");
+  }
+
+  // SQLite leaves the write-ahead log at the size of the largest capture written through it, often
+  // hundreds of megabytes after a build. Once that capture is in the database the log is emptied,
+  // unless another process is reading or writing the map, in which case a later capture empties it.
+  private tidyJournal() {
+    if ((statSync(this.journal, { throwIfNoEntry: false })?.size ?? 0) <= JOURNAL_LIMIT) return;
+    const database = this.store.database;
+    database.exec("PRAGMA busy_timeout = 0;");
+    try {
+      database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    } catch {
+      // Busy: another process holds the map.
+    } finally {
+      database.exec(BUSY_TIMEOUT);
+    }
   }
 
   async explore(

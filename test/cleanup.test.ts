@@ -100,6 +100,27 @@ test("the cache drops maps unused for 30 days and analyzer builds superseded for
   assert.equal(await exists(path.join(builds, "interrupted.123")), false);
 });
 
+test("a capture empties the write-ahead log that a large write left, while another process holds the map", async (t) => {
+  const { root } = await project(FILES);
+  const cache = path.join(await sandbox(), "cache");
+  const map = await openMap(root, cache);
+  t.after(() => map.close());
+  await map.refresh(signal());
+  // Another connection keeps the log from being removed on close, as another session's server does.
+  const file = mapDatabasePath(cache, map.project);
+  const other = new DatabaseSync(file);
+  t.after(() => other.close());
+  // One large transaction, as a build writes, which the log holds whole.
+  other.exec("BEGIN; CREATE TABLE written (data BLOB);");
+  for (let block = 0; block < 40; block++)
+    other.exec("INSERT INTO written VALUES (randomblob(1024 * 1024))");
+  other.exec("COMMIT");
+  const journal = async () => (await stat(`${file}-wal`)).size;
+  assert.ok((await journal()) > 32 * 1024 * 1024);
+  await map.refresh(signal());
+  assert.equal(await journal(), 0);
+});
+
 test("the cache drops versions npx installed beside this one a week after it installed an older one", async () => {
   const npx = path.join(await sandbox(), "_npx");
   const now = Date.now();
