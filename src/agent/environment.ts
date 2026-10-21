@@ -171,9 +171,15 @@ const DAY = 24 * 60 * 60 * 1000;
 /**
  * Keeps the cache to what is in use: a project's map goes after 30 days unused, a superseded
  * analyzer build after a day (a server started before an update may still run it), and an
- * interrupted build after an hour.
+ * interrupted build after an hour. npx keeps each version it ran, about 100 MB apiece, beside this
+ * one (installed is this package's directory); an older version goes a week after npx installed it.
  */
-export async function pruneCache(cache: string, project: string, now = Date.now()): Promise<void> {
+export async function pruneCache(
+  cache: string,
+  project: string,
+  now = Date.now(),
+  installed = packageRoot,
+): Promise<void> {
   const used = path.join(path.dirname(mapDatabasePath(cache, project)), "last-used");
   await mkdir(path.dirname(used), { recursive: true, mode: 0o700 });
   await writeFile(used, "");
@@ -194,5 +200,40 @@ export async function pruneCache(cache: string, project: string, now = Date.now(
     const built = (await stat(path.join(builds, name)).catch(() => undefined))?.mtimeMs;
     if (built !== undefined && now - built > (name.includes(".") ? DAY / 24 : DAY))
       await rm(path.join(builds, name), { recursive: true, force: true });
+  }
+  await pruneNpxInstalls(installed, now);
+}
+
+// npx installs a package as <npm cache>/_npx/<hash>/node_modules/layermap, with a manifest in
+// <hash> that depends on it alone; any other directory there is not LayerMap's to remove.
+async function pruneNpxInstalls(installed: string, now: number) {
+  const own = path.dirname(path.dirname(installed));
+  const npx = path.dirname(own);
+  if (path.basename(path.dirname(installed)) !== "node_modules" || path.basename(npx) !== "_npx")
+    return;
+  const manifest = async (file: string) =>
+    JSON.parse(await readFile(file, "utf8").catch(() => "{}")) as {
+      version?: string;
+      dependencies?: Record<string, string>;
+    };
+  const parts = (version: string | undefined) => version?.split(".").map(Number) ?? [];
+  const current = parts((await manifest(path.join(installed, "package.json"))).version);
+  const older = (version: number[]) => {
+    for (let index = 0; index < 3; index++)
+      if (version[index] !== current[index]) return (version[index] ?? 0) < (current[index] ?? 0);
+    return false;
+  };
+  for (const name of await readdir(npx).catch(() => [])) {
+    const directory = path.join(npx, name);
+    if (directory === own) continue;
+    const requested = (await manifest(path.join(directory, "package.json"))).dependencies ?? {};
+    if (Object.keys(requested).join() !== "layermap") continue;
+    const version = parts(
+      (await manifest(path.join(directory, "node_modules", "layermap", "package.json"))).version,
+    );
+    if (version.length !== 3 || version.some(Number.isNaN) || !older(version)) continue;
+    const at = (await stat(directory).catch(() => undefined))?.mtimeMs;
+    if (at !== undefined && now - at > 7 * DAY)
+      await rm(directory, { recursive: true, force: true });
   }
 }

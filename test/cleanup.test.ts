@@ -99,3 +99,43 @@ test("the cache drops maps unused for 30 days and analyzer builds superseded for
   assert.equal(await exists(path.join(builds, "fresh")), true);
   assert.equal(await exists(path.join(builds, "interrupted.123")), false);
 });
+
+test("the cache drops versions npx installed beside this one a week after it installed an older one", async () => {
+  const npx = path.join(await sandbox(), "_npx");
+  const now = Date.now();
+  const install = async (
+    name: string,
+    requested: Record<string, string>,
+    version: string,
+    days: number,
+  ) => {
+    const directory = path.join(npx, name);
+    await mkdir(path.join(directory, "node_modules", "layermap"), { recursive: true });
+    await writeFile(
+      path.join(directory, "package.json"),
+      JSON.stringify({ dependencies: requested }),
+    );
+    await writeFile(
+      path.join(directory, "node_modules", "layermap", "package.json"),
+      JSON.stringify({ name: "layermap", version }),
+    );
+    const when = (now - days * DAY) / 1000;
+    await utimes(directory, when, when);
+    return directory;
+  };
+  const own = await install("own", { layermap: "^0.1.22" }, "0.1.22", 30);
+  const old = await install("old", { layermap: "^0.1.9" }, "0.1.9", 8);
+  const recent = await install("recent", { layermap: "^0.1.21" }, "0.1.21", 2);
+  const newer = await install("newer", { layermap: "^0.2.0" }, "0.2.0", 30);
+  const shared = await install("shared", { layermap: "^0.1.0", other: "1.0.0" }, "0.1.0", 30);
+  const cache = path.join(await sandbox(), "cache");
+  const current = path.join(await sandbox(), "current");
+  await mkdir(current);
+  await pruneCache(cache, current, now, path.join(own, "node_modules", "layermap"));
+  const exists = async (target: string) => !!(await stat(target).catch(() => undefined));
+  assert.equal(await exists(own), true);
+  assert.equal(await exists(old), false, "an older version a week after npx installed it");
+  assert.equal(await exists(recent), true, "a session started before the update may still run it");
+  assert.equal(await exists(newer), true);
+  assert.equal(await exists(shared), true, "npx installed it with another package");
+});
