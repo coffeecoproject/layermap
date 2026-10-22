@@ -1,7 +1,7 @@
 // LayerMap for Pi. scripts/plugins.ts fills in the notes and writes plugins/pi/layermap.mjs, which
 // the npm package ships as its Pi extension (`pi install npm:layermap`).
 //
-// The map runs in LayerMap's own MCP server, started with node in the session's directory; its
+// The map runs in LayerMap's own MCP server, started with Pi's Node in the session's directory; its
 // tools become Pi tools of the same names. Like the Claude Code plugin's stop hook, the extension
 // asks the agent once, before it settles, to check what its code edits affect.
 import { execFile, spawn } from "node:child_process";
@@ -35,7 +35,7 @@ class MapServer {
   constructor(cwd) {
     this.pending = new Map();
     this.next = 1;
-    this.child = spawn("node", [CLI, "mcp"], {
+    this.child = spawn(process.execPath, [CLI, "mcp"], {
       cwd,
       stdio: ["pipe", "pipe", "ignore"],
       windowsHide: true,

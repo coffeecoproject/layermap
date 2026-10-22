@@ -7,10 +7,11 @@ LayerMap collects no personal data and makes no network requests.
   user cache: `~/Library/Caches/layermap` on macOS, `$XDG_CACHE_HOME/layermap` or
   `~/.cache/layermap` on Linux, `%LOCALAPPDATA%\layermap\Cache` on Windows, or `LAYERMAP_CACHE`. Nothing is written into the repository.
 - **How long:** each project keeps its three latest map versions, and a map unused for 30 days is
-  deleted. You can delete the cache directory at any time.
+  deleted; an installed version of LayerMap that nothing started for a week is deleted too. You can
+  delete the cache directory at any time.
 - **What leaves your machine:** nothing, through LayerMap. The first time the plugins start a
-  version of LayerMap, npx downloads that pinned `layermap` package from the npm registry; later
-  starts use the cached copy. LayerMap's tool results go to the AI agent that called them, under
+  version of LayerMap, npm installs that pinned `layermap` package from the npm registry into the
+  cache; later starts run it from there. LayerMap's tool results go to the AI agent that called them, under
   that agent provider's terms, like any file the agent reads.
 
 Questions: [GitHub Issues](https://github.com/coffeecoproject/layermap/issues). Security reports:

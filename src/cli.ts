@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
   cacheDirectory,
@@ -17,7 +16,7 @@ import { MAP_TOOL_NAMES } from "./tools";
 const USAGE = `LayerMap — a layered map of a codebase for coding agents.
 
 Usage:
-  layermap setup claude|codex|dsh [--scope user|project|local] [--no-instructions] [--dry-run]
+  layermap setup claude|codex|dsh [--scope user|local] [--no-instructions] [--dry-run]
   layermap allow claude [--scope user|project|local] [--dry-run]
                                           let the plugin's read-only tools run without a prompt
   layermap remove claude|codex|dsh [--scope user|project|local] [--dry-run]
@@ -68,12 +67,6 @@ async function main(argv: string[]): Promise<number> {
   const version = await packageVersion();
   if (values.version) {
     process.stdout.write(`${version}\n`);
-    return 0;
-  }
-  // The Claude Code plugin's launcher has npx install the pinned package and name this file, then
-  // runs it in its own process, so a session keeps one process rather than three. Not a user command.
-  if (command === "entry") {
-    process.stdout.write(`${fileURLToPath(import.meta.url)}\n`);
     return 0;
   }
   if (values.help || !command) return usage(command ? 0 : 1);

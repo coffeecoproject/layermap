@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,12 @@ test("the committed plugins, marketplaces and registry entry match the generator
   const files = generatedFiles(version);
   for (const [file, content] of Object.entries(files))
     assert.equal(await readFile(path.join(root, file), "utf8"), content, file);
-  assert.match(files["plugins/claude/server.mjs"] ?? "", /"layermap@\d+\.\d+\.\d+"/u);
-  assert.match(files["plugins/codex/.mcp.json"] ?? "", /"layermap@\d+\.\d+\.\d+"/u);
+  // Both plugins start this version with the one launcher: Claude Code's from a file of its plugin,
+  // Codex's as code, as Codex names no file of a plugin.
+  const launcher = files["plugins/claude/server.mjs"] ?? "";
+  assert.ok(launcher.includes(`const VERSION = ${JSON.stringify(version)};`));
+  const codex = JSON.parse(files["plugins/codex/.mcp.json"] ?? "{}").mcpServers.layermap;
+  assert.deepEqual(codex.args, ["--input-type=module", "-e", launcher]);
   const registry = JSON.parse(files["server.json"] ?? "{}");
   assert.equal(registry.name, MCP_NAME);
   assert.ok(registry.description.length <= 100, "the MCP Registry allows 100 characters");
@@ -34,16 +38,21 @@ test("the committed plugins, marketplaces and registry entry match the generator
     );
 });
 
-// Claude Code starts the plugin's server with node, which asks npx (on Windows npm's .cmd shim, run
-// through cmd.exe) where the pinned package is and runs it in the same process. A stand-in npx names
-// a stand-in command, which echoes its arguments and input and exits with its own code.
-test("the Claude Code plugin's server script runs the package npx names, in its own process", async () => {
+// Claude Code starts the plugin's server with node, and the launcher runs the version it finds
+// installed in the cache in the same process. A stand-in package echoes its arguments and input
+// and exits with its own code.
+test("the Claude Code plugin's server script runs the installed version in its own process", async () => {
   const directory = await sandbox();
   const server = path.join(directory, "server.mjs");
   await writeFile(server, generatedFiles("1.2.3")["plugins/claude/server.mjs"] ?? "");
-  const entry = path.join(directory, "cli.mjs");
+  const installed = path.join(directory, "cache", "versions", "1.2.3", "node_modules", "layermap");
+  await mkdir(path.join(installed, "dist"), { recursive: true });
   await writeFile(
-    entry,
+    path.join(installed, "package.json"),
+    JSON.stringify({ name: "layermap", version: "1.2.3", bin: { layermap: "dist/cli.mjs" } }),
+  );
+  await writeFile(
+    path.join(installed, "dist", "cli.mjs"),
     `let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
 process.stdin.on("end", () => {
@@ -52,28 +61,8 @@ process.stdin.on("end", () => {
 });
 `,
   );
-  const npx = path.join(directory, "npx.mjs");
-  await writeFile(
-    npx,
-    `process.stderr.write(process.argv.slice(2).join(" "));
-process.stdout.write(${JSON.stringify(`${entry}
-`)});
-`,
-  );
-  if (process.platform === "win32")
-    await writeFile(path.join(directory, "npx.cmd"), `@"${process.execPath}" "${npx}" %*\r\n`);
-  else {
-    await writeFile(
-      path.join(directory, "npx"),
-      `#!/bin/sh\nexec "${process.execPath}" "${npx}" "$@"\n`,
-    );
-    await chmod(path.join(directory, "npx"), 0o755);
-  }
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
-  );
   const started = spawn(process.execPath, [server], {
-    env: { ...env, PATH: [directory, process.env.PATH].join(path.delimiter) },
+    env: { ...process.env, LAYERMAP_CACHE: path.join(directory, "cache") },
   });
   let stdout = "";
   started.stdout.on("data", (chunk) => (stdout += chunk));
@@ -81,30 +70,4 @@ process.stdout.write(${JSON.stringify(`${entry}
   const status = await new Promise((resolve) => started.on("exit", resolve));
   assert.equal(stdout, `mcp in ${started.pid}: ping\n`);
   assert.equal(status, 3);
-});
-
-test("the Claude Code plugin's server script asks npx for the pinned package's entry", async () => {
-  const directory = await sandbox();
-  const server = path.join(directory, "server.mjs");
-  await writeFile(server, generatedFiles("1.2.3")["plugins/claude/server.mjs"] ?? "");
-  const npx = path.join(directory, "npx.mjs");
-  await writeFile(npx, `process.stderr.write(process.argv.slice(2).join(" ")); process.exit(2);\n`);
-  if (process.platform === "win32")
-    await writeFile(path.join(directory, "npx.cmd"), `@"${process.execPath}" "${npx}" %*\r\n`);
-  else {
-    await writeFile(
-      path.join(directory, "npx"),
-      `#!/bin/sh\nexec "${process.execPath}" "${npx}" "$@"\n`,
-    );
-    await chmod(path.join(directory, "npx"), 0o755);
-  }
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"),
-  );
-  const result = spawnSync(process.execPath, [server], {
-    encoding: "utf8",
-    env: { ...env, PATH: [directory, process.env.PATH].join(path.delimiter) },
-  });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /--prefer-offline -y layermap@1\.2\.3 entry$/u);
 });

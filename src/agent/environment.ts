@@ -171,14 +171,15 @@ const DAY = 24 * 60 * 60 * 1000;
 /**
  * Keeps the cache to what is in use: a project's map goes after 30 days unused, a superseded
  * analyzer build after a day (a server started before an update may still run it), and an
- * interrupted build after an hour. npx keeps each version it ran, about 100 MB apiece, beside this
- * one (installed is this package's directory); an older version goes a week after npx installed it.
+ * interrupted build after an hour. Installed versions of LayerMap, about 100 MB apiece, are kept to
+ * those in use too (installed is this package's directory).
  */
 export async function pruneCache(
   cache: string,
   project: string,
   now = Date.now(),
   installed = packageRoot,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   const used = path.join(path.dirname(mapDatabasePath(cache, project)), "last-used");
   await mkdir(path.dirname(used), { recursive: true, mode: 0o700 });
@@ -201,16 +202,48 @@ export async function pruneCache(
     if (built !== undefined && now - built > (name.includes(".") ? DAY / 24 : DAY))
       await rm(path.join(builds, name), { recursive: true, force: true });
   }
-  await pruneNpxInstalls(installed, now);
+  const own = path.dirname(path.dirname(installed));
+  const versions = path.join(cache, "versions");
+  const launched = path.dirname(own) === versions;
+  if (launched) await pruneVersions(versions, own, now);
+  // npx installed the versions agents started before the launcher, and still does for clients
+  // given `npx layermap mcp`: in npm's cache, which a .npmrc may move where this does not look.
+  const npx = launched
+    ? path.join(
+        env.npm_config_cache ||
+          (process.platform === "win32"
+            ? path.join(env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local"), "npm-cache")
+            : path.join(homedir(), ".npm")),
+        "_npx",
+      )
+    : path.dirname(own);
+  if (path.basename(path.dirname(installed)) === "node_modules" && path.basename(npx) === "_npx")
+    await pruneNpxInstalls(npx, installed, now);
+}
+
+// The launcher installs each version agents start as versions/<version>, marking its last-used at
+// each start; another version goes a week after its last start, and an interrupted install, a
+// directory named .<version>-…, after an hour. The running one is marked too, as it may outlive a
+// week while nothing starts it again.
+async function pruneVersions(versions: string, own: string, now: number) {
+  const used = path.join(own, "last-used");
+  await writeFile(used, "");
+  await utimes(used, now / 1000, now / 1000);
+  for (const name of await readdir(versions).catch(() => [])) {
+    const directory = path.join(versions, name);
+    const marker = path.join(directory, "last-used");
+    const last = (await stat(existsSync(marker) ? marker : directory).catch(() => undefined))
+      ?.mtimeMs;
+    if (last !== undefined && now - last > (name.startsWith(".") ? DAY / 24 : 7 * DAY))
+      await rm(directory, { recursive: true, force: true });
+  }
 }
 
 // npx installs a package as <npm cache>/_npx/<hash>/node_modules/layermap, with a manifest in
-// <hash> that depends on it alone; any other directory there is not LayerMap's to remove.
-async function pruneNpxInstalls(installed: string, now: number) {
+// <hash> that depends on it alone; any other directory there is not LayerMap's to remove. An older
+// version than this one goes a week after npx installed it.
+async function pruneNpxInstalls(npx: string, installed: string, now: number) {
   const own = path.dirname(path.dirname(installed));
-  const npx = path.dirname(own);
-  if (path.basename(path.dirname(installed)) !== "node_modules" || path.basename(npx) !== "_npx")
-    return;
   const manifest = async (file: string) =>
     JSON.parse(await readFile(file, "utf8").catch(() => "{}")) as {
       version?: string;

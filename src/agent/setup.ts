@@ -1,13 +1,16 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 export type SetupAgent = "claude" | "codex" | "dsh";
 export type SetupOptions = Readonly<{
   agent: SetupAgent;
-  /** Claude Code scope: user (every project, the default), project (.mcp.json) or local. */
+  /**
+   * Claude Code scope: user (every project, the default), local, or project (.mcp.json), which
+   * allow and remove take and setup does not.
+   */
   scope: "user" | "project" | "local";
   project: string;
   version: string;
@@ -19,6 +22,7 @@ export type SetupOptions = Readonly<{
 }>;
 
 import { commandInvocation } from "../platform";
+import { cacheDirectory, packageRoot } from "./environment";
 import { AGENT_MAP_NOTE } from "./tools";
 
 const SERVER = "layermap";
@@ -28,30 +32,29 @@ const PLUGIN_RULE = `mcp__plugin_${SERVER}_${SERVER}`;
 const BEGIN = "<!-- layermap:begin -->";
 const END = "<!-- layermap:end -->";
 
-/**
- * npx's arguments for the published server of a version. The version is pinned, so once npx has it
- * the cached copy is the right one: --prefer-offline starts it without asking the registry first,
- * which without a network takes longer than agents wait for a server to start.
- */
-export const npxServerArgs = (version: string): string[] => [
-  "--prefer-offline",
-  "-y",
-  `layermap@${version}`,
-  "mcp",
-];
+/** scripts/launcher.mjs for one version: it starts that version's server, installed in the cache. */
+export const launcherScript = (template: string, version: string): string =>
+  `// Generated from scripts/launcher.mjs.\n${template.replace("__VERSION__", JSON.stringify(version))}`;
+
+/** The launcher a published package ships; a checkout has none. */
+const PUBLISHED_LAUNCHER = path.join(packageRoot, "dist", "launcher.mjs");
+
+/** Where setup writes the launcher of the version it set up. */
+const launcherFile = (env: NodeJS.ProcessEnv = process.env) =>
+  path.join(cacheDirectory(env), "server.mjs");
 
 /**
- * How an agent starts this LayerMap's MCP server, whether run through npx or from a checkout. On
- * Windows npx is a .cmd script, which an agent that starts servers without a shell cannot run, so
- * cmd.exe runs it.
+ * How an agent starts this LayerMap's MCP server. A published package, run through npx say, starts
+ * the launcher setup writes into the cache, which installs this version there once, so the agents'
+ * starts need neither npx nor a network; node is a real executable on every system, where npx is a
+ * .cmd script on Windows that only a shell runs. A checkout starts itself.
  */
 export const mcpLaunchCommand = (
-  version: string,
-  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  published = existsSync(PUBLISHED_LAUNCHER),
 ): string[] => {
+  if (published) return ["node", launcherFile(env)];
   const script = path.resolve(process.argv[1] ?? "");
-  if (script.includes(`${path.sep}_npx${path.sep}`))
-    return [...(platform === "win32" ? ["cmd", "/c"] : []), "npx", ...npxServerArgs(version)];
   // Loaders such as --import tsx are resolved here: agents start servers in other directories.
   const execArgv: string[] = [];
   for (let index = 0; index < process.execArgv.length; index++) {
@@ -100,7 +103,8 @@ export async function allowInClaudeSettings(file: string, rule = SETUP_RULE): Pr
 
 /**
  * Sets keys in the [mcp_servers.layermap] table of a Codex config, leaving every other line as
- * it is. Codex approves the read-only map tools without asking, and waits for a first build.
+ * it is. Codex approves the read-only map tools without asking, and waits for npm to install the
+ * package at the first start and for a first build.
  */
 export async function configureCodexServer(file: string): Promise<boolean> {
   const lines = (await readFile(file, "utf8")).split("\n");
@@ -110,6 +114,7 @@ export async function configureCodexServer(file: string): Promise<boolean> {
   while (end < lines.length && !lines[end]?.trim().startsWith("[")) end++;
   const wanted: Record<string, string> = {
     default_tools_approval_mode: '"approve"',
+    startup_timeout_sec: "120",
     tool_timeout_sec: "120",
   };
   const present = new Set(
@@ -171,18 +176,14 @@ const YAML_BEGIN = "# layermap:begin";
 const YAML_END = "# layermap:end";
 
 /**
- * The directory of the Node that agents should start LayerMap with: the first on PATH that has both
- * node and npx (a stable link such as /opt/homebrew/bin survives upgrades), else the running one's.
+ * The directory of the Node that agents should start LayerMap with: the first on PATH that has node
+ * (a stable link such as /opt/homebrew/bin survives upgrades), else the running one's.
  */
 const nodeDirectory = (env: NodeJS.ProcessEnv = process.env): string =>
   (env.PATH ?? "")
     .split(path.delimiter)
-    .find(
-      (directory) =>
-        path.isAbsolute(directory) &&
-        existsSync(path.join(directory, "node")) &&
-        existsSync(path.join(directory, "npx")),
-    ) ?? path.dirname(process.execPath);
+    .find((directory) => path.isAbsolute(directory) && existsSync(path.join(directory, "node"))) ??
+  path.dirname(process.execPath);
 
 /**
  * LayerMap's row for DeepSeek Harness (dsh), in its YAML patch format. The launcher is absolute and
@@ -191,9 +192,8 @@ const nodeDirectory = (env: NodeJS.ProcessEnv = process.env): string =>
  */
 export const dshPatchBlock = (command: readonly string[], env?: NodeJS.ProcessEnv): string => {
   const node = nodeDirectory(env);
-  const npx = path.join(node, "npx");
   const [program = "", ...args] =
-    command[0] === "npx" && existsSync(npx) ? [npx, ...command.slice(1)] : command;
+    command[0] === "node" ? [path.join(node, "node"), ...command.slice(1)] : command;
   const searchPath = `${JSON.stringify(`${node}${path.delimiter}`)} + process.env.PATH`;
   return [
     `${YAML_BEGIN} (written by \`layermap setup dsh\`; \`layermap remove dsh\` deletes it)`,
@@ -286,10 +286,30 @@ export const agentFiles = (
 export async function setupAgent(options: SetupOptions): Promise<boolean> {
   const env = options.env ?? process.env;
   const { log } = options;
-  const command = mcpLaunchCommand(options.version);
+  // A project's settings go with it to other machines, where the launcher registered here is not.
+  if (options.scope === "project") {
+    log(
+      "Setup registers this machine's launcher, so it does not write a project's shared settings. Have each machine run setup (--scope user or local), or install the plugin; `layermap remove claude --scope project` still removes an earlier project setup.",
+    );
+    return false;
+  }
+  const published = existsSync(PUBLISHED_LAUNCHER);
+  const command = mcpLaunchCommand(env, published);
   const quoted = command.map((part) => (/^[\w./:@=-]+$/u.test(part) ? part : JSON.stringify(part)));
   const { settings, instructions } = agentFiles(options);
   const note = options.instructions !== false;
+  // The launcher setup registers; it installs this version into the cache at its first start.
+  const writeLauncher = async () => {
+    if (!published) return;
+    const file = launcherFile(env);
+    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    await writeFile(
+      `${file}.${process.pid}`,
+      launcherScript(await readFile(PUBLISHED_LAUNCHER, "utf8"), options.version),
+    );
+    await rename(`${file}.${process.pid}`, file);
+  };
+  if (published) log(`write the launcher of LayerMap ${options.version} to ${launcherFile(env)}`);
   if (options.agent === "dsh") {
     if (options.scope !== "user") {
       log("DeepSeek Harness is set up for all its profiles at once; --scope does not apply.");
@@ -298,6 +318,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
     log(`add the ${SERVER} MCP server to ${settings}`);
     if (note) log(`add a note naming the map tools to ${instructions}`);
     if (options.dryRun) return true;
+    await writeLauncher();
     await writeDshPatch(settings, dshPatchBlock(command, env));
     if (note) await writeInstructionNote(instructions);
     log(
@@ -311,10 +332,13 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
     log(`allow ${SETUP_RULE} in ${settings}`);
   } else {
     log(`codex mcp add ${SERVER} -- ${quoted.join(" ")}`);
-    log(`set default_tools_approval_mode = "approve" and tool_timeout_sec = 120 in ${settings}`);
+    log(
+      `set default_tools_approval_mode = "approve", startup_timeout_sec = 120 and tool_timeout_sec = 120 in ${settings}`,
+    );
   }
   if (note) log(`add a note naming the map tools to ${instructions}`);
   if (options.dryRun) return true;
+  await writeLauncher();
   const agentCommand = options.agent;
   const scope = options.agent === "claude" ? ["--scope", options.scope] : [];
   await run(agentCommand, ["mcp", "remove", SERVER, ...scope], env);

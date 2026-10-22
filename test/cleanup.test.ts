@@ -160,3 +160,61 @@ test("the cache drops versions npx installed beside this one a week after it ins
   assert.equal(await exists(newer), true);
   assert.equal(await exists(shared), true, "npx installed it with another package");
 });
+
+test("the cache drops a version the launcher installed a week after its last start, and npx's older copies", async () => {
+  const cache = path.join(await sandbox(), "cache");
+  const versions = path.join(cache, "versions");
+  const now = Date.now();
+  const install = async (name: string, days: number, marked: boolean) => {
+    const directory = path.join(versions, name);
+    await mkdir(path.join(directory, "node_modules", "layermap"), { recursive: true });
+    await writeFile(
+      path.join(directory, "node_modules", "layermap", "package.json"),
+      JSON.stringify({ name: "layermap", version: name.replace(/^\.|-.*$/gu, "") }),
+    );
+    const when = (now - days * DAY) / 1000;
+    if (marked) {
+      await writeFile(path.join(directory, "last-used"), "");
+      await utimes(path.join(directory, "last-used"), when, when);
+    }
+    await utimes(directory, when, when);
+    return directory;
+  };
+  const own = await install("0.1.25", 30, true);
+  const unused = await install("0.1.24", 8, true);
+  const recent = await install("0.1.23", 2, true);
+  const interrupted = await install(".0.1.26-a", 0.1, false);
+  const installing = await install(".0.1.26-b", 0.01, false);
+  // npx's copies from before the launcher, in npm's cache.
+  const npm = path.join(await sandbox(), "npm");
+  const npx = async (name: string, version: string, days: number) => {
+    const directory = path.join(npm, "_npx", name);
+    await mkdir(path.join(directory, "node_modules", "layermap"), { recursive: true });
+    await writeFile(
+      path.join(directory, "package.json"),
+      JSON.stringify({ dependencies: { layermap: version } }),
+    );
+    await writeFile(
+      path.join(directory, "node_modules", "layermap", "package.json"),
+      JSON.stringify({ name: "layermap", version }),
+    );
+    await utimes(directory, (now - days * DAY) / 1000, (now - days * DAY) / 1000);
+    return directory;
+  };
+  const npxOld = await npx("old", "0.1.20", 8);
+  const npxRecent = await npx("recent", "0.1.24", 2);
+  const current = path.join(await sandbox(), "current");
+  await mkdir(current);
+  await pruneCache(cache, current, now, path.join(own, "node_modules", "layermap"), {
+    npm_config_cache: npm,
+  });
+  const exists = async (target: string) => !!(await stat(target).catch(() => undefined));
+  assert.equal(await exists(own), true);
+  assert.ok(now - (await stat(path.join(own, "last-used"))).mtimeMs < DAY, "the running one");
+  assert.equal(await exists(unused), false);
+  assert.equal(await exists(recent), true, "a session started in the last week may still run it");
+  assert.equal(await exists(interrupted), false);
+  assert.equal(await exists(installing), true, "another launcher may be installing it");
+  assert.equal(await exists(npxOld), false);
+  assert.equal(await exists(npxRecent), true);
+});

@@ -143,9 +143,9 @@ This adds LayerMap to every dsh profile. Each session maps the project dsh was s
 
 In every agent, start a new session in a Git repository and ask as usual. LayerMap tells the agent
 when the map helps. A session started in a folder holding several repositories, or one that moves
-to another repository, works too: each map tool call maps the repository its path names. On first
-launch, npx downloads the pinned `layermap` package from npm; later
-launches use the cached copy, even offline.
+to another repository, works too: each map tool call maps the repository its path names. The first
+time a session starts a version of LayerMap, npm installs that pinned `layermap` package into
+LayerMap's cache; later sessions start it from there, even offline.
 
 Claude Code asks once before each map tool runs in a project. Choose "don't ask again", or run
 `npx layermap allow claude` to allow the plugin's read-only tools everywhere.
@@ -177,8 +177,9 @@ things:
 - lets its read-only tools run without a prompt;
 - adds one marked sentence to the agent's instructions file.
 
-Use `--scope project` to set it up for a whole team, and `npx layermap remove …` to undo it. For any
-other MCP client, run `npx -y layermap mcp` as a stdio server in the repository.
+Setup is for one machine; for a whole team, have each member install the plugin. `npx layermap
+remove …` undoes it. For any other MCP client, run `npx -y layermap mcp` as a stdio server in the
+repository.
 
 **Requirements:**
 

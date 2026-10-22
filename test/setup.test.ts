@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import {
@@ -7,6 +7,8 @@ import {
   allowInClaudeSettings,
   configureCodexServer,
   disallowInClaudeSettings,
+  dshPatchBlock,
+  launcherScript,
   mcpLaunchCommand,
   removeAgent,
   removeInstructionNote,
@@ -137,14 +139,15 @@ test("the Codex server table gains approval and timeout keys once, other lines u
   assert.equal(await configureCodexServer(file), true);
   assert.equal(await configureCodexServer(file), false);
   const after = (await readFile(file, "utf8")).split("\n");
-  assert.deepEqual(after.slice(2, 7), [
+  assert.deepEqual(after.slice(2, 8), [
     "[mcp_servers.layermap]",
     'default_tools_approval_mode = "approve"',
+    "startup_timeout_sec = 120",
     "tool_timeout_sec = 120",
     'command = "node"',
     'args = ["cli.mjs", "mcp"]',
   ]);
-  assert.deepEqual(after.slice(7), before.split("\n").slice(5));
+  assert.deepEqual(after.slice(8), before.split("\n").slice(5));
   await writeFile(file, 'model = "x"\n');
   await assert.rejects(configureCodexServer(file), /no \[mcp_servers\.layermap\] table/u);
 });
@@ -207,7 +210,7 @@ test("setup registers the server through each agent's own command and approves i
   assert.equal(await setupAgent({ ...common, agent: "codex", scope: "user" }), true);
 
   const recorded = (await readFile(calls, "utf8")).trim().split("\n");
-  const launch = mcpLaunchCommand("0.0.0").join(" ");
+  const launch = mcpLaunchCommand(env).join(" ");
   assert.deepEqual(recorded, [
     "claude mcp remove layermap --scope user",
     `claude mcp add --scope user layermap -- ${launch}`,
@@ -221,22 +224,28 @@ test("setup registers the server through each agent's own command and approves i
   );
   assert.match(
     await readFile(path.join(env.CODEX_HOME, "config.toml"), "utf8"),
-    /\[mcp_servers\.layermap\]\ndefault_tools_approval_mode = "approve"\ntool_timeout_sec = 120\ncommand = "node"/u,
+    /\[mcp_servers\.layermap\]\ndefault_tools_approval_mode = "approve"\nstartup_timeout_sec = 120\ntool_timeout_sec = 120\ncommand = "node"/u,
   );
   assert.ok(launch.endsWith(" mcp"));
   assert.ok(!launch.includes(" tsx "), "loaders are passed as absolute URLs");
 });
 
-test("a LayerMap run through npx registers npx, through cmd.exe on Windows", () => {
-  const script = process.argv[1];
-  process.argv[1] = path.join(path.sep, "cache", "_npx", "1", "node_modules", "layermap", "cli.js");
-  try {
-    const npx = ["npx", "--prefer-offline", "-y", "layermap@1.2.3", "mcp"];
-    assert.deepEqual(mcpLaunchCommand("1.2.3", "darwin"), npx);
-    assert.deepEqual(mcpLaunchCommand("1.2.3", "win32"), ["cmd", "/c", ...npx]);
-  } finally {
-    process.argv[1] = script as string;
-  }
+test("a published LayerMap registers the launcher it writes into the cache, with its version", () => {
+  const env = { LAYERMAP_CACHE: path.join(path.sep, "cache") };
+  assert.deepEqual(mcpLaunchCommand(env, true), [
+    "node",
+    path.join(path.sep, "cache", "server.mjs"),
+  ]);
+  const launcher = launcherScript("const VERSION = __VERSION__;\n", "1.2.3");
+  assert.equal(launcher, '// Generated from scripts/launcher.mjs.\nconst VERSION = "1.2.3";\n');
+});
+
+test("DeepSeek Harness starts the launcher with the absolute node it finds on PATH", async () => {
+  const bin = await sandbox();
+  await writeFile(path.join(bin, "node"), "");
+  const block = dshPatchBlock(["node", "/cache/server.mjs"], { PATH: bin });
+  assert.ok(block.includes(`command: ${JSON.stringify(path.join(bin, "node"))}\n`), block);
+  assert.match(block, /args: \["\/cache\/server\.mjs"\]\n/u);
 });
 
 test("the note goes into an instructions file once, is replaced in place, and comes out cleanly", async () => {
@@ -289,4 +298,20 @@ test("remove undoes setup: the server, the approval and the note, keeping the us
     ["Read"],
   );
   assert.match(await readFile(calls, "utf8"), /claude mcp remove layermap --scope user\n$/u);
+});
+
+test("setup writes no project's shared settings, which would carry this machine's launcher", async () => {
+  const lines: string[] = [];
+  const directory = await sandbox();
+  const done = await setupAgent({
+    agent: "claude",
+    scope: "project",
+    project: directory,
+    version: "0.0.0",
+    dryRun: false,
+    log: (line) => lines.push(line),
+  });
+  assert.equal(done, false);
+  assert.match(lines.join("\n"), /remove claude --scope project/u);
+  assert.deepEqual(await readdir(directory), []);
 });

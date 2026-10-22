@@ -18,8 +18,8 @@ Start a session in a Git repository and ask as usual, for example:
 
 - It runs the LayerMap MCP server on your machine, from the pinned `layermap@0.1.24` package.
   Java analysis uses your local JDK 21 or later.
-- On first launch, npx downloads the pinned `layermap` package and its dependencies from the npm
-  registry.
+- The first time a session starts this version, npm installs the pinned `layermap` package and its
+  dependencies from the npm registry into LayerMap's cache; later sessions start it from there.
 - LayerMap itself makes no network requests. Maps stay in your user cache, never in the repository.
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.

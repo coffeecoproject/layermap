@@ -50,6 +50,11 @@ await build({
 });
 
 await chmod(path.join(target, "dist/cli.mjs"), 0o755);
+// Setup writes it, with the version filled in, for agents to start the server with.
+await copyFile(
+  path.join(packageRoot, "scripts/launcher.mjs"),
+  path.join(target, "dist/launcher.mjs"),
+);
 
 const analyzers = path.join(target, "analyzers");
 const parser = await buildProjectMapParser(analyzers);

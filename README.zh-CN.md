@@ -138,7 +138,7 @@ npx layermap setup dsh
 可以撤销。
 
 不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。在装着多个仓库的总文件夹里开会话，或会话中途换到别的仓库，也能用：每次调用地图工具，都按传入的路径找到对应的仓库。第一次
-启动时，npx 会从 npm 下载锁定版本的 `layermap`；之后直接用本机缓存，断网也能启动。
+启动某个版本时，npm 会把锁定版本的 `layermap` 装进 LayerMap 的缓存；之后直接从那里启动，断网也能用。
 
 Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；
 也可以运行一次 `npx layermap allow claude`，在所有项目里放行这些只读工具。
@@ -156,8 +156,8 @@ Claude Code 和 CodeBuddy Code 里，agent 改了哪个仓库的代码（用编�
 - 让这些只读工具不再弹确认；
 - 在 agent 的说明文件里加一句带标记的话。
 
-加 `--scope project` 可以给整个团队配置；`npx layermap remove …` 撤销。其他 MCP 客户端，在仓库里把
-`npx -y layermap mcp` 作为 stdio 服务运行即可。
+setup 只配置当前这台机器；整个团队要用，请每人各装一次插件。`npx layermap remove …` 撤销。其他 MCP
+客户端，在仓库里把 `npx -y layermap mcp` 作为 stdio 服务运行即可。
 
 **运行要求**：
 
