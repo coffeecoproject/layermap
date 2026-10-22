@@ -34,7 +34,11 @@ export type MapChangedFile = Readonly<{
   /** Path in the base, when the file existed there. */
   basePath?: string;
   status: "ADDED" | "MODIFIED" | "DELETED" | "RENAMED";
-  /** Lines added or changed in the working tree; a pure deletion marks the lines around it. */
+  /**
+   * Lines added or changed in the working tree. A pure deletion is the point between two lines,
+   * written as the range from the line after it back to the line before it: only code around both
+   * contains it.
+   */
   lines: Lines;
   /** Lines removed or changed in the base. */
   baseLines: Lines;
@@ -196,9 +200,8 @@ export function parseMapDiff(text: string): MapChangedFile[] {
         hunk[4] === undefined ? 1 : Number(hunk[4]),
       ];
       if (oldCount > 0) current.baseLines.push([oldStart, oldStart + oldCount - 1]);
-      // Lines removed with nothing added in their place change the code around that point.
       current.lines.push(
-        newCount > 0 ? [newStart, newStart + newCount - 1] : [Math.max(newStart, 1), newStart + 1],
+        newCount > 0 ? [newStart, newStart + newCount - 1] : [newStart + 1, newStart],
       );
     }
   }
@@ -241,7 +244,8 @@ export type MapChangeEntry = Readonly<{
 
 export type MapChangeImpact = Readonly<{
   changed: readonly string[];
-  removed: readonly string[];
+  /** Removed or renamed declarations, with the code the diff left unchanged that still uses them. */
+  removed: readonly Readonly<{ declaration: string; usedBy: readonly string[] }>[];
   /** Existing tests whose code the diff changed or removed: expectations that held before it. */
   rewrittenTests: readonly Readonly<{ path: string; names: readonly string[] }>[];
   entries: readonly MapChangeEntry[];
@@ -268,6 +272,8 @@ export type MapChangeImpact = Readonly<{
 
 const LIMITS = Object.freeze({ depth: 8, declarations: 800, changed: 200, chain: 3, byName: 40 });
 const CALLER_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES"]);
+/** The relations whose source names their target, which removing the target breaks. */
+const NAMING_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES", "EXTENDS", "IMPLEMENTS"]);
 // The relations to a declaration that use it without calling it, as the user's verb.
 const USED_BY: Partial<Record<MapRelation["kind"], string>> = {
   EXTENDS: "extended",
@@ -567,7 +573,7 @@ export function mapChangeImpact(
   const tracer = new Tracer(graph, cache.memberCalls(store, working));
   const changed: string[] = [];
   const unclear: string[] = [];
-  const removed: string[] = [];
+  const removed: { declaration: string; usedBy: string[] }[] = [];
   const declarations = (g: MapViewGraph, path: string) =>
     g.objectsAt(path).filter((object) => !mapIsModule(object) && g.isAddressable(object));
   let changedCount = 0;
@@ -582,6 +588,10 @@ export function mapChangeImpact(
       .all(working)
       .map((row) => String(row.path)));
 
+  const topLevelChanged = (path: string) => {
+    const note = `top-level code of ${path} changed (imports, constants or registrations)`;
+    if (!unclear.includes(note)) unclear.push(note);
+  };
   for (const file of changes.files) {
     if (file.binary) continue;
     const kind = nonCodeKind(file.path);
@@ -604,7 +614,8 @@ export function mapChangeImpact(
       const containing = inFile.filter(
         (object) => object.anchor.startLine <= to && from <= object.anchor.endLine,
       );
-      if (!containing.length) topLevel = true;
+      // What a deletion took from top-level code is found in the base.
+      if (!containing.length && from <= to) topLevel = true;
       // Keep the innermost: a changed method, not its whole class.
       for (const object of containing)
         if (
@@ -640,8 +651,7 @@ export function mapChangeImpact(
         unclear.push(
           `the registration of ${JSON.stringify(relation.argument)} at ${relation.anchor.path}:${relation.anchor.startLine} changed; check that the route still reaches the right handler`,
         );
-    if (analyzed && topLevel && file.status !== "ADDED")
-      unclear.push(`top-level code of ${file.path} changed (imports, constants or registrations)`);
+    if (analyzed && topLevel && file.status !== "ADDED") topLevelChanged(file.path);
     // A file's importers back up its callers: tests that import it, even without a mapped call.
     importerTests(graph, objects, tracer, importers);
     sameDirectoryTests(mappedPaths(), file.path, tracer);
@@ -651,7 +661,7 @@ export function mapChangeImpact(
   if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
   supportTests(store, working, tracer);
 
-  // Declarations the diff removed or renamed: their callers in the base still expect them.
+  // Declarations the diff removed or renamed, and the code it left unchanged that still uses them.
   const rewrittenTests: { path: string; names: string[] }[] = [];
   const removedRoutes: string[] = [];
   const uncalled: string[] = [];
@@ -671,6 +681,35 @@ export function mapChangeImpact(
         if (names.length) rewrittenTests.push({ path: file.path, names });
       }
     const beforeTracer = new Tracer(before, cache.memberCalls(store, base));
+    const changedIn = new Map(
+      changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
+    );
+    const same = (g: MapViewGraph, ref: string) =>
+      `${g.object(ref).kind}\u0000${g.qualifiedName(ref)}`;
+    // A use in the base that still names what the diff removed, on a line the diff did not touch,
+    // and that does not reach a declaration of the same name in the working tree, as it does when
+    // the diff moved the declaration to another file.
+    const stillUses = (relation: MapRelation, user: string) => {
+      const file = changedIn.get(relation.anchor.path);
+      if (
+        file &&
+        (file.status === "DELETED" ||
+          overlaps(file.baseLines, relation.anchor.startLine, relation.anchor.endLine))
+      )
+        return false;
+      const name = same(before, user);
+      const now = graph
+        .objectsAt(file?.path ?? relation.anchor.path)
+        .find((object) => same(graph, object.id) === name);
+      if (!now || relation.to === undefined) return true;
+      const used = same(before, relation.to);
+      return !graph
+        .relationsFrom(graph.scope(now.id).refs)
+        .some(
+          (use) =>
+            NAMING_KINDS.has(use.kind) && use.to !== undefined && same(graph, use.to) === used,
+        );
+    };
     const gone: string[] = [];
     for (const file of changes.files) {
       if (!file.basePath || !file.baseLines.length || file.binary || testCode(file.basePath))
@@ -689,10 +728,51 @@ export function mapChangeImpact(
         const parent = before.parent(object.id);
         if (parent && !mapIsModule(before.object(parent)) && gone.includes(parent)) continue;
         gone.push(object.id);
-        removed.push(
-          `${file.basePath}: ${before.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`,
-        );
+        // Code outside it that names it or one of its members, as a removed class's methods are
+        // called, or as a subclass extends it.
+        const inside = (ref: string) => {
+          for (let at: string | undefined = ref; at !== undefined; at = before.parent(at))
+            if (at === object.id) return true;
+          return false;
+        };
+        const usedBy = new Set<string>();
+        for (const relation of before.relationsTo(
+          before
+            .objectsAt(file.basePath)
+            .filter((member) => inside(member.id))
+            .map((member) => member.id),
+        )) {
+          const owner = before.owner(relation.from);
+          if (!NAMING_KINDS.has(relation.kind) || inside(owner) || !stillUses(relation, owner))
+            continue;
+          const user = before.object(owner);
+          usedBy.add(
+            `${user.anchor.path}: ${mapIsModule(user) ? "top-level code" : before.qualifiedName(owner)}`,
+          );
+        }
+        removed.push({
+          declaration: `${file.basePath}: ${before.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`,
+          usedBy: [...usedBy].sort(),
+        });
       }
+    }
+    // Top-level code the diff removed: imports, calls and registrations outside any declaration,
+    // not the declarations it holds.
+    for (const file of changes.files) {
+      if (!file.basePath || file.status === "DELETED" || testCode(file.basePath)) continue;
+      const module = before.objectsAt(file.basePath).find(mapIsModule);
+      if (
+        module &&
+        mapLanguageOf(file.basePath) !== undefined &&
+        before
+          .relationsFrom(before.scope(module.id).refs)
+          .some(
+            (relation) =>
+              relation.kind !== "CONTAINS" &&
+              overlaps(file.baseLines, relation.anchor.startLine, relation.anchor.endLine),
+          )
+      )
+        topLevelChanged(file.path);
     }
     if (gone.length) {
       beforeTracer.trace(gone);
@@ -1135,8 +1215,18 @@ export function mapChangesText(
   };
   list("CHANGED", impact.changed, LIST.changed);
   list(
-    "REMOVED OR RENAMED (their callers in the base still refer to them)",
-    impact.removed,
+    "REMOVED OR RENAMED, STILL USED (code the diff did not change still calls or uses them: update it, or keep the old name)",
+    impact.removed
+      .filter(({ usedBy }) => usedBy.length)
+      .map(
+        ({ declaration, usedBy }) =>
+          `${declaration} ← ${usedBy.slice(0, LIST.names).join(", ")}${usedBy.length > LIST.names ? ` (+${usedBy.length - LIST.names})` : ""}`,
+      ),
+    LIST.changed,
+  );
+  list(
+    "REMOVED OR RENAMED (no code the diff left unchanged uses them)",
+    impact.removed.filter(({ usedBy }) => !usedBy.length).map(({ declaration }) => declaration),
     LIST.changed,
   );
   list(

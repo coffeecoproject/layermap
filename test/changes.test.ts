@@ -69,7 +69,8 @@ test("git diff hunks become changed line ranges on both sides", () => {
       status: "MODIFIED",
       lines: [
         [3, 5],
-        [11, 12],
+        // A pure deletion: the point after line 11.
+        [12, 11],
       ],
       baseLines: [
         [3, 4],
@@ -89,7 +90,7 @@ test("git diff hunks become changed line ranges on both sides", () => {
       path: "gone.ts",
       basePath: "gone.ts",
       status: "DELETED",
-      lines: [[1, 1]],
+      lines: [[1, 0]],
       baseLines: [[1, 4]],
       binary: false,
     },
@@ -121,8 +122,11 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
   assert.match(text, /src\/store\.ts: markRead f1-3/u);
   // The route an inline handler serves, and the chain down to the change.
   assert.match(text, /"PUT \/feeds\/:id\/read" → .*markRead/u);
-  // A renamed function: its old name is gone, and the route its caller serves still expects it.
-  assert.match(text, /REMOVED OR RENAMED[^\n]*\n {2}src\/store\.ts: legacy f5-7/u);
+  // A renamed function: its old name is gone, and its caller, which the diff left, still uses it.
+  assert.match(
+    text,
+    /REMOVED OR RENAMED, STILL USED[^\n]*\n {2}src\/store\.ts: legacy f5-7 ← src\/routes\.ts: oldHandler\n/u,
+  );
   assert.match(text, /"GET \/old" → oldHandler → legacy/u);
   assert.match(text, /config\.yaml changed \(configuration\)/u);
   // Tests, closest first: the one calling the change, the mirrored module's, then a mention.
@@ -136,6 +140,89 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
 });
 
 // Files the map keeps as files but does not analyze, by kind.
+test("a rename that updates its callers removes the old name without saying code still uses it", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write(
+    "src/store.ts",
+    "export function markRead(id: number) {\n  return id;\n}\n\nexport function current() {\n  return 1;\n}\n",
+  );
+  await write("src/routes.ts", FILES["src/routes.ts"].replaceAll("legacy", "current"));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^REMOVED OR RENAMED \(no code the diff left unchanged uses them\)\n {2}src\/store\.ts: legacy f5-7\n/mu,
+  );
+  assert.doesNotMatch(text, /STILL USED/u);
+});
+
+test("a removed class that unchanged code still extends is still used", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/shapes.ts": "export class Base {\n  size = 1;\n}\n",
+    "src/square.ts": 'import { Base } from "./shapes";\n\nexport class Square extends Base {}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/shapes.ts", "export class Shape {\n  size = 1;\n}\n");
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /STILL USED[^\n]*\n {2}src\/shapes\.ts: Base c1-3 ← src\/square\.ts: Square\n/u,
+  );
+});
+
+test("a declaration moved to another file, its callers importing it from there, is not still used", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/a.ts":
+      "export function keep() {\n  return 1;\n}\n\nexport function foo(value: number) {\n  return value + 1;\n}\n",
+    "src/c.ts": 'import { foo } from "./a";\n\nexport function caller() {\n  return foo(2);\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/a.ts", "export function keep() {\n  return 1;\n}\n");
+  await write("src/b.ts", "export function foo(value: number) {\n  return value + 1;\n}\n");
+  await write(
+    "src/c.ts",
+    'import { foo } from "./b";\n\nexport function caller() {\n  return foo(2);\n}\n',
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^REMOVED OR RENAMED \(no code the diff left unchanged uses them\)\n {2}src\/a\.ts: foo f5-7\n/mu,
+  );
+  assert.doesNotMatch(text, /STILL USED/u);
+  // Taking out what followed keep left keep as it was.
+  assert.doesNotMatch(text, /keep|top-level code of src\/a\.ts/u);
+});
+
+test("a deletion changes the declaration around it, or the top-level code it took out", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/jobs.ts":
+      "declare function one(): void;\ndeclare function two(): void;\ndeclare function register(job: unknown): void;\n\nexport function first() {\n  one();\n}\n\nexport function second() {\n  one();\n  two();\n}\n\nregister(second);\n",
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write(
+    "src/jobs.ts",
+    "declare function one(): void;\ndeclare function two(): void;\ndeclare function register(job: unknown): void;\n\nexport function first() {\n  one();\n}\n\nexport function second() {\n  one();\n}\n",
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /^CHANGED\n {2}src\/jobs\.ts: second f9-11\n(?! )/mu);
+  assert.match(text, /top-level code of src\/jobs\.ts changed/u);
+});
+
 const NOT_ANALYZED = {
   "db/schema.sql": "create table feeds (id int);\n",
   "web/feeds.html": "<p>feeds</p>\n",
