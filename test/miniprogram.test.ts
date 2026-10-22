@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, realpath, rename, rm } from "node:fs/promises";
+import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { CodeIndex } from "../src/code-index";
@@ -213,6 +214,78 @@ test("a change to a component reaches the pages that show it, and a template's c
     /miniprogram\/pages\/legacy\/legacy\.wxml changed \(template\): its effects are not mapped/u,
   );
   assert.doesNotMatch(pages.text, /home\.wxml (?:has no callers|changed \(template\))/u);
+});
+
+test("a removed method a template still binds, and a removed component a page still shows, are still used, but not a moved one", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  const sheet = "miniprogram/components/booking-sheet/booking-sheet";
+  await write(`${sheet}.ts`, FILES[`${sheet}.ts`].replace("cancel() {", "stop() {"));
+  const renamed = await map.checkChanges({}, signal());
+  assert.match(
+    renamed.text,
+    /STILL USED[^\n]*\n {2}miniprogram\/components\/booking-sheet\/booking-sheet\.ts: cancel m6-8 ← miniprogram\/components\/booking-sheet\/booking-sheet\.wxml \(template\)\n/u,
+  );
+
+  await write(`${sheet}.ts`, FILES[`${sheet}.ts`]);
+  await rm(path.join(root, "miniprogram/components/booking-sheet"), { recursive: true });
+  const removed = await map.checkChanges({}, signal());
+  assert.match(
+    removed.text,
+    /STILL USED[^\n]*\n {2}miniprogram\/components\/booking-sheet\/booking-sheet\.wxml \(template\) ← miniprogram\/pages\/home\/home\.wxml \(template\)\n/u,
+  );
+  // Its methods went with the template that bound them.
+  assert.match(
+    removed.text,
+    /no code the diff left unchanged uses them\)\n(?: {2}[^\n]*\n)*? {2}[^\n]*booking-sheet\.ts: cancel /u,
+  );
+
+  // A component moved and registered under the same tag is still shown.
+  await run("git", ["checkout", "--", "miniprogram"], { cwd: root });
+  await rename(
+    path.join(root, "miniprogram/components/booking-sheet"),
+    path.join(root, "miniprogram/components/booking-panel"),
+  );
+  for (const file of ["booking-sheet.ts", "booking-sheet.wxml", "booking-sheet.json"])
+    await rename(
+      path.join(root, "miniprogram/components/booking-panel", file),
+      path.join(root, "miniprogram/components/booking-panel", file.replace("sheet", "panel")),
+    );
+  await write(
+    "miniprogram/app.json",
+    FILES["miniprogram/app.json"].replace(
+      "/components/booking-sheet/booking-sheet",
+      "/components/booking-panel/booking-panel",
+    ),
+  );
+  const moved = await map.checkChanges({}, signal());
+  assert.match(
+    moved.text,
+    /REMOVED OR RENAMED \(no code[^\n]*\n(?: {2}[^\n]*\n)*? {2}[^\n]*booking-sheet\.wxml \(template\)\n/u,
+  );
+  assert.doesNotMatch(moved.text, /STILL USED/u);
+
+  // A component Git sees renamed, unchanged, is still shown where the app does not register it anew.
+  await run("git", ["checkout", "--", "miniprogram"], { cwd: root });
+  await run("git", ["clean", "-fdq", "miniprogram"], { cwd: root });
+  await run("git", ["mv", "miniprogram/components/booking-sheet", "miniprogram/components/sheet"], {
+    cwd: root,
+  });
+  const stale = await map.checkChanges({}, signal());
+  assert.match(
+    stale.text,
+    /STILL USED[^\n]*\n {2}miniprogram\/components\/booking-sheet\/booking-sheet\.wxml \(template\) ← miniprogram\/pages\/home\/home\.wxml \(template\)\n/u,
+  );
+  await write(
+    "miniprogram/app.json",
+    FILES["miniprogram/app.json"].replace("/components/booking-sheet/", "/components/sheet/"),
+  );
+  const registered = await map.checkChanges({}, signal());
+  assert.doesNotMatch(registered.text, /STILL USED/u);
 });
 
 test("the templates and their configuration reach the analysis with the scripts, so it runs once", async (t) => {

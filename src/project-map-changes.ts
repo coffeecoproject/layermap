@@ -564,6 +564,10 @@ export const mapRunnableTest = (file: string) =>
     file,
   );
 
+// A template is named by its path, so a renamed one is removed whichever of its lines changed.
+const renamedTemplate = (file: MapChangedFile) =>
+  file.status === "RENAMED" && file.basePath !== undefined && mapMiniprogramTemplate(file.basePath);
+
 export function mapChangeImpact(
   store: CodeIndexStore,
   working: string,
@@ -579,6 +583,12 @@ export function mapChangeImpact(
   const removed: { declaration: string; usedBy: string[] }[] = [];
   const declarations = (g: MapViewGraph, path: string) =>
     g.objectsAt(path).filter((object) => !mapIsModule(object) && g.isAddressable(object));
+  // What a change is read in: a file's declarations, or a template as one unit, the page or
+  // component it shows.
+  const units = (g: MapViewGraph, path: string) =>
+    mapMiniprogramTemplate(path)
+      ? g.objectsAt(path).filter((object) => mapIsModule(object) && object.parsing === "PARSED")
+      : declarations(g, path);
   let changedCount = 0;
   const starts: string[] = [];
   // Read once for all changed files, as a large change (thousands of files nobody has added to
@@ -616,10 +626,7 @@ export function mapChangeImpact(
     // The innermost declarations around each changed line; top-level lines belong to the file.
     const hits = new Set<string>();
     let topLevel = false;
-    // A template is one unit: the page or component it shows.
-    const inFile = template
-      ? objects.filter((object) => mapIsModule(object) && object.parsing === "PARSED")
-      : declarations(graph, file.path);
+    const inFile = units(graph, file.path);
     for (const [from, to] of file.lines) {
       const containing = inFile.filter(
         (object) => object.anchor.startLine <= to && from <= object.anchor.endLine,
@@ -713,26 +720,30 @@ export function mapChangeImpact(
         .find((object) => same(graph, object.id) === name);
       if (!now || relation.to === undefined) return true;
       const used = same(before, relation.to);
+      // A template is named by the tag that shows it, which a moved component keeps.
+      const tag = mapIsModule(before.object(relation.to));
       return !graph
         .relationsFrom(graph.scope(now.id).refs)
         .some(
           (use) =>
-            NAMING_KINDS.has(use.kind) && use.to !== undefined && same(graph, use.to) === used,
+            NAMING_KINDS.has(use.kind) &&
+            use.to !== undefined &&
+            (tag ? use.target === relation.target : same(graph, use.to) === used),
         );
     };
     const gone: string[] = [];
     for (const file of changes.files) {
-      if (!file.basePath || !file.baseLines.length || file.binary || testCode(file.basePath))
-        continue;
+      if (!file.basePath || file.binary || testCode(file.basePath)) continue;
+      const renamed = renamedTemplate(file);
+      if (!file.baseLines.length && !renamed) continue;
       const now = new Set(
         file.status === "DELETED"
           ? []
-          : declarations(graph, file.path).map(
-              (o) => `${o.kind}\u0000${graph.qualifiedName(o.id)}`,
-            ),
+          : units(graph, file.path).map((o) => `${o.kind}\u0000${graph.qualifiedName(o.id)}`),
       );
-      for (const object of declarations(before, file.basePath)) {
-        if (!overlaps(file.baseLines, object.anchor.startLine, object.anchor.endLine)) continue;
+      for (const object of units(before, file.basePath)) {
+        if (!renamed && !overlaps(file.baseLines, object.anchor.startLine, object.anchor.endLine))
+          continue;
         if (now.has(`${object.kind}\u0000${before.qualifiedName(object.id)}`)) continue;
         // Only the outermost removed declaration: a removed class, not each of its methods.
         const parent = before.parent(object.id);
@@ -757,11 +768,15 @@ export function mapChangeImpact(
             continue;
           const user = before.object(owner);
           usedBy.add(
-            `${user.anchor.path}: ${mapIsModule(user) ? "top-level code" : before.qualifiedName(owner)}`,
+            mapIsModule(user)
+              ? `${user.anchor.path}${mapMiniprogramTemplate(user.anchor.path) ? " (template)" : ": top-level code"}`
+              : `${user.anchor.path}: ${before.qualifiedName(owner)}`,
           );
         }
         removed.push({
-          declaration: `${file.basePath}: ${before.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`,
+          declaration: mapIsModule(object)
+            ? `${file.basePath} (template)`
+            : `${file.basePath}: ${before.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`,
           usedBy: [...usedBy].sort(),
         });
       }
@@ -1153,7 +1168,9 @@ export async function checkMapChanges(
   await index.ensureIndex(working, signal);
   // The base map tells what the diff removed, and which existing tests it changed.
   const base = changes.files.some(
-    (file) => file.basePath !== undefined && (file.baseLines.length || file.baseText !== undefined),
+    (file) =>
+      file.basePath !== undefined &&
+      (file.baseLines.length || file.baseText !== undefined || renamedTemplate(file)),
   )
     ? await input.baseVersion(changes.commit, signal)
     : undefined;
