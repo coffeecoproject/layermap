@@ -297,11 +297,11 @@ test("the Pi extension takes the repositories in which a shell command changed c
   await inA.run("npm run generate", () => writeFile(path.join(a, "b.ts"), "export const b = 1;\n"));
   assert.equal(await inA.ask(), AGENT_STOP_CHECK);
 
-  // A command that ran over a minute: what another session changed meanwhile is not the session's,
-  // the file the command names is.
+  // A command that ran over ten seconds: what another session changed meanwhile is not the
+  // session's, the file the command names is.
   const later = (change: () => Promise<void>) => async () => {
     await change();
-    t.mock.method(Date, "now", () => Date.prototype.valueOf.call(new Date()) + 120_000);
+    t.mock.method(Date, "now", () => Date.prototype.valueOf.call(new Date()) + 30_000);
   };
   const inB = await session(b);
   await inB.run(

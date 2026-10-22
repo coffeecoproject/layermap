@@ -185,8 +185,11 @@ KNOWN
   transcript=$(field transcript_path)
   [ -f "$transcript" ] && line=$(wc -l < "$transcript" | tr -d ' ')
   started=$(cat "$before.time" 2>/dev/null)
+  # Another session can change files while a command runs. A command that writes code without
+  # naming the file, such as a generator or formatter, takes a few seconds; for a longer one only
+  # the files it names count.
   long=0
-  [ -n "$started" ] && [ $(($(date +%s) - started)) -gt 60 ] && long=1
+  [ -n "$started" ] && [ $(($(date +%s) - started)) -gt 10 ] && long=1
   awk -F '\t' '$2 == "" { print $1 }' "$before" | snapshot | grep -vxF -f "$before" |
     C=$command awk -F '\t' -v line="${"$"}{line:-0}" -v long=$long '$2 != "" { name = $2; if (!sub(/^\? /, "", name)) sub(/^[0-9]+ [0-9]+ /, "", name)
       file = name; sub(/.*\//, "", file)

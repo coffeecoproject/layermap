@@ -177,7 +177,7 @@ const fingerprint = (changed) =>
     : "";
 
 // How long a command runs (ms) before only the files it names count as its changes.
-const LONG_COMMAND = 60_000;
+const LONG_COMMAND = 10_000;
 
 // The folders a shell command names that exist, relative to the directory it runs in.
 async function namedFolders(cwd, command) {
@@ -212,8 +212,9 @@ export default function layermap(pi) {
   // It compares a repository's uncommitted code changes with those it had before the session's
   // first such tool there and those the agent last checked in it, and all of them with those it
   // was last asked about; changes another session makes while this one reads do not count. A
-  // command that ran longer than a minute (tests, builds, scripts) leaves time for another session
-  // to change the same work tree, so only the files it names count.
+  // command that ran longer than ten seconds (tests, builds, scripts) leaves time for another
+  // session to change the same work tree, so only the files it names count; one that writes code
+  // without naming the file, such as a generator or formatter, takes a few seconds.
   const edited = new Set();
   const before = new Map();
   const checked = new Map();
