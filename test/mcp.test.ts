@@ -192,6 +192,35 @@ test("a client that disconnects during the first build stops it instead of waiti
   assert.equal(aborted, true);
 });
 
+test("a map that could not be opened is opened again by the next call, and one not built still answers", async () => {
+  const { root } = await project(FILES);
+  let opens = 0;
+  const client = session({ directory: root, git: true }, async (directory) => {
+    // The first open fails, as one losing a race to create the map did; the build after the next
+    // fails too, and each call updates the map itself.
+    if (++opens === 1) throw new Error("database is locked");
+    const map = await openMap(directory);
+    map.refresh = () => Promise.reject(new Error("interrupted"));
+    return map;
+  });
+  try {
+    await client.request("initialize", { protocolVersion: "2025-06-18", capabilities: {} });
+    client.notify("notifications/initialized");
+    const explore = () =>
+      client.request("tools/call", {
+        name: "project_explore_map",
+        arguments: { path: "." },
+      }) as Promise<CallResult>;
+    for (const call of [await explore(), await explore()]) {
+      assert.equal(call.result.isError, false);
+      assert.match(call.result.content[0]?.text ?? "", /PROJECT MAP/u);
+    }
+    assert.equal(opens, 2);
+  } finally {
+    await client.close();
+  }
+});
+
 const run = promisify(execFile);
 type CallResult = { result: { content: { text: string }[]; isError: boolean } };
 

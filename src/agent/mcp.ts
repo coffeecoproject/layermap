@@ -54,7 +54,8 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
     output.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const calls = new Map<string | number, AbortController>();
   // Each repository's map, opened and built on its first call. A build ends with the session, so a
-  // client that connects only to probe the server is not kept waiting.
+  // client that connects only to probe the server is not kept waiting. A map that could not be
+  // opened is opened again by the next call; one that could not be built is updated by each call.
   const maps = new Map<string, Readonly<{ opened: Promise<LayerMap>; built: Promise<unknown> }>>();
   const session = new AbortController();
   // A client may start its servers somewhere other than where the session works: Claude Code's
@@ -98,7 +99,11 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
         .catch((error: unknown) => {
           if (!session.signal.aborted) log(`LayerMap could not build the map: ${String(error)}`);
         });
-      entry = { opened, built };
+      const opening = { opened, built };
+      opened.catch(() => {
+        if (maps.get(project) === opening) maps.delete(project);
+      });
+      entry = opening;
       maps.set(project, entry);
     }
     return entry;
