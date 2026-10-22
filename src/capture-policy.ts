@@ -36,6 +36,7 @@ const allowedTextExtensions = Object.freeze([
   ".ts",
   ".tsx",
   ".txt",
+  ".wxml",
   ".xml",
   ".yaml",
   ".yml",

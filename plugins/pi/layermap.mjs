@@ -18,7 +18,20 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-var CODE_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "py", "java"];
+var CODE_EXTENSIONS = [
+  "ts",
+  "tsx",
+  "mts",
+  "cts",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "go",
+  "py",
+  "java",
+  "wxml"
+];
 var CODE_FILE = new RegExp(`\\.(?:${CODE_EXTENSIONS.join("|")})$`, "u");
 var CODE_GLOBS = CODE_EXTENSIONS.map((extension) => `*.${extension}`);
 var git = (cwd, args) => new Promise(

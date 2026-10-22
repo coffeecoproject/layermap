@@ -51,6 +51,7 @@ const sourceExtensions = Object.freeze([
   ".swift",
   ".ts",
   ".tsx",
+  ".wxml",
 ]);
 // Dependency trees and caches, including Python virtual environments committed by mistake, and
 // coding agents' own directories, where they keep worktrees, reviews and copies of the project.

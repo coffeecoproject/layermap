@@ -8,6 +8,7 @@ import {
   mapLanguageOf,
 } from "./project-map-language";
 import { JAVA_MAP_LANGUAGE } from "./project-map-language-java";
+import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { type MapQueryOutputBudget, mapQueryPage } from "./project-map-query-page";
 import {
   type MapObject,
@@ -495,7 +496,7 @@ function loadCoverageNotes(store: CodeIndexStore, version: string): MapCoverageN
       if (limit) limits.add(limit);
       continue;
     }
-    if (!mapCodePath(gap.path)) continue;
+    if (!mapCodePath(gap.path) && !mapMiniprogramTemplate(gap.path)) continue;
     const codes = files.get(gap.path) ?? [];
     if (!codes.includes(gap.code)) codes.push(gap.code);
     files.set(gap.path, codes);
@@ -803,6 +804,9 @@ const INCOMING: Readonly<Partial<Record<MapRelation["kind"], string>>> = {
   DECORATED_BY: "decorates",
 };
 const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
+// A template's tag that puts a component.
+const shows = (relation: MapRelation) =>
+  relation.kind === "REFERENCES" && mapMiniprogramTemplate(relation.anchor.path);
 // A last page means the view is complete, not that every runtime caller is mapped: each view with
 // callers says so, so a complete page is not read as proof.
 const callerCoverage = (textSearch: string) =>
@@ -835,6 +839,7 @@ class DeclarationGroups {
   }
 
   private entry(object: MapObject, imported = false) {
+    if (mapMiniprogramTemplate(object.anchor.path)) return "(template)";
     if (mapIsModule(object)) return imported ? "(file)" : "(module scope)";
     return `${this.graph.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`;
   }
@@ -973,7 +978,7 @@ class DeclarationGroups {
       else
         add(
           "→",
-          OUTGOING[relation.kind] ?? relation.kind.toLowerCase(),
+          shows(relation) ? "shows" : (OUTGOING[relation.kind] ?? relation.kind.toLowerCase()),
           other,
           relation.anchor.startLine,
           relation.argument,
@@ -1001,7 +1006,9 @@ class DeclarationGroups {
       const label =
         relation.kind === "CALLS" && focus.kind === "CLASS"
           ? "instantiated by"
-          : (INCOMING[relation.kind] ?? relation.kind.toLowerCase());
+          : shows(relation)
+            ? "shown by"
+            : (INCOMING[relation.kind] ?? relation.kind.toLowerCase());
       // A decorator's argument belongs to the declaration it decorates, shown there as a tag.
       add(
         "←",
@@ -1140,9 +1147,10 @@ class DeclarationGroups {
       );
     }
     if (omittedTests) lines.push(`  omitted: ${omittedTests} test relationships (includeTests)`);
+    // A template is a module that the pages showing it reference, so a trace goes on through it.
     const neighbors = [...aggregates.values()]
       .map((aggregate) => aggregate.other)
-      .filter((other) => !mapIsModule(other))
+      .filter((other) => !mapIsModule(other) || mapMiniprogramTemplate(other.anchor.path))
       .map((other) => other.id);
     return { lines, neighbors: [...new Set(neighbors)] };
   }
@@ -1159,9 +1167,12 @@ function fileView(
   const entry = store.getEntry(input.version, path);
   if (!entry || !mapPathAllowed(path, prefixes)) return notFound();
   const showTests = input.includeTests === true || mapTestPath(path);
+  // A template is mapped when a page or component script beside it registers its methods.
   const module = mapCodePath(path)
     ? graph.objectsAt(path).find((object) => mapIsModule(object))
-    : undefined;
+    : mapMiniprogramTemplate(path)
+      ? graph.objectsAt(path).find((object) => mapIsModule(object) && object.parsing === "PARSED")
+      : undefined;
   const gaps = coverage.files.get(path) ?? [];
   const head = [
     `PROJECT MAP · FILE ${path} · ${

@@ -29,7 +29,9 @@ with dozens of searches:
 
 It maps **TypeScript, JavaScript, Go, Python and Java** with each language's own compiler, so calls
 through interfaces, base classes, templates and decorators resolve as the compiler resolves them,
-including the ones text search misses.
+including the ones text search misses. In WeChat mini-programs, it also links each page's and
+component's template (`.wxml`) to the methods it binds and the components it shows, so callers reach
+the pages.
 
 ## Example
 

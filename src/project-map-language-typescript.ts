@@ -13,6 +13,7 @@ import type {
   MapLanguageAnalyzer,
   MapLanguageSession,
 } from "./project-map-language";
+import { miniprogramConfiguration, miniprogramTemplateOf } from "./project-map-miniprogram";
 import {
   installedMapParserResources,
   type MapParserResources,
@@ -22,9 +23,10 @@ import { MapReferencePageSchema, type MapReferenceRequest } from "./project-map-
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "typescript-7.0.2-map-v18",
+  id: "typescript-7.0.2-map-v19",
   claims: (path: string) => /\.[cm]?[jt]sx?$/u.test(path),
-  reads: (path: string) => path.endsWith(".json") || path === "pnpm-workspace.yaml",
+  reads: (path: string) =>
+    path.endsWith(".json") || path.endsWith(".wxml") || path === "pnpm-workspace.yaml",
   create: () => new TypeScriptMapAnalyzer(),
 });
 
@@ -85,6 +87,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
     const { entries, texts: unitTexts, observe } = session;
     const byPath = new Map(session.readable.map((entry) => [entry.path, entry]));
     const inventory = [...byPath.keys()];
+    const inventorySet = new Set(inventory);
     const parsed = new Set<string>();
     const syntaxFailed = new Set<string>();
     const accept = (analysis: MapAnalysis) => {
@@ -114,6 +117,17 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
       for (const file of inputFiles ?? rootFiles ?? inventory) {
         const text = unitTexts[file];
         if (text !== undefined) texts[file] = text;
+      }
+      // The template beside each mini-program page or component, and the configuration that
+      // registers its components, which the analysis reads to link them.
+      for (const file of Object.keys(texts)) {
+        const template = miniprogramTemplateOf(file, inventorySet);
+        if (!template) continue;
+        const { own, app } = miniprogramConfiguration(template, inventorySet);
+        for (const read of [template, own, app]) {
+          const text = read === undefined ? undefined : unitTexts[read];
+          if (read !== undefined && text !== undefined) texts[read] = text;
+        }
       }
       // A context is its configuration (or inferred root files), not the revision's contents, so
       // a file whose facts did not change keeps identical facts across map versions.

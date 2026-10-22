@@ -13,6 +13,7 @@ import {
 } from "./project-map-clients";
 import { type MapModuleDependency, newModuleDependencies } from "./project-map-dependencies";
 import { mapLanguageOf } from "./project-map-language";
+import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
@@ -228,7 +229,7 @@ const NON_CODE: readonly (readonly [RegExp, string])[] = [
   ],
   [/(?:^|\/)migrations?\/|\.sql$/iu, "database migration or schema"],
   [/(?:^|\/)\.env[^/]*$|\.(?:ya?ml|toml|ini|properties|conf|cfg)$/iu, "configuration"],
-  [/\.(?:html?|jinja2?|j2|hbs|ejs|tmpl|tpl|gohtml|vue|svelte)$/iu, "template"],
+  [/\.(?:html?|jinja2?|j2|hbs|ejs|tmpl|tpl|gohtml|vue|svelte|wxml)$/iu, "template"],
 ];
 const nonCodeKind = (path: string) => NON_CODE.find(([pattern]) => pattern.test(path))?.[1];
 
@@ -311,9 +312,10 @@ class Tracer {
   ) {}
 
   private name = (ref: string) => this.graph.qualifiedName(ref);
+  // A module is named by its path alone.
   private where = (ref: string) => {
     const object = this.graph.object(ref);
-    return `${object.anchor.path}: ${this.name(ref)}`;
+    return mapIsModule(object) ? object.anchor.path : `${object.anchor.path}: ${this.name(ref)}`;
   };
 
   /** Follows callers up from the given declarations, recording entry points and tests. */
@@ -391,7 +393,8 @@ class Tracer {
       if (this.callerCount.get(reached.ref) !== 0) continue;
       const object = this.graph.object(reached.ref);
       if (testCode(object.anchor.path) || this.routes.has(reached.ref)) continue;
-      if (reached.depth === 0) {
+      // A page's template that changed is the entry itself: the page shows it.
+      if (reached.depth === 0 && !mapMiniprogramTemplate(object.anchor.path)) {
         const uses = this.usesWithoutCalls(reached.ref);
         this.unclear.push(
           uses.length
@@ -524,7 +527,7 @@ class Tracer {
     const chain: string[] = [];
     // The chain runs from the declaration the entry reaches toward the change; a declaration at
     // the top of a chain is the entry itself, so its chain starts below it.
-    let step: Reached | undefined = top && at.via ? this.reached.get(at.via) : at;
+    let step: Reached | undefined = !top ? at : at.via ? this.reached.get(at.via) : undefined;
     for (; step && chain.length < LIMITS.chain; ) {
       chain.push(this.name(step.ref));
       step = step.via ? this.reached.get(step.via) : undefined;
@@ -602,14 +605,21 @@ export function mapChangeImpact(
     }
     // Files in a language the map does not analyze have no declarations; whether the capture kept
     // them as files (a host may keep every file) does not make their changes code.
-    const analyzed = objects.length > 0 && mapLanguageOf(file.path) !== undefined;
+    const template = mapMiniprogramTemplate(file.path);
+    const analyzed =
+      objects.length > 0 &&
+      (mapLanguageOf(file.path) !== undefined ||
+        (template && objects.some((object) => object.parsing === "PARSED")));
     if (!analyzed && file.status !== "DELETED" && kind)
       unclear.push(`${file.path} changed (${kind}): its effects are not mapped`);
     if (!objects.length) continue;
     // The innermost declarations around each changed line; top-level lines belong to the file.
     const hits = new Set<string>();
     let topLevel = false;
-    const inFile = declarations(graph, file.path);
+    // A template is one unit: the page or component it shows.
+    const inFile = template
+      ? objects.filter((object) => mapIsModule(object) && object.parsing === "PARSED")
+      : declarations(graph, file.path);
     for (const [from, to] of file.lines) {
       const containing = inFile.filter(
         (object) => object.anchor.startLine <= to && from <= object.anchor.endLine,
@@ -637,7 +647,7 @@ export function mapChangeImpact(
       }
       const object = graph.object(ref);
       changed.push(
-        `${file.path}: ${graph.qualifiedName(ref)} ${mapDeclarationLabel(object)}${file.status === "ADDED" ? " (new file)" : ""}`,
+        `${file.path}${template ? " (template)" : `: ${graph.qualifiedName(ref)} ${mapDeclarationLabel(object)}`}${file.status === "ADDED" ? " (new file)" : ""}`,
       );
       starts.push(ref);
     }

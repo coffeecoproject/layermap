@@ -157,6 +157,9 @@ test("the stop hook asks once per set of code changes the session made", async (
   await s.write(path.join(root, "src/a.ts"), "export const a = 1;\n");
   await rm(path.join(root, "src/b.ts"));
   assert.equal(await s.stop(), "");
+  // A mini-program template is mapped with its page.
+  await s.write(path.join(root, "src/home.wxml"), "<view/>\n");
+  assert.equal(await s.stop(), AGENT_STOP_CHECK);
 
   const off = session("s2", root, temp, { LAYERMAP_STOP_CHECK: "0" });
   assert.match(await off.start(), /hookSpecificOutput/u, "the note still comes");

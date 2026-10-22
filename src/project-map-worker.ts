@@ -83,7 +83,13 @@ process.once(
                     parsedFiles: [],
                     requiredFiles: [],
                   }
-                : await extractProjectMap(project, message, trace);
+                : await extractProjectMap(project, message, trace, (file) => {
+                    // A file the input lacks is required, and the analysis runs again with it.
+                    const text = files.fs.readFile?.(mapVirtualPath(file));
+                    return typeof text === "string" && Object.hasOwn(message.files, file)
+                      ? text
+                      : undefined;
+                  });
           result.requiredFiles = [...files.required].sort();
           if ("contexts" in result)
             for (const context of result.contexts) {

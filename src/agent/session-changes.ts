@@ -11,8 +11,21 @@ import os from "node:os";
 import path from "node:path";
 import { AGENT_STOP_CHECK, AGENT_STOP_CHECK_REPOSITORIES, projectHeading } from "./notes";
 
-// The code files LayerMap maps.
-const CODE_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "py", "java"];
+// The code files LayerMap maps, mini-program templates among them.
+const CODE_EXTENSIONS = [
+  "ts",
+  "tsx",
+  "mts",
+  "cts",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "go",
+  "py",
+  "java",
+  "wxml",
+];
 const CODE_FILE = new RegExp(`\\.(?:${CODE_EXTENSIONS.join("|")})$`, "u");
 const CODE_GLOBS = CODE_EXTENSIONS.map((extension) => `*.${extension}`);
 

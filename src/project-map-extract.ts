@@ -40,6 +40,11 @@ import {
   mapValueUse,
 } from "./project-map-execution";
 import type { MapParserTrace } from "./project-map-failure";
+import {
+  linkMiniprogramTemplates,
+  miniprogramMethods,
+  miniprogramTemplateOf,
+} from "./project-map-miniprogram";
 import { MapOutputCollector } from "./project-map-output";
 import { MapTargetResolver } from "./project-map-resolution";
 import { decoratorRoute, registeredRoute } from "./project-map-routes";
@@ -126,6 +131,8 @@ export async function extractProjectMap(
   project: Project,
   input: MapWorkerInput,
   trace: MapParserTrace,
+  /** A file outside the program, read so that it counts among the context's inputs. */
+  read: (path: string) => string | undefined,
 ): Promise<MapAnalysis> {
   const output: MapAnalysis = {
     contexts: [],
@@ -169,6 +176,9 @@ export async function extractProjectMap(
   // Names of namespace imports (import * as ns): a value use of ns.member may link too.
   const namespaces = new Set<string>();
   const collect = new MapOutputCollector(output);
+  const inventory = new Set(input.inventory);
+  // Mini-program pages and components the context owns, with the template beside each.
+  const pages: { file: SourceFile; template: string }[] = [];
   // An object is identified by its file, kind, name and place among the declarations around it:
   // the declarations it lies in and the same-named ones before it there. An edit elsewhere leaves
   // it, and every relation that names it, unchanged, and every context that materializes a
@@ -261,6 +271,8 @@ export async function extractProjectMap(
     const fileObject = addObject(file, file, "FILE", path);
     // Dependency declarations are materialized only when linked. Their default context owns traversal.
     if (!owned.has(path)) continue;
+    const template = miniprogramTemplateOf(path, inventory);
+    if (template) pages.push({ file, template });
     exportedSymbols.set(file.fileName, exports);
     const state = moduleStateNames(file);
     trace.phase = "TRAVERSAL";
@@ -566,6 +578,24 @@ export async function extractProjectMap(
       });
     return object;
   };
+  trace.phase = "MINIPROGRAM_TEMPLATES";
+  const templates = linkMiniprogramTemplates(
+    pages.flatMap(({ file, template }) => {
+      const methods = miniprogramMethods(file);
+      return methods ? [{ template, methods }] : [];
+    }),
+    {
+      contextRef: input.contextRef,
+      inventory,
+      read,
+      span: (path, start, end) => positions.span(path, start, end),
+      materialize,
+    },
+  );
+  for (const object of templates.objects) collect.object(object);
+  for (const relation of templates.relations) collect.relation(relation);
+  output.gaps.push(...templates.gaps);
+  output.parsedFiles.push(...templates.parsedFiles);
   const targets = new MapTargetResolver(project, input, materialize);
   const moduleVariable = (node: Node) => {
     const object = declared.get(key(node));
