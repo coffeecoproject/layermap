@@ -259,6 +259,8 @@ export type MapChangeImpact = Readonly<{
   unclear: readonly string[];
   /** Routes the base registered in the changed files that they no longer register. */
   removedRoutes: readonly string[];
+  /** Declarations the base called from lines the diff removed or changed, which nothing calls now. */
+  uncalled: readonly string[];
   /** Imports between the overview's modules that the base did not have. */
   dependencies: readonly MapModuleDependency[];
   truncated: boolean;
@@ -385,7 +387,7 @@ class Tracer {
     }
   }
 
-  private callers(ref: string): { ref: string; relation: MapRelation; certain: boolean }[] {
+  callers(ref: string): { ref: string; relation: MapRelation; certain: boolean }[] {
     const callers: { ref: string; relation: MapRelation; certain: boolean }[] = [];
     for (const relation of this.graph.relationsTo([ref]))
       if (CALLER_KINDS.has(relation.kind)) {
@@ -618,6 +620,7 @@ export function mapChangeImpact(
   // Declarations the diff removed or renamed: their callers in the base still expect them.
   const rewrittenTests: { path: string; names: string[] }[] = [];
   const removedRoutes: string[] = [];
+  const uncalled: string[] = [];
   if (base) {
     const before = new MapViewGraph(store, base);
     const registered = new Set<string>();
@@ -678,6 +681,50 @@ export function mapChangeImpact(
       unclear.push(...beforeTracer.unclear.filter((line) => !line.includes("has no callers")));
       if (beforeTracer.truncated) tracer.truncated = true;
     }
+
+    // Declarations the diff took the last caller from, as when it replaces old code with new: the
+    // base called them from the lines it removed or changed, and nothing outside tests calls them
+    // now. Only those the base called from outside tests; the ones the diff removed are listed above.
+    const moved = new Map(
+      changes.files.flatMap((file) =>
+        file.basePath ? [[file.basePath, file.status === "DELETED" ? undefined : file.path]] : [],
+      ),
+    );
+    const called = new Set<string>();
+    for (const file of changes.files) {
+      if (!file.basePath || !file.baseLines.length || file.binary || testCode(file.basePath))
+        continue;
+      for (const relation of before.relationsFrom(
+        before.objectsAt(file.basePath).map((object) => object.id),
+      ))
+        if (
+          CALLER_KINDS.has(relation.kind) &&
+          relation.to !== undefined &&
+          overlaps(file.baseLines, relation.anchor.startLine, relation.anchor.endLine)
+        )
+          called.add(before.owner(relation.to));
+    }
+    const outsideTests = (callers: { ref: string }[], g: MapViewGraph) =>
+      callers.filter((caller) => !testCode(g.object(caller.ref).anchor.path));
+    for (const ref of called) {
+      const object = before.object(ref);
+      if (mapIsModule(object) || testCode(object.anchor.path) || gone.includes(ref)) continue;
+      const path = moved.has(object.anchor.path)
+        ? moved.get(object.anchor.path)
+        : object.anchor.path;
+      if (path === undefined) continue;
+      const name = before.qualifiedName(ref);
+      const now = declarations(graph, path).find(
+        (candidate) => candidate.kind === object.kind && graph.qualifiedName(candidate.id) === name,
+      );
+      if (!now || outsideTests(tracer.callers(now.id), graph).length) continue;
+      if (!outsideTests(beforeTracer.callers(ref), before).length) continue;
+      const tested = tracer.callers(now.id).length > 0;
+      uncalled.push(
+        `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
+      );
+    }
+    uncalled.sort();
   }
 
   return {
@@ -712,6 +759,7 @@ export function mapChangeImpact(
       .sort((left, right) => right.tests.length - left.tests.length),
     unclear: [...new Set([...unclear, ...tracer.unclear])],
     removedRoutes,
+    uncalled,
     dependencies: newModuleDependencies(store, cache, working, base, changes.files),
     truncated: tracer.truncated,
   };
@@ -1052,6 +1100,15 @@ export function mapChangesText(
     impact.removed,
     LIST.changed,
   );
+  list(
+    "LEFT WITHOUT CALLERS (the diff removed or changed their last callers; nothing outside tests calls them now)",
+    impact.uncalled,
+    LIST.changed,
+  );
+  if (impact.uncalled.length)
+    lines.push(
+      "If the change replaced them, delete them and the tests that only test them; keep them only if something the map cannot see uses them, such as another package, a framework or a dynamic call.",
+    );
   // Names read or set by text, which no compiler links: a rename on one side strands the other.
   if (changes.stranded.length) {
     list(

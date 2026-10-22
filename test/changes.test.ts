@@ -427,3 +427,39 @@ test("a change names the code it adds that reads almost the same as code the pro
   await write("src/util/currency.ts", money);
   assert.equal(await similar(), "");
 });
+
+test("a change names the code it left without callers, as when new code replaces old", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/format.ts":
+      "export function oldFormat(value: number) {\n  return String(value);\n}\n\nexport function pad(value: string) {\n  return value.padStart(4);\n}\n",
+    "src/report.ts":
+      'import { oldFormat, pad } from "./format";\n\nexport function report(value: number) {\n  return pad(oldFormat(value));\n}\n',
+    "src/summary.ts":
+      'import { pad } from "./format";\n\nexport function summary() {\n  return pad("total");\n}\n',
+    "test/format.test.ts":
+      'import { oldFormat } from "../src/format";\n\nexport function testOldFormat() {\n  return oldFormat(1);\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(
+    "src/new-format.ts",
+    "export function newFormat(value: number) {\n  return value.toFixed(2);\n}\n",
+  );
+  await write(
+    "src/report.ts",
+    'import { newFormat } from "./new-format";\n\nexport function report(value: number) {\n  return newFormat(value);\n}\n',
+  );
+  const { text } = await map.checkChanges({}, signal());
+  // Only its test calls oldFormat now; summary still calls pad.
+  assert.match(
+    text,
+    /^LEFT WITHOUT CALLERS[^\n]*\n {2}src\/format\.ts: oldFormat f1-3 \(only tests call it now\)\nIf the change replaced them, delete them/mu,
+  );
+});

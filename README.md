@@ -162,7 +162,9 @@ request that path: a frontend's fetch, a generated API client, a redirect or a l
 an import between two modules of the project overview, it names it, and says when the two now
 depend on each other; whether that direction suits the project's layers is for the agent to judge. When a
 declaration the change adds reads almost the same as code the project already has, it names both, so
-the agent can use the existing code instead of a copy. It never writes or runs tests. In Claude Code and
+the agent can use the existing code instead of a copy. When the change takes away the last call to a
+declaration, as when new code replaces old, it names that declaration, so the agent can delete what
+the change left behind. It never writes or runs tests. In Claude Code and
 CodeBuddy Code the plugin asks the agent once, before it finishes, to run this check for each repository it edited code in
 and has not checked since, whether through its edit tools or shell commands (changes another session makes in the same
 work tree do not count); the Pi extension does the same after the agent's own edits. Set `LAYERMAP_STOP_CHECK=0` to turn that
