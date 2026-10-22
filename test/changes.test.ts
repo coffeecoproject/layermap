@@ -491,3 +491,81 @@ test("checking changes runs no program the repository's Git config names", async
   assert.equal(existsSync(marker("filter")), false);
   assert.equal(existsSync(marker("fsmonitor")), false);
 });
+
+// Code can be in use with no call to it: a class its subclasses extend, a handler a framework's
+// decorator wires to a route. A change that takes away its last call leaves it in use; a decorator
+// of the language's own library, such as dataclass, wires nothing.
+test("code still extended or wired by a decorator is not left without callers", async (t) => {
+  const web = (warm: string) =>
+    `from dataclasses import dataclass\n\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get("/items")\ndef list_items():\n    return []\n\n\n@dataclass\nclass Point:\n    x: int = 0\n\n\ndef legacy_total():\n    return 0\n\n\ndef warm():\n    return ${warm}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/base.ts": "export class Base {\n  constructor(readonly size: number) {}\n}\n",
+    "src/sub.ts":
+      'import { Base } from "./base";\n\nexport class Sub extends Base {\n  label() {\n    return "sub";\n  }\n}\n',
+    "src/use.ts":
+      'import { Base } from "./base";\nimport { Sub } from "./sub";\n\nexport function make() {\n  return [new Base(1), new Sub(1)];\n}\n',
+    "app/web.py": web("list_items(), Point(), legacy_total()"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(
+    "src/use.ts",
+    'import { Sub } from "./sub";\n\nexport function make() {\n  return [new Sub(2)];\n}\n',
+  );
+  await write("app/web.py", web("None"));
+  await write(
+    "src/base.ts",
+    "export class Base {\n  constructor(readonly size: number) {}\n  // sized\n}\n",
+  );
+  const { text } = await map.checkChanges({}, signal());
+  const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
+  assert.equal(left, "  app/web.py: Point c13-15\n  app/web.py: legacy_total f18-19\n");
+  assert.match(
+    text,
+    /src\/base\.ts: Base has no callers in the map, and is used without a call: extended by src\/sub\.ts: Sub/u,
+  );
+});
+
+// A contract its classes implement, and methods dispatch reaches through overriding, are in use
+// with no call the map resolves to them; a class only a test extends is not, nor a value only
+// written.
+test("code still implemented or overridden is not left without callers; tests' uses and writes do not count", async (t) => {
+  const state = (report: string) =>
+    `export let count = 0;\n\nexport function reset() {\n  count = 0;\n}\n\nexport function report() {\n  return ${report};\n}\n`;
+  const shapes = (check: string) =>
+    `from typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass Shape(Protocol):\n    def area(self) -> int: ...\n\n\nclass Square(Shape):\n    def area(self) -> int:\n        return 4\n\n\ndef check(x):\n    return ${check}\n`;
+  const { root, write } = await project({
+    "app/shapes.py": shapes("isinstance(x, Shape)"),
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/shape.ts":
+      "export interface Shape {\n  area(): number;\n}\n\nexport class Base {\n  size() {\n    return 1;\n  }\n}\n\nexport class Old {}\n",
+    "src/square.ts":
+      'import { Base, type Shape } from "./shape";\n\nexport class Square extends Base implements Shape {\n  area() {\n    return 4;\n  }\n  override size() {\n    return 2;\n  }\n}\n',
+    "src/use.ts":
+      'import { Base, Old, type Shape } from "./shape";\nimport { Square } from "./square";\n\nexport function total(shape: Shape) {\n  return shape.area();\n}\n\nexport function sizes() {\n  return [new Base().size(), new Square().size(), new Square().area(), new Old()];\n}\n',
+    "test/old.test.ts":
+      'import { Old } from "../src/shape";\n\nexport class FakeOld extends Old {}\n',
+    "src/state.ts": state("count + 1"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(
+    "src/use.ts",
+    'import { Square } from "./square";\n\nexport function sizes() {\n  return [new Square()];\n}\n',
+  );
+  await write("app/shapes.py", shapes("True"));
+  await write("src/state.ts", state("0"));
+  const { text } = await map.checkChanges({}, signal());
+  const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
+  assert.equal(left, "  src/shape.ts: Old c11\n  src/state.ts: count v1\n");
+});

@@ -268,6 +268,12 @@ export type MapChangeImpact = Readonly<{
 
 const LIMITS = Object.freeze({ depth: 8, declarations: 800, changed: 200, chain: 3, byName: 40 });
 const CALLER_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES"]);
+// The relations to a declaration that use it without calling it, as the user's verb.
+const USED_BY: Partial<Record<MapRelation["kind"], string>> = {
+  EXTENDS: "extended",
+  IMPLEMENTS: "implemented",
+  OVERRIDES: "overridden",
+};
 const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // A literal is a route when it is a path, optionally after its methods: "/x", "GET|POST /x".
 const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
@@ -379,12 +385,40 @@ class Tracer {
       if (this.callerCount.get(reached.ref) !== 0) continue;
       const object = this.graph.object(reached.ref);
       if (testCode(object.anchor.path) || this.routes.has(reached.ref)) continue;
-      if (reached.depth === 0)
+      if (reached.depth === 0) {
+        const uses = this.usesWithoutCalls(reached.ref);
         this.unclear.push(
-          `${this.where(reached.ref)} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
+          uses.length
+            ? `${this.where(reached.ref)} has no callers in the map, and is used without a call: ${uses.join("; ")}`
+            : `${this.where(reached.ref)} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
         );
-      else this.entry(this.where(reached.ref), false, reached, undefined, reached.certain, true);
+      } else this.entry(this.where(reached.ref), false, reached, undefined, reached.certain, true);
     }
+  }
+
+  /**
+   * The uses outside tests the map sees of a declaration besides calls: a class others extend or
+   * implement, a member that overrides another or that others override, and a decorator that may
+   * wire it to be run (a route, a task, a registry). A decorator of the language's own library
+   * (dataclass, staticmethod) only shapes the declaration. Reading a value is a reference, so a
+   * caller; writing one is not a use, as a value nothing reads is unused.
+   */
+  usesWithoutCalls(ref: string): string[] {
+    const uses: string[] = [];
+    for (const relation of this.graph.relationsTo([ref])) {
+      const verb = USED_BY[relation.kind];
+      const owner = this.graph.owner(relation.from);
+      if (verb && owner !== ref && !testCode(this.graph.object(owner).anchor.path))
+        uses.push(`${verb} by ${this.where(owner)}`);
+    }
+    for (const relation of this.graph.relationsFrom([ref]))
+      if (relation.kind === "OVERRIDES")
+        uses.push(
+          `overrides ${relation.to === undefined ? relation.target : this.where(this.graph.owner(relation.to))}`,
+        );
+      else if (relation.kind === "DECORATED_BY" && relation.unresolvedReason !== "COMPILER_LIBRARY")
+        uses.push(`decorated by ${relation.target}`);
+    return [...new Set(uses)];
   }
 
   callers(ref: string): { ref: string; relation: MapRelation; certain: boolean }[] {
@@ -717,7 +751,12 @@ export function mapChangeImpact(
       const now = declarations(graph, path).find(
         (candidate) => candidate.kind === object.kind && graph.qualifiedName(candidate.id) === name,
       );
-      if (!now || outsideTests(tracer.callers(now.id), graph).length) continue;
+      if (
+        !now ||
+        outsideTests(tracer.callers(now.id), graph).length ||
+        tracer.usesWithoutCalls(now.id).length
+      )
+        continue;
       if (!outsideTests(beforeTracer.callers(ref), before).length) continue;
       const tested = tracer.callers(now.id).length > 0;
       uncalled.push(
@@ -1101,7 +1140,7 @@ export function mapChangesText(
     LIST.changed,
   );
   list(
-    "LEFT WITHOUT CALLERS (the diff removed or changed their last callers; nothing outside tests calls them now)",
+    "LEFT WITHOUT CALLERS (the diff removed or changed their last callers; nothing outside tests calls or otherwise uses them now)",
     impact.uncalled,
     LIST.changed,
   );
