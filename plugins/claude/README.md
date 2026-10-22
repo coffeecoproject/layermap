@@ -16,7 +16,7 @@ Start a session in a Git repository and ask as usual, for example:
 
 ## What it runs, fetches and sends
 
-- It runs the LayerMap MCP server on your machine, from the pinned `layermap@0.1.24` package.
+- It runs the LayerMap MCP server on your machine, from the pinned `layermap@0.1.25` package.
   Java analysis uses your local JDK 21 or later.
 - The first time a session starts this version, npm installs the pinned `layermap` package and its
   dependencies from the npm registry into LayerMap's cache; later sessions start it from there.
