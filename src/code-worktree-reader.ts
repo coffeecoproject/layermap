@@ -20,21 +20,26 @@ const isInsideRoot = (root: string, candidate: string): boolean => {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
 };
 
+// A file is checked to be unchanged; a directory only to be the same directory, as files added to
+// or removed from it change it without changing any file read from it.
 const stablePathFingerprint = (stats: BigIntStats): string =>
-  [
-    stats.dev,
-    stats.ino,
-    stats.mode,
-    stats.nlink,
-    stats.uid,
-    stats.gid,
-    stats.rdev,
-    stats.size,
-    stats.blksize,
-    stats.blocks,
-    stats.mtimeNs,
-    stats.ctimeNs,
-  ]
+  (stats.isDirectory()
+    ? ["directory", stats.dev, stats.ino]
+    : [
+        stats.dev,
+        stats.ino,
+        stats.mode,
+        stats.nlink,
+        stats.uid,
+        stats.gid,
+        stats.rdev,
+        stats.size,
+        stats.blksize,
+        stats.blocks,
+        stats.mtimeNs,
+        stats.ctimeNs,
+      ]
+  )
     .map(String)
     .join(":");
 

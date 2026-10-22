@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { GitCommandStopUnconfirmedError, GitRunner } from "./git-runner";
 
@@ -11,7 +12,6 @@ const FILE_UNIVERSE_ARGS = Object.freeze([
   "--",
   ".",
 ]);
-const DELETED_FILE_ARGS = Object.freeze(["ls-files", "-z", "--deleted", "--", "."]);
 
 export const PROJECT_EVIDENCE_FILE_UNIVERSE_POLICY = Object.freeze({
   kind: "GIT_TRACKED_AND_UNIGNORED_UNTRACKED",
@@ -81,57 +81,16 @@ export class ProjectEvidenceFileUniverse {
     if (signal.aborted) {
       throw new ProjectEvidenceFileUniverseError("PROJECT_READ_CANCELLED");
     }
-    let captured: { included: Buffer; deleted: Buffer };
+    let listed: Buffer;
     try {
-      const stop = new AbortController();
-      const combined = AbortSignal.any([signal, stop.signal]);
-      let failed = false;
-      let firstFailure: unknown;
-      const results = await Promise.allSettled(
-        [
-          this.git.run(FILE_UNIVERSE_ARGS, {
-            cwd: root,
-            maxOutputBytes: null,
-            signal: combined,
-            timeoutMs: null,
-          }),
-          this.git.run(DELETED_FILE_ARGS, {
-            cwd: root,
-            maxOutputBytes: null,
-            signal: combined,
-            timeoutMs: null,
-          }),
-        ].map((work) =>
-          work.catch((error: unknown) => {
-            if (!failed) {
-              failed = true;
-              firstFailure = error;
-            }
-            stop.abort();
-            throw error;
-          }),
-        ),
-      );
-      const unconfirmed = results.find(
-        (result) =>
-          result.status === "rejected" && result.reason instanceof GitCommandStopUnconfirmedError,
-      );
-      if (unconfirmed?.status === "rejected") throw unconfirmed.reason;
-      if (failed) throw firstFailure;
-      const [includedResult, deletedResult] = results;
-      if (includedResult?.status !== "fulfilled") {
-        throw includedResult?.status === "rejected"
-          ? includedResult.reason
-          : new Error("Missing file universe result.");
-      }
-      if (deletedResult?.status !== "fulfilled") {
-        throw deletedResult?.status === "rejected"
-          ? deletedResult.reason
-          : new Error("Missing deleted-file result.");
-      }
-      const included = includedResult.value;
-      const deleted = deletedResult.value;
-      captured = { included: included.stdout, deleted: deleted.stdout };
+      listed = (
+        await this.git.run(FILE_UNIVERSE_ARGS, {
+          cwd: root,
+          maxOutputBytes: null,
+          signal,
+          timeoutMs: null,
+        })
+      ).stdout;
     } catch (error) {
       if (error instanceof GitCommandStopUnconfirmedError) throw error;
       if (signal.aborted) {
@@ -139,13 +98,24 @@ export class ProjectEvidenceFileUniverse {
       }
       throw new ProjectEvidenceFileUniverseError("PROJECT_FILE_UNIVERSE_UNAVAILABLE");
     }
+    // Git lists a file it tracks that is not on disk: deleted, or left out of a sparse checkout.
+    const candidates = parseFileUniverse(listed);
+    const present = await Promise.all(
+      candidates.map((file) =>
+        lstat(path.join(root, ...file.split("/"))).then(
+          () => true,
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+            throw new ProjectEvidenceFileUniverseError("PROJECT_FILE_UNIVERSE_UNAVAILABLE");
+          },
+        ),
+      ),
+    );
     if (signal.aborted) {
       throw new ProjectEvidenceFileUniverseError("PROJECT_READ_CANCELLED");
     }
-    const deleted = new Set(parseFileUniverse(captured.deleted));
-    const files = Object.freeze(
-      parseFileUniverse(captured.included).filter((candidate) => !deleted.has(candidate)),
-    );
-    return Object.freeze({ files });
+    return Object.freeze({
+      files: Object.freeze(candidates.filter((_, index) => present[index])),
+    });
   }
 }

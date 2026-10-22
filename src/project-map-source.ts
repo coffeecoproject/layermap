@@ -14,7 +14,6 @@ export class ProjectMapSourceReader {
   private constructor(
     private readonly session: StableProjectCaptureSession,
     private readonly commit: CodeCommitReader | undefined,
-    private readonly universe: ProjectEvidenceFileUniverse,
     private readonly snapshot:
       | Awaited<ReturnType<ProjectEvidenceFileUniverse["capture"]>>
       | undefined,
@@ -36,16 +35,15 @@ export class ProjectMapSourceReader {
       source.directory.inode,
       signal,
     );
-    const universe = new ProjectEvidenceFileUniverse();
     const commit =
       source.kind === "COMMIT"
         ? await CodeCommitReader.open(session.root, source.commit, signal, selectedPath)
         : undefined;
     const snapshot =
       source.kind === "WORKTREE" && enumerate
-        ? await universe.capture(session.root, signal)
+        ? await new ProjectEvidenceFileUniverse().capture(session.root, signal)
         : undefined;
-    return new ProjectMapSourceReader(session, commit, universe, snapshot, signal);
+    return new ProjectMapSourceReader(session, commit, snapshot, signal);
   }
 
   paths() {
@@ -84,11 +82,13 @@ export class ProjectMapSourceReader {
     return results;
   }
 
-  async assertStable() {
-    await this.session.assertStable();
-    if (this.snapshot)
-      await this.universe.assertCurrent(this.session.root, this.snapshot, this.signal);
-    await this.session.assertStable();
+  /**
+   * The files read are unchanged and the directories holding them the same. Files added or removed
+   * since the reader opened do not count: what was read is a capture's files, which reads of each
+   * against its captured digest confirm.
+   */
+  assertStable() {
+    return this.session.assertStable();
   }
 }
 
