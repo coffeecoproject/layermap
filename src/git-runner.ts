@@ -86,17 +86,61 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 const defaultGit = () =>
   process.platform === "win32" ? (findExecutable("git") ?? "git.exe") : "/usr/bin/git";
 
+// The commands that may compare a work tree file's content with Git's, which puts it through the
+// filter its attributes name: a program the repository's own config gives, unless blanked.
+const FILTERING = new Set(["diff", "status", "hash-object", "add", "stash", "update-index"]);
+
+const subcommand = (args: readonly string[]): string | undefined => {
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "-c" || args[index] === "-C") index++;
+    else if (!args[index]?.startsWith("-")) return args[index];
+  }
+  return undefined;
+};
+
 export class GitRunner {
   constructor(private readonly executable = defaultGit()) {}
 
-  run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
-    if (options.signal?.aborted) {
-      return Promise.reject(new GitCommandError("Git command aborted."));
-    }
+  async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
+    if (options.signal?.aborted) throw new GitCommandError("Git command aborted.");
     const readOnly = options.readOnly !== false;
-    const finalArgs = readOnly
-      ? ["--no-optional-locks", ...CONSTRAINED_CONFIG, ...args]
-      : [...CONSTRAINED_CONFIG, ...args];
+    const config = [
+      ...CONSTRAINED_CONFIG,
+      ...(FILTERING.has(subcommand(args) ?? "") ? await this.blankedFilters(options) : []),
+    ];
+    return this.spawn(
+      readOnly ? ["--no-optional-locks", ...config, ...args] : [...config, ...args],
+      options,
+    );
+  }
+
+  // Every filter driver the repository's config names, left with no program to run. Git reads its
+  // config without running anything; it lists none with status 1.
+  private async blankedFilters(options: GitRunOptions): Promise<string[]> {
+    let listed: string;
+    try {
+      listed = (
+        await this.spawn(
+          [...CONSTRAINED_CONFIG, "config", "--name-only", "--get-regexp", "^filter\\."],
+          { ...options, input: undefined },
+        )
+      ).stdout.toString("utf8");
+    } catch (error) {
+      if (error instanceof GitCommandError && error.exitCode === 1) return [];
+      throw error;
+    }
+    const drivers = new Set(
+      listed.split("\n").flatMap((key) => /^filter\.(.+)\.[^.]+$/su.exec(key)?.[1] ?? []),
+    );
+    return [...drivers].flatMap((driver) =>
+      ["clean=", "process=", "required=false"].flatMap((setting) => [
+        "-c",
+        `filter.${driver}.${setting}`,
+      ]),
+    );
+  }
+
+  private spawn(finalArgs: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
     const timeoutMs = options.timeoutMs === undefined ? 5_000 : options.timeoutMs;
     const maxOutputBytes =
       options.maxOutputBytes === undefined ? 2 * 1024 * 1024 : options.maxOutputBytes;

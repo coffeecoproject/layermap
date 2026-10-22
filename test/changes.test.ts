@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
+import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { CodeIndex } from "../src/code-index";
@@ -462,4 +464,30 @@ test("a change names the code it left without callers, as when new code replaces
     text,
     /^LEFT WITHOUT CALLERS[^\n]*\n {2}src\/format\.ts: oldFormat f1-3 \(only tests call it now\)\nIf the change replaced them, delete them/mu,
   );
+});
+
+// A repository's own config may name programs for Git to run (a filter its attributes apply to a
+// file, an fsmonitor), as a cloned or downloaded one may come with; LayerMap's Git runs none.
+test("checking changes runs no program the repository's Git config names", async (t) => {
+  const { root, write } = await project({ ...FILES, ".gitattributes": "*.ts filter=evil\n" });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const marker = (name: string) => path.join(root, "..", name);
+  await run("git", ["config", "filter.evil.clean", `sh -c 'touch "${marker("filter")}"; cat'`], {
+    cwd: root,
+  });
+  await run("git", ["config", "filter.evil.required", "true"], { cwd: root });
+  await run("git", ["config", "core.fsmonitor", `sh -c 'touch "${marker("fsmonitor")}"'`], {
+    cwd: root,
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write(
+    "src/store.ts",
+    "export function markRead(id: number) {\n  return id + 1;\n}\n\nexport function legacy() {\n  return 1;\n}\n",
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /src\/store\.ts: markRead f1-3/u);
+  assert.equal(existsSync(marker("filter")), false);
+  assert.equal(existsSync(marker("fsmonitor")), false);
 });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -316,4 +317,40 @@ test("the Pi extension takes the repositories in which a shell command changed c
   );
   t.mock.restoreAll();
   assert.equal(await inB.ask(), AGENT_STOP_CHECK);
+});
+
+// A repository's own config may name programs for Git to run, as a cloned or downloaded one may
+// come with; the extension still sees its changes, and runs none of them.
+test("the Pi extension runs no program the repository's Git config names", async (t) => {
+  const pkg = await installed();
+  const root = path.join(await realpath(await sandbox()), "repo");
+  await mkdir(root);
+  await writeFile(path.join(root, "a.ts"), "export const a = 1;\n");
+  await writeFile(path.join(root, ".gitattributes"), "*.ts filter=evil\n");
+  const git = (...args: string[]) => run("git", args, { cwd: root });
+  await git("init", "-q");
+  await git("add", "-A");
+  await git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base");
+  const marker = (name: string) => path.join(root, "..", name);
+  await git("config", "filter.evil.clean", `sh -c 'touch "${marker("filter")}"; cat'`);
+  await git("config", "filter.evil.required", "true");
+  await git("config", "core.fsmonitor", `sh -c 'touch "${marker("fsmonitor")}"'`);
+  const { default: extension } = await import(
+    `${pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href}?filters`
+  );
+  const handlers = new Map<string, Handler>();
+  extension({ on: (name: string, h: Handler) => handlers.set(name, h), registerTool: () => {} });
+  const ctx = { cwd: root, ui: { notify: () => {} } };
+  await handlers.get("session_start")?.({}, ctx);
+  t.after(() => handlers.get("session_shutdown")?.({}, ctx));
+  const event = { toolName: "bash", toolCallId: "c1", input: { command: "touch a.ts" } };
+  await handlers.get("tool_call")?.(event, ctx);
+  await writeFile(path.join(root, "a.ts"), "export const a = 2;\n");
+  await handlers.get("tool_result")?.(event, ctx);
+  const asked = (await (handlers.get("agent_before_settle") as Handler)({ entries: [] }, ctx)) as
+    | { entries: { content: string }[] }
+    | undefined;
+  assert.equal(asked?.entries[0]?.content, AGENT_STOP_CHECK);
+  assert.equal(existsSync(marker("filter")), false);
+  assert.equal(existsSync(marker("fsmonitor")), false);
 });

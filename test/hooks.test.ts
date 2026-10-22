@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -378,4 +379,48 @@ test("the command hook notes the code files a shell command changes, for the sto
     ],
     [`${gitA} src/generated.ts`],
   );
+});
+
+// A repository's own config may name programs for Git to run, as a cloned or downloaded one may
+// come with; the hooks still see its changes, and run none of them.
+test("the hooks run no program the repository's Git config names", async () => {
+  const { root, write } = await project({
+    "src/a.ts": "export const a = 1;\n",
+    ".gitattributes": "*.ts filter=evil\n",
+  });
+  const git = (...args: string[]) =>
+    run("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root });
+  await git("add", "-A");
+  await git("commit", "-qm", "base");
+  const marker = (name: string) => path.join(root, "..", name);
+  await git("config", "filter.evil.clean", `sh -c 'touch "${marker("filter")}"; cat'`);
+  await git("config", "filter.evil.required", "true");
+  await git("config", "core.fsmonitor", `sh -c 'touch "${marker("fsmonitor")}"'`);
+  const env = { TMPDIR: await sandbox() };
+  // With the session's transcript, the stop hook also asks Git which of the files it names changed.
+  const transcript = path.join(await sandbox(), "transcript.jsonl");
+  const edit = {
+    type: "tool_use",
+    name: "Edit",
+    input: { file_path: path.join(root, "src/a.ts") },
+  };
+  await writeFile(transcript, JSON.stringify({ message: { content: [edit] } }));
+  const input = {
+    session_id: "s1",
+    cwd: root,
+    stop_hook_active: false,
+    transcript_path: transcript,
+  };
+  await hook("session-start.sh", input, env);
+  const command = {
+    tool_name: "Bash",
+    tool_input: { command: "touch src/a.ts" },
+    tool_use_id: "c1",
+  };
+  await hook("command-changes.sh", { ...input, ...command, hook_event_name: "PreToolUse" }, env);
+  await write("src/a.ts", "export const a = 2;\n");
+  await hook("command-changes.sh", { ...input, ...command, hook_event_name: "PostToolUse" }, env);
+  assert.equal(JSON.parse(await hook("stop-check.sh", input, env)).decision, "block");
+  assert.equal(existsSync(marker("filter")), false);
+  assert.equal(existsSync(marker("fsmonitor")), false);
 });

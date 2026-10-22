@@ -125,11 +125,24 @@ here=$(field cwd)
 dir=$(cat "$state/$session.dir" 2>/dev/null)
 [ -d "$dir" ] || dir=$here
 start=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+# Git in a repository with no program its own config names: no fsmonitor, and no filter its
+# attributes would put a changed file's content through.
+repo_git() {
+  _repo=$1; shift
+  _blank=$(git -C "$_repo" config --name-only --get-regexp '^filter\.' 2>/dev/null |
+    sed -n 's/^filter\.\(.*\)\.[^.]*$/-c filter.\1.clean= -c filter.\1.process= -c filter.\1.required=false/p' |
+    sort -u | tr '\n' ' ')
+  set -f
+  git -C "$_repo" -c core.fsmonitor=false -c core.quotePath=false $_blank "$@"
+  _status=$?
+  set +f
+  return $_status
+}
 # The name of each changed code file, and the checksum, size and name of each that still exists.
 code_changes() {
-  files=$(git -C "$1" -c core.quotePath=false diff HEAD --name-only --no-renames -- ${CODE} 2>/dev/null) || return 0
+  files=$(repo_git "$1" diff HEAD --name-only --no-renames -- ${CODE} 2>/dev/null) || return 0
   files=$({ printf '%s\n' "$files"
-    git -C "$1" -c core.quotePath=false ls-files --others --exclude-standard -- ${CODE} 2>/dev/null; } | sed '/^$/d' | sort -u)
+    repo_git "$1" ls-files --others --exclude-standard -- ${CODE} 2>/dev/null; } | sed '/^$/d' | sort -u)
   [ -n "$files" ] || return 0
   printf '%s\n' "$files" | sed 's/^/? /'
   printf '%s\n' "$files" | (cd "$1" && tr '\n' '\0' | xargs -0 cksum 2>/dev/null)
@@ -304,8 +317,8 @@ WHERE
   # The repositories with an edit to a file git still sees changed and no check of them after it.
   due=$({
     printf '%s\n' "$calls" | awk -F '\t' '$1 == "edit" { print $3 }' | sort -u | while IFS= read -r repo; do
-      { git -C "$repo" -c core.quotePath=false diff HEAD --name-only --no-renames 2>/dev/null
-        git -C "$repo" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null; } |
+      { repo_git "$repo" diff HEAD --name-only --no-renames 2>/dev/null
+        repo_git "$repo" ls-files --others --exclude-standard 2>/dev/null; } |
         while IFS= read -r name; do printf 'changed\t%s\t%s\n' "$repo" "$name"; done
     done
     printf '%s\n' "$calls"

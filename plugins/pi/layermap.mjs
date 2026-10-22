@@ -108,6 +108,30 @@ const git = (cwd, args) =>
     ),
   );
 
+// Git in a repository with no program its own config names: no fsmonitor, and no filter its
+// attributes would put a changed file's content through.
+async function repositoryGit(repository, args) {
+  const drivers = new Set(
+    (await git(repository, ["config", "--name-only", "--get-regexp", "^filter\\."]))
+      .split("\n")
+      .flatMap((key) => /^filter\.(.+)\.[^.]+$/su.exec(key)?.[1] ?? []),
+  );
+  const blank = [...drivers].flatMap((driver) =>
+    ["clean=", "process=", "required=false"].flatMap((setting) => [
+      "-c",
+      `filter.${driver}.${setting}`,
+    ]),
+  );
+  return git(repository, [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.quotePath=false",
+    ...blank,
+    ...args,
+  ]);
+}
+
 // The Git repository around a path, or the nearest directory of it that exists; empty outside one.
 async function repositoryAt(given) {
   let directory = given;
@@ -141,25 +165,8 @@ async function changedCode(repository) {
   const changed = new Map();
   if (!(await git(repository, ["rev-parse", "--verify", "--quiet", "HEAD"]))) return changed;
   const listed = await Promise.all([
-    git(repository, [
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      "HEAD",
-      "--name-only",
-      "--no-renames",
-      "--",
-      ...CODE_GLOBS,
-    ]),
-    git(repository, [
-      "-c",
-      "core.quotePath=false",
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-      "--",
-      ...CODE_GLOBS,
-    ]),
+    repositoryGit(repository, ["diff", "HEAD", "--name-only", "--no-renames", "--", ...CODE_GLOBS]),
+    repositoryGit(repository, ["ls-files", "--others", "--exclude-standard", "--", ...CODE_GLOBS]),
   ]);
   const files = [...new Set(listed.join("\n").split("\n").filter(Boolean))].sort();
   for (const file of files) {
