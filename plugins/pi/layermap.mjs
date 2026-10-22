@@ -268,7 +268,7 @@ function layermap(pi) {
     if (server && !server.dead) return server;
     starting ??= (async () => {
       const next = new MapServer(cwd);
-      const tools = await next.start("0.1.29");
+      const tools = await next.start("0.1.30");
       for (const tool of tools) {
         if (registered.has(tool.name)) continue;
         registered.add(tool.name);
