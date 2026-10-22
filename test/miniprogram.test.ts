@@ -358,7 +358,8 @@ test("an event a component stops emitting is still bound, and a template's new l
   assert.doesNotMatch(unknown.text, /does not emit/u);
 
   // A registration that finds the component no more leaves the pages that show it showing nothing.
-  await run("git", ["checkout", "--", "miniprogram"], { cwd: root });
+  for (const name of [home, "miniprogram/components/status-tag/status-tag.ts"] as const)
+    await write(name, FILES[name]);
   await write(
     "miniprogram/app.json",
     FILES["miniprogram/app.json"].replace(
