@@ -481,7 +481,7 @@ ${PROMPTS.map((prompt) => `- "${prompt}"`).join("\n")}
 
 ## What it runs, fetches and sends
 
-- It runs the LayerMap MCP server on your machine (\`${[launch.command, ...launch.args].join(" ")}\`).
+- It runs the LayerMap MCP server on your machine, from the pinned \`layermap@${version}\` package.
   Java analysis uses your local JDK 21 or later.
 - On first launch, npx downloads the pinned \`layermap\` package and its dependencies from the npm
   registry.

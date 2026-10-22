@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const args = ["--prefer-offline", "-y", "layermap@0.1.22", "entry"];
+const args = ["--prefer-offline", "-y", "layermap@0.1.23", "entry"];
 const windows = process.platform === "win32";
 execFile(
   windows ? `npx ${args.join(" ")}` : "npx",
