@@ -57,8 +57,10 @@ const more = (nextOffset: number | undefined) =>
 const HINTS: Readonly<Record<string, string>> = {
   PROJECT_MAP_OBJECT_NOT_FOUND:
     "No such path or declaration in the map. Explore the parent directory or the file to see what it contains.",
-  PROJECT_READ_SOURCE_CHANGED: "Files changed while the map was updating. Call again.",
-  PROJECT_MAP_SOURCE_CHANGED: "Files changed while the map was updating. Call again.",
+  PROJECT_FILE_CHANGED: "Files kept changing while the map was updating. Call again.",
+  PROJECT_FILE_UNIVERSE_CHANGED: "Files kept changing while the map was updating. Call again.",
+  PROJECT_READ_SOURCE_CHANGED: "Files kept changing while the map was updating. Call again.",
+  PROJECT_MAP_SOURCE_CHANGED: "Files kept changing while the map was updating. Call again.",
   PROJECT_CONTINUATION_INVALID:
     "The offset or cursor belongs to an earlier map or other arguments. Start again without it.",
   PROJECT_MAP_REFERENCE_CURSOR_INVALID:

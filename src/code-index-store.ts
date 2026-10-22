@@ -269,7 +269,8 @@ export class CodeIndexStore {
   appendMapStage(buildRef: string, analysis: MapAnalysis, record: MapContextRecord = {}): void {
     if (analysis.requiredFiles.length)
       throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
-    this.database.exec("BEGIN IMMEDIATE");
+    // Staging is a temporary table: its writes take no lock other processes wait on.
+    this.database.exec("BEGIN");
     try {
       const insert = this.database.prepare(
         "INSERT INTO project_map_staging (build_ref, kind, value_json) VALUES (?, ?, ?)",
@@ -834,18 +835,28 @@ export class CodeIndexStore {
     };
   }
 
-  collectGarbage(referencedVersions: readonly string[]): void {
-    const retained = new Set(referencedVersions);
+  /**
+   * Deletes the versions not retained, with what only they list, and returns how many went. The
+   * versions to retain are read in the same transaction.
+   */
+  collectGarbage(retained: () => readonly string[]): number {
     this.database.exec("BEGIN IMMEDIATE");
     try {
+      const kept = new Set(retained());
+      let removed = 0;
       for (const row of this.database
         .prepare("SELECT version_ref FROM project_code_versions")
         .all()) {
         const version = String(row.version_ref);
-        if (retained.has(version)) continue;
+        if (kept.has(version)) continue;
         this.database
           .prepare("DELETE FROM project_code_versions WHERE version_ref = ?")
           .run(version);
+        removed++;
+      }
+      if (!removed) {
+        this.database.exec("COMMIT");
+        return 0;
       }
       // Units and navigation documents no retained version lists anymore go with their facts.
       this.database.exec(`DELETE FROM project_map_units WHERE NOT EXISTS (
@@ -867,6 +878,7 @@ export class CodeIndexStore {
           WHERE document_ref IN (SELECT value FROM json_each(?))`)
         .run(orphans);
       this.database.exec("COMMIT");
+      return removed;
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;

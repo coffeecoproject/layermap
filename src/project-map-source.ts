@@ -52,23 +52,36 @@ export class ProjectMapSourceReader {
     return this.snapshot?.files ?? this.commit?.entries.map((entry) => entry.path) ?? [];
   }
 
-  async read(relative: string, expected?: ProjectEvidenceRevisionFileEntryV1) {
+  /** Reads a file and checks it still has the content captured. */
+  async read(expected: ProjectEvidenceRevisionFileEntryV1) {
+    return (await this.readAll([expected]))[0] as SourceRead;
+  }
+
+  /**
+   * Reads files in their order and checks each still has the content captured: a commit's many
+   * blobs to a Git process, a directory's files several at a time.
+   */
+  async readAll(expected: readonly ProjectEvidenceRevisionFileEntryV1[]): Promise<SourceRead[]> {
     if (this.signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
-    assertProjectEvidencePathNotSensitive(relative);
-    if (isProjectEvidenceTraversalExcluded(relative))
-      throw new ProjectEvidenceError("PROJECT_FILE_NOT_ALLOWED", false);
-    const result = this.commit
-      ? await this.commit.read(relative)
-      : await this.session.captureFile(relative);
-    if (
-      expected &&
-      (result.entry.state !== expected.state ||
-        result.entry.contentDigest !== expected.contentDigest ||
-        result.entry.byteLength !== expected.byteLength)
-    ) {
-      throw new ProjectEvidenceError("PROJECT_MAP_SOURCE_CHANGED", true);
+    const paths = expected.map(({ path }) => {
+      assertProjectEvidencePathNotSensitive(path);
+      if (isProjectEvidenceTraversalExcluded(path))
+        throw new ProjectEvidenceError("PROJECT_FILE_NOT_ALLOWED", false);
+      return path;
+    });
+    const results = this.commit
+      ? await this.commit.readAll(paths)
+      : await concurrently(paths, (path) => this.session.captureFile(path));
+    for (const [index, { entry }] of results.entries()) {
+      const wanted = expected[index];
+      if (
+        entry.state !== wanted?.state ||
+        entry.contentDigest !== wanted.contentDigest ||
+        entry.byteLength !== wanted.byteLength
+      )
+        throw new ProjectEvidenceError("PROJECT_MAP_SOURCE_CHANGED", true);
     }
-    return result;
+    return results;
   }
 
   async assertStable() {
@@ -79,11 +92,13 @@ export class ProjectMapSourceReader {
   }
 }
 
+type SourceRead = Readonly<{ entry: ProjectEvidenceRevisionFileEntryV1; content?: Buffer }>;
+
 /**
  * Reads items with the capture's concurrency and returns the results in item order. The first
  * failure stops further reads and is thrown.
  */
-export async function readAll<T, R>(
+async function concurrently<T, R>(
   items: readonly T[],
   read: (item: T) => Promise<R>,
 ): Promise<R[]> {

@@ -8,6 +8,8 @@ import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { FILES, openMap, project, sandbox, signal } from "./support";
 
 const DAY = 24 * 60 * 60 * 1000;
+// A map as schema 2 left it, before LayerMap recorded the versions processes hold.
+const BEFORE_HOLDS = "DROP TABLE layermap_version_holds; DROP TABLE layermap_commit_versions;";
 
 test("a project keeps its three most recent map versions as its files change", async (t) => {
   const { root, write } = await project(FILES);
@@ -52,15 +54,29 @@ test("a database from before versions were pruned is rewritten to return freed s
   const file = path.join(await sandbox(), "map.sqlite");
   openMapDatabase(file).close();
   const old = new DatabaseSync(file);
-  old.exec("PRAGMA auto_vacuum = NONE; VACUUM; PRAGMA user_version = 1;");
+  old.exec(`${BEFORE_HOLDS} PRAGMA auto_vacuum = NONE; VACUUM; PRAGMA user_version = 1;`);
   old.close();
   const upgraded = openMapDatabase(file);
   try {
-    assert.equal(Number(upgraded.prepare("PRAGMA user_version").get()?.user_version), 2);
+    assert.equal(Number(upgraded.prepare("PRAGMA user_version").get()?.user_version), 3);
     assert.equal(Number(upgraded.prepare("PRAGMA auto_vacuum").get()?.auto_vacuum), 2);
   } finally {
     upgraded.close();
   }
+});
+
+test("a database from before versions were held gets the tables that hold them", async (t) => {
+  const { root } = await project(FILES);
+  const cache = path.join(await sandbox(), "cache");
+  const file = mapDatabasePath(cache, root);
+  openMapDatabase(file).close();
+  const old = new DatabaseSync(file);
+  old.exec(`${BEFORE_HOLDS} PRAGMA user_version = 2;`);
+  old.close();
+  const map = await openMap(root, cache);
+  t.after(() => map.close());
+  const overview = await map.explore({ path: "." }, signal());
+  assert.match(overview.text, /src\//u);
 });
 
 test("the cache drops maps unused for 30 days and analyzer builds superseded for a day", async () => {
@@ -118,7 +134,8 @@ test("a capture empties the write-ahead log that a large write left, while anoth
   const journal = async () => (await stat(`${file}-wal`)).size;
   assert.ok((await journal()) > 32 * 1024 * 1024);
   await map.refresh(signal());
-  assert.equal(await journal(), 0);
+  // What the capture itself writes after emptying it stays.
+  assert.ok((await journal()) < 1024 * 1024);
 });
 
 test("the cache drops versions npx installed beside this one a week after it installed an older one", async () => {

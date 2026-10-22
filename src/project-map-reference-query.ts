@@ -13,7 +13,7 @@ import {
   MapReferenceKindSchema,
   type MapReferenceResult,
 } from "./project-map-reference-types";
-import { ProjectMapSourceReader, readAll } from "./project-map-source";
+import { ProjectMapSourceReader } from "./project-map-source";
 import { MapContextSchema, MapObjectSchema, mapPathAllowed } from "./project-map-types";
 
 export class ProjectMapReferenceQuery {
@@ -105,7 +105,7 @@ export class ProjectMapReferenceQuery {
     });
     const reader = await ProjectMapSourceReader.open(source, signal, false);
     const files: Record<string, string> = Object.create(null);
-    const contents = await readAll(entries, (entry) => reader.read(entry.path, entry));
+    const contents = await reader.readAll(entries);
     for (const [index, entry] of entries.entries()) {
       const value = contents[index];
       if (!value?.content) throw new ProjectEvidenceError("PROJECT_MAP_SOURCE_CHANGED", true);

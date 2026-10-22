@@ -26,10 +26,10 @@ export class ProjectMapReadSession {
       this.worktree ??
       (await ProjectMapSourceReader.open(this.source, this.signal, false, entry.path));
     for (const configuration of this.pendingConfigurations(entry)) {
-      await reader.read(configuration.path, configuration);
+      await reader.read(configuration);
       this.configurations.add(configuration.path);
     }
-    const result = await reader.read(entry.path, entry);
+    const result = await reader.read(entry);
     if (!result.content) throw new ProjectEvidenceError("PROJECT_MAP_SOURCE_CHANGED", true);
     this.configurations.add(entry.path);
     if (!this.worktree) await reader.assertStable();

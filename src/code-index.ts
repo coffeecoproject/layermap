@@ -9,7 +9,7 @@ import { type MapParent, ProjectMapAnalyzer } from "./project-map-analyzer";
 import { ProjectMapStopUnconfirmedError } from "./project-map-process";
 import { ProjectMapReferenceQuery } from "./project-map-reference-query";
 import type { MapReferenceInput } from "./project-map-reference-types";
-import { ProjectMapSourceReader, readAll } from "./project-map-source";
+import { ProjectMapSourceReader } from "./project-map-source";
 
 type Rebuild = Readonly<{
   controller: AbortController;
@@ -123,7 +123,7 @@ export class CodeIndex {
             parent && { ...parent, link: (paths) => linked.push(...paths) },
           );
           // Every captured file still has the content the analysis read.
-          await readAll(result.entries, (entry) => reader.read(entry.path, entry));
+          await reader.readAll(result.entries);
           await reader.assertStable();
           if (controller.signal.aborted)
             throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);

@@ -88,7 +88,7 @@ export class CodeIndexCapture {
         if (relative === undefined) break;
         try {
           if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
-          const read = commit ? await commit.read(relative) : await session.captureFile(relative);
+          const read = await session.captureFile(relative);
           capturedBytes += read.content?.byteLength ?? 0;
           entries.push(read.entry);
           processedFiles++;
@@ -100,12 +100,25 @@ export class CodeIndexCapture {
         }
       }
     };
-    await Promise.all(
-      Array.from(
-        { length: Math.min(paths.length, PROJECT_EVIDENCE_POLICY_DESCRIPTOR.captureConcurrency) },
-        worker,
-      ),
-    );
+    if (commit) {
+      const reads = await commit.readAll(paths).catch((error: unknown) => {
+        if (signal.aborted && !(error instanceof GitCommandStopUnconfirmedError))
+          throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
+        throw error;
+      });
+      for (const read of reads) {
+        capturedBytes += read.content?.byteLength ?? 0;
+        entries.push(read.entry);
+      }
+      processedFiles = paths.length;
+      progress();
+    } else
+      await Promise.all(
+        Array.from(
+          { length: Math.min(paths.length, PROJECT_EVIDENCE_POLICY_DESCRIPTOR.captureConcurrency) },
+          worker,
+        ),
+      );
     if (failed) throw failure;
     await session.assertStable();
     if (snapshot) {

@@ -12,7 +12,7 @@ import {
   mapAnalyzerSuite,
 } from "./project-map-language";
 import type { MapReferenceRequest } from "./project-map-reference-types";
-import { type ProjectMapSourceReader, readAll } from "./project-map-source";
+import type { ProjectMapSourceReader } from "./project-map-source";
 import type {
   MapAnalysis,
   MapBuildCoverage,
@@ -205,14 +205,14 @@ export class ProjectMapAnalyzer {
       const state = parent.state(contextRef);
       return state === undefined ? undefined : { state, digests: parent.entries };
     };
-    const read = async (entry: ProjectEvidenceRevisionFileEntryV1) => {
-      if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
-      const value = await reader.read(entry.path, entry);
-      if (!value.content) throw new ProjectEvidenceError("PROJECT_MAP_SOURCE_CHANGED", true);
+    const decode = (value: Readonly<{ content?: Buffer }> | undefined) => {
+      if (!value?.content) throw new ProjectEvidenceError("PROJECT_MAP_SOURCE_CHANGED", true);
       return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(value.content);
     };
-    // Read as the capture does, several at a time; the texts keep the admission order.
-    const contents = await readAll(readable, read);
+    const read = async (entry: ProjectEvidenceRevisionFileEntryV1) =>
+      decode(await reader.read(entry));
+    // Read together, as the capture reads; the texts keep the admission order.
+    const contents = (await reader.readAll(readable)).map(decode);
     const unitTexts: Record<string, string> = Object.create(null);
     for (const [index, entry] of readable.entries())
       unitTexts[entry.path] = contents[index] as string;
