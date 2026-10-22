@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/layermap.mjs\"",
+            "timeout": 30
           }
         ]
       }
@@ -17,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/command-changes.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/layermap.mjs\"",
             "timeout": 30
           }
         ]
@@ -25,11 +26,23 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*__project_check_changes",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/layermap.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/command-changes.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/layermap.mjs\"",
             "timeout": 30
           }
         ]
@@ -40,7 +53,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-check.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/layermap.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/layermap.mjs\"",
             "timeout": 30
           }
         ]

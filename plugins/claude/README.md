@@ -25,8 +25,8 @@ Start a session in a Git repository and ask as usual, for example:
 - A session-start hook adds one sentence telling the agent when the map helps.
 - When Claude is about to finish after editing code in a repository it has not checked since, a stop hook asks it
   once to run `project_check_changes` for each such repository and check what the changes affect. Edits made by shell
-  commands count too: a hook notes which code files each command changed. It only asks git whether code changed and never
-  runs tests or edits anything. Set `LAYERMAP_STOP_CHECK=0` to turn it off.
+  commands count too, for the code files a command names: a hook notes which of them it changed. It only asks git whether
+  those changes are still there and never runs tests or edits anything. Set `LAYERMAP_STOP_CHECK=0` to turn it off.
 
 ## Permissions
 
@@ -37,8 +37,7 @@ everywhere (`npx layermap remove claude` takes it back).
 ## Requirements and support
 
 Node.js 22.22 or later, macOS or Linux, and a Git repository. Windows is experimental and not yet
-tried on a real machine: test it on your own projects first. There the hooks run in Git Bash, which
-Git for Windows installs. The links:
+tried on a real machine: test it on your own projects first. The links:
 
 - [Documentation](https://github.com/coffeecoproject/layermap#readme)
 - [Issues](https://github.com/coffeecoproject/layermap/issues)

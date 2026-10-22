@@ -11,13 +11,15 @@ import {
   AGENT_MAP_NOTE,
   AGENT_STOP_CHECK,
   AGENT_STOP_CHECK_REPOSITORIES,
-} from "../src/agent/tools";
+  projectHeading,
+} from "../src/agent/notes";
 import { gitRoot, sandbox } from "./support";
 
 const run = promisify(execFile);
 
 // The package as npm installs it: the extension in pi/, a stand-in server at dist/cli.mjs that
-// answers like LayerMap's (one tool, echoing its arguments), and the typebox Pi provides.
+// answers like LayerMap's (one tool, echoing its arguments under the heading that names the
+// repository its path is in, failing outside one), and the typebox Pi provides.
 async function installed(): Promise<string> {
   const root = await sandbox();
   await mkdir(path.join(root, "pi"));
@@ -37,13 +39,26 @@ async function installed(): Promise<string> {
   );
   await writeFile(
     path.join(root, "dist", "cli.mjs"),
-    `import { createInterface } from "node:readline";
+    `import { execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
+import path from "node:path";
+import { createInterface } from "node:readline";
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\\n");
+const repository = (given) => {
+  let directory = path.resolve(given ?? ".");
+  while (!statSync(directory, { throwIfNoEntry: false })?.isDirectory()) directory = path.dirname(directory);
+  try { return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; }
+};
+const heading = (project) => ${JSON.stringify(projectHeading("PROJECT"))}.replace("PROJECT", project);
 createInterface({ input: process.stdin }).on("line", (line) => {
   const { id, method, params } = JSON.parse(line);
   if (method === "initialize") send({ id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} } } });
   if (method === "tools/list") send({ id, result: { tools: [{ name: "project_check_changes", title: "Check", description: "d", inputSchema: { type: "object" } }] } });
-  if (method === "tools/call") send({ id, result: { content: [{ type: "text", text: "cwd " + process.cwd() + " args " + JSON.stringify(params.arguments) }], isError: params.arguments.fail === true } });
+  if (method === "tools/call") {
+    const project = repository(params.arguments.path);
+    const text = "cwd " + process.cwd() + " args " + JSON.stringify(params.arguments);
+    send({ id, result: { content: [{ type: "text", text: project ? heading(project) + "\\n\\n" + text : text }], isError: !project || params.arguments.fail === true } });
+  }
 });
 `,
   );
@@ -87,7 +102,10 @@ test("the Pi extension serves LayerMap's tools from its server and asks once to 
     ["project_check_changes"],
   );
   const result = await tools[0]?.execute("1", { base: "HEAD" }, undefined);
-  assert.match(result?.content[0]?.text ?? "", /^cwd .* args \{"base":"HEAD"\}$/u);
+  assert.match(
+    result?.content[0]?.text ?? "",
+    /^Project .* \(paths are relative to it\)\n\ncwd .* args \{"base":"HEAD"\}$/u,
+  );
   assert.ok(!(tools[0]?.promptGuidelines ?? []).length, "the note goes with project_explore_map");
 
   const settle = handlers.get("agent_before_settle") as Handler;
@@ -112,7 +130,13 @@ test("the Pi extension serves LayerMap's tools from its server and asks once to 
   assert.equal((await ask())?.continue, true);
   await tools[0]?.execute("3", {}, undefined);
   assert.equal(await ask(), undefined);
+  // After the check, a change another session makes is not this one's; one it makes is.
   await writeFile(path.join(repo, "a.ts"), "export const a = 3;\n");
+  assert.equal(await ask(), undefined);
+  const again = { toolName: "bash", toolCallId: "c2", input: { command: "sed -i … a.ts" } };
+  await handlers.get("tool_call")?.(again, ctx);
+  await writeFile(path.join(repo, "a.ts"), "export const a = 5;\n");
+  await handlers.get("tool_result")?.(again, ctx);
   assert.equal((await ask())?.continue, true);
 });
 
@@ -121,7 +145,7 @@ test("the generated Pi extension carries the notes and this version", () => {
   assert.ok(source.includes(JSON.stringify(AGENT_MAP_NOTE)));
   assert.ok(source.includes(JSON.stringify(AGENT_STOP_CHECK)));
   assert.ok(source.includes('"1.2.3"'));
-  assert.doesNotMatch(source, /__[A-Z_]+__/u);
+  assert.doesNotMatch(source, /__VERSION__/u);
 });
 
 test("the Pi extension asks about each repository an edit names until a check of it", async (t) => {
@@ -161,8 +185,10 @@ test("the Pi extension asks about each repository an edit names until a check of
     ((await settle({ entries: [] }, ctx)) as { entries: { content: string }[] } | undefined)
       ?.entries[0]?.content;
   const edit = async (file: string) => {
-    await handlers.get("tool_call")?.({ toolName: "edit", input: { path: file } }, ctx);
+    const event = { toolName: "edit", toolCallId: file, input: { path: file }, isError: false };
+    await handlers.get("tool_call")?.(event, ctx);
     await writeFile(path.join(folder, file), "export const a = 2;\n");
+    await handlers.get("tool_result")?.(event, ctx);
   };
 
   // Started in the folder holding both: other tools name no repository, edits name theirs.
@@ -174,9 +200,9 @@ test("the Pi extension asks about each repository an edit names until a check of
     await ask(),
     `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitA}, ${gitB}.`,
   );
-  // A check without a path checks no repository here; one with a path checks its repository.
+  // A check without a path fails here; one with a path checks its repository.
   await writeFile(path.join(a, "a.ts"), "export const a = 3;\n");
-  await tools[0]?.execute("1", {}, undefined);
+  await assert.rejects(tools[0]?.execute("1", {}, undefined) ?? Promise.resolve());
   await tools[0]?.execute("2", { path: "b" }, undefined);
   assert.equal(await ask(), `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitA}.`);
   await tools[0]?.execute("3", { path: path.join(a, "a.ts") }, undefined);
@@ -213,9 +239,11 @@ test("the Pi extension takes the repositories of the files an apply_patch patch 
     const ctx = { cwd, ui: { notify: () => {} } };
     await handlers.get("session_start")?.({}, ctx);
     t.after(() => handlers.get("session_shutdown")?.({}, ctx));
-    await handlers.get("tool_call")?.({ toolName: "apply_patch", input: { patch } }, ctx);
+    const event = { toolName: "apply_patch", toolCallId: "p1", input: { patch }, isError: false };
+    await handlers.get("tool_call")?.(event, ctx);
     for (const [, file] of patch.matchAll(/^\*\*\* (?:Add|Update) File: (.+)$/gm))
       await writeFile(path.resolve(cwd, file as string), "export const a = 2;\n");
+    await handlers.get("tool_result")?.(event, ctx);
     const settle = handlers.get("agent_before_settle") as Handler;
     return ((await settle({ entries: [] }, ctx)) as { entries: { content: string }[] } | undefined)
       ?.entries[0]?.content;
@@ -235,7 +263,7 @@ test("the Pi extension takes the repositories of the files an apply_patch patch 
   );
 });
 
-test("the Pi extension takes the repositories in which a shell command changed code", async (t) => {
+test("the Pi extension takes the code files a shell command names and changed", async (t) => {
   const pkg = await installed();
   const folder = await realpath(await sandbox());
   const repo = async (name: string) => {
@@ -263,10 +291,10 @@ test("the Pi extension takes the repositories in which a shell command changed c
     t.after(() => handlers.get("session_shutdown")?.({}, ctx));
     let calls = 0;
     return {
-      // A bash call of the command, during which change() runs.
-      run: async (command: string, change = async () => {}) => {
+      // A bash call of the command, during which change() runs; one that fails.
+      run: async (command: string, change = async () => {}, isError = false) => {
         calls += 1;
-        const event = { toolName: "bash", toolCallId: `c${calls}`, input: { command } };
+        const event = { toolName: "bash", toolCallId: `c${calls}`, input: { command }, isError };
         await handlers.get("tool_call")?.(event, ctx);
         await change();
         await handlers.get("tool_result")?.(event, ctx);
@@ -290,33 +318,20 @@ test("the Pi extension takes the repositories in which a shell command changed c
     `${AGENT_STOP_CHECK} ${AGENT_STOP_CHECK_REPOSITORIES}${gitB}.`,
   );
 
-  // In a: a change made between commands is not the session's; one made during a command is.
+  // In a: a change made between commands is not the session's, nor one a command makes to a file
+  // it does not name, as a generator does; a change to a file it names is, even when it fails.
   const inA = await session(a);
   await writeFile(path.join(a, "a.ts"), "export const a = 9;\n");
   await inA.run("ls");
   assert.equal(await inA.ask(), undefined);
   await inA.run("npm run generate", () => writeFile(path.join(a, "b.ts"), "export const b = 1;\n"));
+  assert.equal(await inA.ask(), undefined);
+  await inA.run(
+    "node generate.mjs b.ts && false",
+    () => writeFile(path.join(a, "b.ts"), "export const b = 2;\n"),
+    true,
+  );
   assert.equal(await inA.ask(), AGENT_STOP_CHECK);
-
-  // A command that ran over ten seconds: what another session changed meanwhile is not the
-  // session's, the file the command names is.
-  const later = (change: () => Promise<void>) => async () => {
-    await change();
-    t.mock.method(Date, "now", () => Date.prototype.valueOf.call(new Date()) + 30_000);
-  };
-  const inB = await session(b);
-  await inB.run(
-    "npm test",
-    later(() => writeFile(path.join(b, "a.ts"), "export const a = 3;\n")),
-  );
-  t.mock.restoreAll();
-  assert.equal(await inB.ask(), undefined);
-  await inB.run(
-    "node generate.mjs b.ts",
-    later(() => writeFile(path.join(b, "b.ts"), "export const b = 1;\n")),
-  );
-  t.mock.restoreAll();
-  assert.equal(await inB.ask(), AGENT_STOP_CHECK);
 });
 
 // A repository's own config may name programs for Git to run, as a cloned or downloaded one may

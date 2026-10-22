@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { LayerMap } from "../layermap";
 import { projectDirectory } from "./environment";
+import { projectHeading } from "./notes";
 import { routeMapCall, type SessionStart } from "./projects";
 import {
   AGENT_MAP_INSTRUCTIONS,
@@ -123,7 +124,7 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
           content: [
             {
               type: "text",
-              text: project ? `Project ${project} (paths are relative to it)\n\n${text}` : text,
+              text: project ? `${projectHeading(project)}\n\n${text}` : text,
             },
           ],
           isError,

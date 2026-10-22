@@ -1,21 +1,26 @@
-// LayerMap for Pi. scripts/plugins.ts fills in the notes and writes plugins/pi/layermap.mjs, which
-// the npm package ships as its Pi extension (`pi install npm:layermap`).
+// LayerMap for Pi. scripts/plugins.ts bundles it with the rules it shares with the Claude Code
+// plugin's hooks into plugins/pi/layermap.mjs, which the npm package ships as its Pi extension
+// (`pi install npm:layermap`).
 //
 // The map runs in LayerMap's own MCP server, started with Pi's Node in the session's directory; its
 // tools become Pi tools of the same names. Like the Claude Code plugin's stop hook, the extension
-// asks the agent once, before it settles, to check what its code edits affect.
-import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
-import os from "node:os";
+// asks the agent once, before it settles, to check the code its tool calls changed.
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
+import { AGENT_MAP_NOTE } from "../src/agent/notes";
+import {
+  changedFiles,
+  checkedRepository,
+  checkRequest,
+  codeEdits,
+  commandFiles,
+  fileStates,
+  repositoryAt,
+} from "../src/agent/session-changes";
 
-const MAP_NOTE = __MAP_NOTE__;
-const STOP_CHECK = __STOP_CHECK__;
-const STOP_CHECK_REPOSITORIES = __STOP_CHECK_REPOSITORIES__;
 const CHECK_TOOL = "project_check_changes";
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.mjs");
 // Tools that only read; any other tool call (edit, write, apply_patch, bash, …) may change files.
@@ -26,9 +31,6 @@ const WRITES = new Set(["edit", "write"]);
 // each file it adds, updates, deletes or moves one to, relative to the session's directory.
 const PATCH = "apply_patch";
 const PATCH_FILES = /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm;
-const CODE_GLOBS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "py", "java"].map(
-  (e) => `*.${e}`,
-);
 
 // LayerMap's MCP server over stdio: one JSON-RPC message per line.
 class MapServer {
@@ -100,47 +102,6 @@ class MapServer {
   }
 }
 
-const git = (cwd, args) =>
-  new Promise((resolve) =>
-    execFile("git", ["-C", cwd, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) =>
-      resolve(error ? "" : stdout),
-    ),
-  );
-
-// Git in a repository with no program its own config names: no fsmonitor, and no filter its
-// attributes would put a changed file's content through.
-async function repositoryGit(repository, args) {
-  const drivers = new Set(
-    (await git(repository, ["config", "--name-only", "--get-regexp", "^filter\\."]))
-      .split("\n")
-      .flatMap((key) => /^filter\.(.+)\.[^.]+$/su.exec(key)?.[1] ?? []),
-  );
-  const blank = [...drivers].flatMap((driver) =>
-    ["clean=", "process=", "required=false"].flatMap((setting) => [
-      "-c",
-      `filter.${driver}.${setting}`,
-    ]),
-  );
-  return git(repository, [
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    "core.quotePath=false",
-    ...blank,
-    ...args,
-  ]);
-}
-
-// The Git repository around a path, or the nearest directory of it that exists; empty outside one.
-async function repositoryAt(given) {
-  let directory = given;
-  while (!(await stat(directory).catch(() => undefined))?.isDirectory()) {
-    if (path.dirname(directory) === directory) return "";
-    directory = path.dirname(directory);
-  }
-  return (await git(directory, ["rev-parse", "--show-toplevel"])).trim();
-}
-
 // The files a tool call names to change, relative to the session's directory.
 function namedFiles({ toolName, input }) {
   if (WRITES.has(toolName)) return typeof input?.path === "string" ? [input.path] : [];
@@ -149,86 +110,19 @@ function namedFiles({ toolName, input }) {
   return [];
 }
 
-// The repository LayerMap's server routes a tool call's path to: a relative path that stays in the
-// repository the session started in is that one's, and any other is resolved from where it started.
-function routedRepository(start, given) {
-  const normal = path.normalize(given || ".");
-  const escapes = normal === ".." || normal.startsWith(`..${path.sep}`);
-  if (start.git && !path.isAbsolute(normal) && !escapes) return Promise.resolve(start.directory);
-  return repositoryAt(path.resolve(start.directory, normal));
-}
-
-// A repository's uncommitted code files, each with a hash of its content ("" once deleted); empty
-// without a commit.
-async function changedCode(repository) {
-  const changed = new Map();
-  if (!(await git(repository, ["rev-parse", "--verify", "--quiet", "HEAD"]))) return changed;
-  const listed = await Promise.all([
-    repositoryGit(repository, ["diff", "HEAD", "--name-only", "--no-renames", "--", ...CODE_GLOBS]),
-    repositoryGit(repository, ["ls-files", "--others", "--exclude-standard", "--", ...CODE_GLOBS]),
-  ]);
-  const files = [...new Set(listed.join("\n").split("\n").filter(Boolean))].sort();
-  for (const file of files) {
-    const content = await readFile(path.join(repository, file)).catch(() => undefined);
-    changed.set(file, content ? createHash("sha256").update(content).digest("hex") : "");
-  }
-  return changed;
-}
-
-// The changes as one hash, empty when there are none.
-const fingerprint = (changed) =>
-  changed.size
-    ? createHash("sha256")
-        .update(JSON.stringify([...changed]))
-        .digest("hex")
-    : "";
-
-// How long a command runs (ms) before only the files it names count as its changes.
-const LONG_COMMAND = 10_000;
-
-// The folders a shell command names that exist, relative to the directory it runs in.
-async function namedFolders(cwd, command) {
-  const folders = new Set();
-  for (const word of command.split(/[^A-Za-z0-9._/~:@+,%-]+/).slice(0, 300)) {
-    if (!word) continue;
-    const named = word.startsWith("~/")
-      ? path.join(os.homedir(), word.slice(2))
-      : path.resolve(cwd, word);
-    for (const folder of [named, path.dirname(named)])
-      if ((await stat(folder).catch(() => undefined))?.isDirectory()) {
-        folders.add(folder);
-        break;
-      }
-    if (folders.size >= 20) break;
-  }
-  return folders;
-}
-
 export default function layermap(pi) {
   let server;
   let starting;
   let cwd;
   const registered = new Set();
-  // Where the server resolves relative paths from: the repository the session started in, or its
-  // directory outside one.
-  let start = { directory: "", git: false };
-  // The stop check looks at each repository the agent changed code in: those of the files an
-  // edit, write or patch names, and those in which any other tool that can change files (bash, …)
-  // changed code files while it ran, among the repository the session started in, those of the
-  // folders its command names and those already edited.
-  // It compares a repository's uncommitted code changes with those it had before the session's
-  // first such tool there and those the agent last checked in it, and all of them with those it
-  // was last asked about; changes another session makes while this one reads do not count. A
-  // command that ran longer than ten seconds (tests, builds, scripts) leaves time for another
-  // session to change the same work tree, so only the files it names count; one that writes code
-  // without naming the file, such as a generator or formatter, takes a few seconds.
-  const edited = new Set();
-  const before = new Map();
-  const checked = new Map();
-  // The code changes of each repository a running tool may change, when it started and its
-  // command, by the tool call's id.
+  // The repository the session started in, "" outside one.
+  let start = "";
+  // The session's code edits and checks, in the order its tool calls ended; the files each running
+  // shell command names, as it started, by the tool call's id; and what the agent was last asked
+  // to check.
+  const changes = [];
   const running = new Map();
-  let askedAbout = "";
+  let asked = "";
 
   const ensureServer = async () => {
     if (server && !server.dead) return server;
@@ -243,7 +137,7 @@ export default function layermap(pi) {
           label: tool.title ?? tool.name,
           description: tool.description,
           promptSnippet: tool.title,
-          promptGuidelines: tool.name === "project_explore_map" ? [MAP_NOTE] : [],
+          promptGuidelines: tool.name === "project_explore_map" ? [AGENT_MAP_NOTE] : [],
           parameters: Type.Unsafe(tool.inputSchema),
           async execute(_id, params, signal) {
             const running = await ensureServer();
@@ -254,10 +148,8 @@ export default function layermap(pi) {
             );
             const text = (result.content ?? []).map((part) => part.text ?? "").join("\n");
             if (result.isError) throw new Error(text);
-            if (tool.name === CHECK_TOOL) {
-              const repository = await routedRepository(start, params?.path);
-              if (repository) checked.set(repository, fingerprint(await changedCode(repository)));
-            }
+            const repository = tool.name === CHECK_TOOL && checkedRepository(text);
+            if (repository) changes.push({ kind: "check", repository });
             return { content: [{ type: "text", text }], details: {} };
           },
         });
@@ -272,13 +164,10 @@ export default function layermap(pi) {
 
   pi.on("session_start", async (_event, ctx) => {
     cwd = ctx.cwd;
-    const repository = await repositoryAt(cwd);
-    start = repository ? { directory: repository, git: true } : { directory: cwd, git: false };
-    edited.clear();
-    before.clear();
-    checked.clear();
+    start = await repositoryAt(cwd);
+    changes.length = 0;
     running.clear();
-    askedAbout = "";
+    asked = "";
     await ensureServer().catch((error) =>
       ctx.ui?.notify?.(`LayerMap could not start: ${error.message}`, "warning"),
     );
@@ -286,76 +175,36 @@ export default function layermap(pi) {
 
   pi.on("tool_call", async (event) => {
     if (READS.has(event.toolName) || registered.has(event.toolName) || !cwd) return;
-    const files = namedFiles(event);
-    if (files.length) {
-      const repositories = await Promise.all(
-        files.map((file) => repositoryAt(path.resolve(cwd, file))),
-      );
-      for (const repository of new Set(repositories)) {
-        if (!repository || edited.has(repository)) continue;
-        edited.add(repository);
-        before.set(repository, fingerprint(await changedCode(repository)));
-      }
-      return;
-    }
     const command = event.input?.command;
-    const folders = typeof command === "string" ? await namedFolders(cwd, command) : [];
-    const repositories = new Set([
-      ...(start.git ? [start.directory] : []),
-      ...(await Promise.all([...folders].map(repositoryAt))),
-      ...edited,
-    ]);
-    const changes = new Map();
-    for (const repository of repositories)
-      if (repository) changes.set(repository, await changedCode(repository));
-    running.set(event.toolCallId, {
-      changes,
-      started: Date.now(),
-      command: typeof command === "string" ? command : "",
-    });
+    if (namedFiles(event).length || typeof command !== "string") return;
+    const files = await commandFiles(cwd, command);
+    if (files.length) running.set(event.toolCallId, await fileStates(files));
   });
 
   pi.on("tool_result", async (event) => {
-    const call = running.get(event.toolCallId);
-    if (!call) return;
+    if (!cwd) return;
+    const before = running.get(event.toolCallId);
     running.delete(event.toolCallId);
-    const long = Date.now() - call.started > LONG_COMMAND;
-    for (const [repository, earlier] of call.changes) {
-      if (edited.has(repository)) continue;
-      const now = await changedCode(repository);
-      if (
-        [...now].some(
-          ([file, content]) =>
-            earlier.get(file) !== content && (!long || call.command.includes(path.basename(file))),
-        )
-      ) {
-        edited.add(repository);
-        before.set(repository, fingerprint(earlier));
-      }
-    }
+    const files = before
+      ? changedFiles(before, await fileStates(Object.keys(before)))
+      : event.isError
+        ? []
+        : namedFiles(event).map((file) => path.resolve(cwd, file));
+    changes.push(...(await codeEdits(files)));
   });
 
   pi.on("agent_before_settle", async (event) => {
     if (process.env.LAYERMAP_STOP_CHECK === "0") return;
-    const due = [];
-    for (const repository of edited) {
-      const changes = fingerprint(await changedCode(repository));
-      if (changes && changes !== before.get(repository) && changes !== checked.get(repository))
-        due.push({ repository, changes });
-    }
-    const asked = JSON.stringify(due);
-    if (!due.length || asked === askedAbout) return;
-    askedAbout = asked;
-    const elsewhere = due.some(({ repository }) => !start.git || repository !== start.directory);
+    const request = await checkRequest(changes, start, asked);
+    if (!request) return;
+    asked = request.fingerprint;
     return {
       entries: [
         ...event.entries,
         {
           type: "custom_message",
           customType: "layermap-check",
-          content: elsewhere
-            ? `${STOP_CHECK} ${STOP_CHECK_REPOSITORIES}${due.map(({ repository }) => repository).join(", ")}.`
-            : STOP_CHECK,
+          content: request.text,
           display: false,
         },
       ],

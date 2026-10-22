@@ -23,7 +23,7 @@ export type SetupOptions = Readonly<{
 
 import { commandInvocation } from "../platform";
 import { cacheDirectory, packageRoot } from "./environment";
-import { AGENT_MAP_NOTE } from "./tools";
+import { AGENT_MAP_NOTE } from "./notes";
 
 const SERVER = "layermap";
 /** Claude Code names a server's tools mcp__<server>__*, and a plugin's server plugin_<plugin>_<server>. */

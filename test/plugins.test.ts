@@ -10,7 +10,7 @@ import { sandbox } from "./support";
 const root = fileURLToPath(new URL("../", import.meta.url));
 
 // The plugins and registry entry in the repository are what scripts/plugins.ts writes for this
-// version: the note and tool approval stay in one place (src/agent/tools.ts), and the server comes
+// version: the notes stay in one place (src/agent/notes.ts), and the server comes
 // from npm at that version.
 test("the committed plugins, marketplaces and registry entry match the generator for this version", async () => {
   const { version } = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));

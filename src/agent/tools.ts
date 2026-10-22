@@ -144,26 +144,3 @@ export async function runMapTool(
 /** What an agent is told about the map once, when it connects. */
 export const AGENT_MAP_INSTRUCTIONS =
   "Use the LayerMap tools instead of grep whenever a task needs to know what calls something, what a change could affect beyond the code at hand, where something is used, or how the code is organized; a change confined to code you have read does not need them: project_explore_map on a declaration with direction INCOMING and depth up to 8 traces its callers up to the entry points (HTTP routes, handlers, jobs, commands) in one call, which grep can only approximate one name at a time. LayerMap is a static, layered map of this repository for TypeScript/JavaScript, Go, Python and Java: directories and modules, each file's declarations, and each declaration's callers and callees up to 8 hops. path \".\" shows what exists. Continue from any NOT EXPANDED declarations a view names, then confirm entry points in source. When the edits are done, call project_check_changes once before reporting the work done, not after every edit: it lists the entry points and existing tests the changes reach, and the existing tests the diff rewrote. The map is static: dynamic dispatch, framework wiring and unresolved targets need source reading, and a missing relationship does not prove absence. The first call on a project builds its map, which can take minutes on a large repository; later calls update only what changed. Each result names the Git repository it maps, and its paths are relative to that repository's root. The paths you give are relative to the repository the session started in, or to the starting folder when that is not a repository (such as a folder holding several); for a file in another repository, such as after changing directory, give its absolute path. Give project_check_changes a path in the repository to check when the session works in more than one.";
-
-/**
- * One sentence for an agent's own instructions file. Codex shows MCP tools only when it searches for
- * them, so the tool descriptions alone do not bring it to the map; this names the server and when to
- * reach for it (natural-adoption runs, 2026-10-04).
- */
-export const AGENT_MAP_NOTE =
-  "The layermap MCP server is available here. When a task needs to know what calls a function, what a change could affect beyond the code you are editing, or where code is used, use its project_explore_map tool (direction INCOMING, depth up to 8) instead of grep, then confirm in source; a change confined to code you have read does not need it. When the edits are done, call its project_check_changes tool once before reporting the work done.";
-
-/**
- * What the Claude Code plugin's stop hook tells the agent, once per set of code changes made in a
- * session: check what they affect before finishing. The check itself is the map tool, so the hook
- * stays a shell script that only asks git whether code changed.
- */
-export const AGENT_STOP_CHECK =
-  "Code changed in this session. Before finishing, call the LayerMap tool project_check_changes: it lists the routes, jobs and commands the changes reach and the existing tests related to them. Check the affected entry points in source, and run the related tests if the change needs verifying. If it lists EXISTING TESTS CHANGED or code SHARED BY several areas, decide which of them the request is about; for the others, restore their tests and narrow the change. If it lists NEW MODULE DEPENDENCIES, check that each runs the way the project's layers do. If you already checked these changes, say so briefly and finish.";
-
-/**
- * Added to AGENT_STOP_CHECK, followed by the repositories, when the changes to check are not all in
- * the repository the session started in: a check without a path covers only that one.
- */
-export const AGENT_STOP_CHECK_REPOSITORIES =
-  "The changes are in more than one repository, or not in the one the session started in: call project_check_changes once for each, with its path set to the repository: ";

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AGENT_MAP_NOTE } from "../src/agent/notes";
 import {
   allowAgent,
   allowInClaudeSettings,
@@ -15,7 +16,6 @@ import {
   setupAgent,
   writeInstructionNote,
 } from "../src/agent/setup";
-import { AGENT_MAP_NOTE } from "../src/agent/tools";
 import { sandbox } from "./support";
 
 test("Claude Code settings gain one allow rule for the map tools and keep everything else", async () => {
@@ -231,10 +231,11 @@ test("setup registers the server through each agent's own command and approves i
 });
 
 test("a published LayerMap registers the launcher it writes into the cache, with its version", () => {
-  const env = { LAYERMAP_CACHE: path.join(path.sep, "cache") };
-  assert.deepEqual(mcpLaunchCommand(env, true), [
+  // An absolute path on each system: on Windows a root without a drive is relative to the drive.
+  const cache = path.resolve(path.sep, "cache");
+  assert.deepEqual(mcpLaunchCommand({ LAYERMAP_CACHE: cache }, true), [
     "node",
-    path.join(path.sep, "cache", "server.mjs"),
+    path.join(cache, "server.mjs"),
   ]);
   const launcher = launcherScript("const VERSION = __VERSION__;\n", "1.2.3");
   assert.equal(launcher, '// Generated from scripts/launcher.mjs.\nconst VERSION = "1.2.3";\n');
