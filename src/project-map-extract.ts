@@ -83,6 +83,8 @@ type Pending = {
   route?: string;
   /** A read of what may be module state: linked only to a module-level variable. */
   state?: true;
+  /** A value used where a function may be, which reads module state when it names none. */
+  readsState?: true;
 };
 
 // Where a name is not a read of a value at run time: a type, a JSX tag, a key or an import.
@@ -365,6 +367,10 @@ export async function extractProjectMap(
         };
       } else if (isPropertyAccessExpression(node) || isElementAccessExpression(node)) {
         const writes = isMapWrite(node);
+        const readsState =
+          isPropertyAccessExpression(node) &&
+          isIdentifier(node.expression) &&
+          state.namespaces.has(node.expression.text);
         if (writes) {
           reference = {
             node,
@@ -385,12 +391,9 @@ export async function extractProjectMap(
             target: node.name.text,
             holder: mapValueProperty(node),
             ...(route ? { argument: route } : {}),
+            ...(readsState ? { readsState } : {}),
           };
-        } else if (
-          isPropertyAccessExpression(node) &&
-          isIdentifier(node.expression) &&
-          state.namespaces.has(node.expression.text)
-        ) {
+        } else if (isPropertyAccessExpression(node) && readsState) {
           reference = {
             node,
             lookup: node.name,
@@ -405,6 +408,11 @@ export async function extractProjectMap(
           !((isCallExpression(parent) || isNewExpression(parent)) && parent.expression === node)
         ) {
           const writes = isMapWrite(node);
+          const readsState =
+            state.names.has(node.text) &&
+            !(isPropertyAccessExpression(parent) && parent.name === node) &&
+            !NOT_STATE_READS.has(parent.kind) &&
+            !isImportSpecifier(parent);
           if (writes) reference = { node, lookup: node, kind: "WRITES", target: label(node) };
           else if (mapValueUse(node)) {
             const route = registeredRoute(node, "REFERENCES");
@@ -415,13 +423,9 @@ export async function extractProjectMap(
               target: node.text,
               holder: mapValueProperty(node),
               ...(route ? { argument: route } : {}),
+              ...(readsState ? { readsState } : {}),
             };
-          } else if (
-            state.names.has(node.text) &&
-            !(isPropertyAccessExpression(parent) && parent.name === node) &&
-            !NOT_STATE_READS.has(parent.kind) &&
-            !isImportSpecifier(parent)
-          )
+          } else if (readsState)
             reference = { node, lookup: node, kind: "REFERENCES", target: node.text, state: true };
         }
       } else if (isShorthandPropertyAssignment(node)) {
@@ -573,6 +577,7 @@ export async function extractProjectMap(
     (item) =>
       item.kind !== "REFERENCES" ||
       item.state ||
+      item.readsState ||
       valueNames.has(item.target) ||
       (isPropertyAccessExpression(item.node) &&
         isIdentifier(item.node.expression) &&
@@ -584,9 +589,9 @@ export async function extractProjectMap(
     const symbols = await project.checker.getSymbolAtLocation(batch.map((item) => item.lookup));
     trace.phase = "RELATION_TARGETS";
     for (const [index, item] of batch.entries()) {
-      if (item.state) {
-        // A read links only to a module-level variable, once per reading declaration; other
-        // values are data flow, and find_references lists every read.
+      // A read links only to a module-level variable, once per reading declaration; other values
+      // are data flow, and find_references lists every read.
+      const readState = async () => {
         for (const destination of await targets.resolveMapped(symbols[index], moduleVariable)) {
           const read = `${item.owner}\u0000${destination.id}`;
           if (stateReads.has(read)) continue;
@@ -600,14 +605,22 @@ export async function extractProjectMap(
             basis: "TYPE_RESOLVED",
           });
         }
+      };
+      if (item.state) {
+        await readState();
         continue;
       }
       if (item.kind === "REFERENCES") {
         const symbol = isShorthandPropertyAssignment(item.node)
           ? await project.checker.getShorthandAssignmentValueSymbol(item.node)
           : symbols[index];
-        // Values that are not functions, or cannot be resolved, are data flow rather than calls.
+        // Values that are not functions, or cannot be resolved, are data flow rather than calls,
+        // unless they read module state.
         const callable = await targets.resolveCallable(symbol);
+        if (!callable?.objects.length && item.readsState) {
+          await readState();
+          continue;
+        }
         const holder = callable && item.holder ? materialize(item.holder) : undefined;
         if (holder && item.holder) callableHolders.add(key(item.holder));
         for (const destination of callable?.objects ?? [])

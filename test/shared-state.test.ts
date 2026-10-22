@@ -96,6 +96,27 @@ test("a changed TypeScript module constant reaches the functions that read it", 
   assert.match(text, /^ {2}src\/feedRss\.ts \(read\): test\/feedRss\.test\.ts: testRead$/mu);
 });
 
+test("a TypeScript function that returns a module variable or passes it on reads it", async (t) => {
+  const { root } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/state.ts":
+      "export let count = 0;\nexport function plus() {\n  return count + 1;\n}\nexport function same() {\n  return count;\n}\nexport function passed() {\n  return String(count);\n}\n",
+    "src/other.ts":
+      'import { count } from "./state";\nimport * as state from "./state";\nexport function otherSame() {\n  return count;\n}\nexport function qualified() {\n  return state.count;\n}\n',
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const { text } = await map.explore(
+    { path: "src/state.ts", name: "count", direction: "INCOMING", depth: 1 },
+    signal(),
+  );
+  assert.match(
+    text,
+    /← used as value by src\/state\.ts: plus f2-4 @3, same f5-7 @6, passed f8-10 @9/u,
+  );
+  assert.match(text, /← used as value by src\/other\.ts: otherSame f3-5 @4, qualified f6-8 @7/u);
+});
+
 test("a changed Java static constant reaches the methods that read it", {
   skip: !process.env.LAYERMAP_JAVA_HOME && !process.env.JAVA_HOME,
 }, async () => {
