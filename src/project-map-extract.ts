@@ -21,7 +21,13 @@ import {
   type SourceFile,
   SyntaxKind,
 } from "typescript/unstable/ast";
-import { type Project, type Type, TypeFlags, type UnionType } from "typescript/unstable/async";
+import {
+  type Project,
+  type StringLiteralType,
+  type Type,
+  TypeFlags,
+  type UnionType,
+} from "typescript/unstable/async";
 import { digestValue } from "./digest";
 import { mapParsingContext } from "./project-map-context";
 import {
@@ -42,6 +48,7 @@ import {
 import type { MapParserTrace } from "./project-map-failure";
 import {
   linkMiniprogramTemplates,
+  miniprogramEmits,
   miniprogramMethods,
   miniprogramTemplateOf,
 } from "./project-map-miniprogram";
@@ -579,19 +586,73 @@ export async function extractProjectMap(
     return object;
   };
   trace.phase = "MINIPROGRAM_TEMPLATES";
-  const templates = linkMiniprogramTemplates(
-    pages.flatMap(({ file, template }) => {
-      const methods = miniprogramMethods(file);
-      return methods ? [{ template, methods }] : [];
-    }),
-    {
-      contextRef: input.contextRef,
-      inventory,
-      read,
-      span: (path, start, end) => positions.span(path, start, end),
-      materialize,
-    },
-  );
+  // The declaration a node is in, which the relations from it start at.
+  const enclosing = (node: Node): MapObject | undefined => {
+    for (let at = node.parent; at; at = at.parent) {
+      if (at.kind === SyntaxKind.SourceFile) return declared.get(key(at));
+      if (
+        declared.has(key(at)) ||
+        (mapDeclarationKind(at) && named(at)) ||
+        mapExecutionDeclaration(at)
+      ) {
+        const object = materialize(at);
+        if (object) return object;
+      }
+    }
+    return undefined;
+  };
+  // Each component's events, by the string literal types of the names it emits.
+  const scripts = pages.flatMap(({ file, template }) => {
+    const methods = miniprogramMethods(file);
+    return methods ? [{ file, template, methods, emits: miniprogramEmits(file) }] : [];
+  });
+  const emits = scripts.flatMap((script) => script.emits ?? []);
+  const nameTypes = emits.length
+    ? await project.checker.getTypeAtLocation(emits.map((emit) => emit.name))
+    : [];
+  const names = new Map<(typeof emits)[number], string[] | undefined>();
+  for (const [index, emit] of emits.entries()) {
+    const type = nameTypes[index];
+    const types = type?.isUnionType() ? ((await type.getTypes()) ?? []) : type ? [type] : [];
+    names.set(
+      emit,
+      types.length && types.every((each) => each.isStringLiteralType())
+        ? types.map((each) => (each as StringLiteralType).value)
+        : undefined,
+    );
+  }
+  let composed: Set<string> | undefined = new Set<string>();
+  const linked = scripts.map(({ file, template, methods, emits: calls }) => {
+    if (!calls) return { template, methods };
+    const events = new Map<string, { emitter: MapObject; anchor: MapAnchor }[]>();
+    let readable = true;
+    for (const emit of calls) {
+      const emitted = names.get(emit);
+      const emitter = enclosing(emit.call);
+      if (!emitted || !emitter) {
+        if (emit.composed) composed = undefined;
+        readable = false;
+        continue;
+      }
+      for (const event of emitted) {
+        if (emit.composed) composed?.add(event);
+        const known = events.get(event) ?? [];
+        known.push({ emitter, anchor: anchor(emit.call, file) });
+        events.set(event, known);
+      }
+    }
+    if (readable) return { template, methods, events };
+    gap("MINIPROGRAM_COMPUTED_EVENT_NAMES", relativePath(file.fileName));
+    return { template, methods };
+  });
+  const templates = linkMiniprogramTemplates(linked, {
+    contextRef: input.contextRef,
+    inventory,
+    read,
+    span: (path, start, end) => positions.span(path, start, end),
+    materialize,
+    composed,
+  });
   for (const object of templates.objects) collect.object(object);
   for (const relation of templates.relations) collect.relation(relation);
   output.gaps.push(...templates.gaps);

@@ -13,7 +13,7 @@ import {
 } from "./project-map-clients";
 import { type MapModuleDependency, newModuleDependencies } from "./project-map-dependencies";
 import { mapLanguageOf } from "./project-map-language";
-import { mapMiniprogramTemplate } from "./project-map-miniprogram";
+import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
@@ -781,6 +781,63 @@ export function mapChangeImpact(
         });
       }
     }
+    // Template links the diff broke: a template's binding or tag that reached a method, a component
+    // or an event in the base and reaches nothing now, as when a component stops emitting an event
+    // a page binds, or app.json registers a component where there is none. No compiler checks a
+    // template: what one the diff did not change still names is still used; on a line the diff
+    // changed, it is new. What the diff removed is listed above.
+    const removedAt = (ref: string) => {
+      for (let at: string | undefined = ref; at !== undefined; at = before.parent(at))
+        if (gone.includes(at)) return true;
+      return false;
+    };
+    const lost = new Map<string, Set<string>>();
+    const changedAt = new Map(changes.files.map((file) => [file.path, file]));
+    for (const path of mappedPaths().filter(mapMiniprogramTemplate)) {
+      const template = graph.objectsAt(path).find((object) => mapIsModule(object));
+      if (!template) continue;
+      const broken = graph
+        .relationsFrom(graph.scope(template.id).refs)
+        .filter((relation) => relation.to === undefined && NAMING_KINDS.has(relation.kind));
+      if (!broken.length) continue;
+      const file = changedAt.get(path);
+      const basePath = file ? file.basePath : path;
+      const was = basePath === undefined ? undefined : before.objectsAt(basePath).find(mapIsModule);
+      const links = was ? before.relationsFrom(before.scope(was.id).refs) : [];
+      for (const relation of broken) {
+        const earlier = links.filter(
+          (link) => link.kind === relation.kind && link.target === relation.target,
+        );
+        if (earlier.some((link) => link.to === undefined)) continue;
+        const event = miniprogramEventOf(relation.target);
+        const at = `${path}:${relation.anchor.startLine}`;
+        if (file && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)) {
+          unclear.push(
+            event
+              ? `${at} binds the ${event.event} event of <${event.tag}>, which it does not emit`
+              : relation.kind === "REFERENCES"
+                ? `${at} puts <${relation.target}>, which its registration does not find`
+                : `${at} binds ${relation.target}, which its page or component does not register`,
+          );
+          continue;
+        }
+        // An event is named by the component that no longer emits it.
+        const reached = event
+          ? links.find((link) => link.kind === "REFERENCES" && link.target === event.tag)?.to
+          : earlier.find((link) => link.to !== undefined)?.to;
+        if (reached === undefined || removedAt(reached)) continue;
+        const object = before.object(reached);
+        const name = mapIsModule(object)
+          ? `${object.anchor.path} (template)${event ? `: ${event.event} event` : ""}`
+          : `${object.anchor.path}: ${before.qualifiedName(reached)} ${mapDeclarationLabel(object)}`;
+        const users = lost.get(name) ?? new Set();
+        users.add(`${path} (template)`);
+        lost.set(name, users);
+      }
+    }
+    for (const [declaration, users] of lost)
+      removed.push({ declaration, usedBy: [...users].sort() });
+
     // Top-level code the diff removed: imports, calls and registrations outside any declaration,
     // not the declarations it holds.
     for (const file of changes.files) {

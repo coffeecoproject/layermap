@@ -39,6 +39,12 @@ Component({
     confirm() {
       cancelBooking("1");
     },
+    close() {
+      this.emit("closed");
+    },
+    emit(name: "closed" | "dismissed") {
+      this.triggerEvent(name);
+    },
   },
 });
 `,
@@ -51,7 +57,7 @@ Component({
   "miniprogram/pages/home/home.json":
     '{ "usingComponents": { "status-tag": "../../components/status-tag/status-tag" } }\n',
   "miniprogram/components/status-tag/status-tag.ts":
-    "declare function Component(options: unknown): void;\nComponent({});\n",
+    "declare function Component(options: unknown): void;\nComponent({ methods: { pick(name: string) { this.triggerEvent(name); } } });\n",
   "miniprogram/components/status-tag/status-tag.wxml": "<text>tag</text>\n",
   "miniprogram/pages/home/home.ts": `declare function Page(options: unknown): void;
 Page({
@@ -63,7 +69,7 @@ Page({
 });
 `,
   "miniprogram/pages/home/home.wxml": `<view wx:if="{{a < b}}">
-  <booking-sheet id="sheet" bind:closed="onSheetClosed" /><status-tag />
+  <booking-sheet id="sheet" bind:closed="onSheetClosed" bindtap="onSheetClosed" /><status-tag bind:picked="onSheetClosed" />
   <button bindtap="{{handler}}">Computed</button>
   <button bindtap="gone">Gone</button>
 </view>
@@ -122,6 +128,17 @@ test("a method a template binds is called from the template, and reached from th
     signal(),
   );
   assert.match(handler.text, /← called by miniprogram\/pages\/home\/home\.wxml: \(template\) @2/u);
+  // And called from where the component emits the event, by a name its type spells out.
+  assert.match(
+    handler.text,
+    /← called by miniprogram\/components\/booking-sheet\/booking-sheet\.ts: emit m15-17 @16\n/u,
+  );
+  // A component's event names a string does not spell out are a gap, not a missing event.
+  const tag = await map.explore(
+    { path: "miniprogram/components/status-tag/status-tag.ts" },
+    signal(),
+  );
+  assert.match(tag.text, /· MINIPROGRAM_COMPUTED_EVENT_NAMES\n/u);
   // A binding's method the script does not register, and the computed one, are named.
   const page = await map.explore({ path: "miniprogram/pages/home/home.wxml" }, signal());
   assert.match(page.text, /· 5 lines · MINIPROGRAM_COMPUTED_EVENT_HANDLERS\n/u);
@@ -214,6 +231,8 @@ test("a change to a component reaches the pages that show it, and a template's c
     /miniprogram\/pages\/legacy\/legacy\.wxml changed \(template\): its effects are not mapped/u,
   );
   assert.doesNotMatch(pages.text, /home\.wxml (?:has no callers|changed \(template\))/u);
+  // A binding broken before the diff is not the diff's.
+  assert.doesNotMatch(pages.text, /binds gone/u);
 });
 
 test("a removed method a template still binds, and a removed component a page still shows, are still used, but not a moved one", async (t) => {
@@ -280,12 +299,78 @@ test("a removed method a template still binds, and a removed component a page st
     stale.text,
     /STILL USED[^\n]*\n {2}miniprogram\/components\/booking-sheet\/booking-sheet\.wxml \(template\) ← miniprogram\/pages\/home\/home\.wxml \(template\)\n/u,
   );
+  // Once: the tag the page puts names the removed template.
+  assert.equal(stale.text.match(/booking-sheet\.wxml \(template\) ←/gu)?.length, 1);
   await write(
     "miniprogram/app.json",
     FILES["miniprogram/app.json"].replace("/components/booking-sheet/", "/components/sheet/"),
   );
   const registered = await map.checkChanges({}, signal());
   assert.doesNotMatch(registered.text, /STILL USED/u);
+});
+
+test("an event a component stops emitting is still bound, and a template's new link to nothing is checked", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  const sheet = "miniprogram/components/booking-sheet/booking-sheet.ts";
+  const home = "miniprogram/pages/home/home.wxml";
+  await write(
+    sheet,
+    FILES[sheet]
+      .replace('"closed" | "dismissed"', '"done" | "dismissed"')
+      .replace('this.emit("closed")', 'this.emit("done")'),
+  );
+  const stopped = await map.checkChanges({}, signal());
+  assert.match(
+    stopped.text,
+    /STILL USED[^\n]*\n {2}miniprogram\/components\/booking-sheet\/booking-sheet\.wxml \(template\): closed event ← miniprogram\/pages\/home\/home\.wxml \(template\)\n/u,
+  );
+  // Bound under the new name, the old one is not used.
+  await write(home, FILES[home].replace("bind:closed", "bind:done"));
+  const rebound = await map.checkChanges({}, signal());
+  assert.doesNotMatch(rebound.text, /STILL USED|does not emit/u);
+
+  // A binding the diff adds to an event the component does not emit is checked by hand, unless
+  // some component emits it across component boundaries.
+  await write(sheet, FILES[sheet]);
+  await write(home, FILES[home].replace("bind:closed", "bind:shut"));
+  const added = await map.checkChanges({}, signal());
+  assert.match(
+    added.text,
+    /CHECK BY HAND[^\n]*\n(?: {2}[^\n]*\n)*? {2}miniprogram\/pages\/home\/home\.wxml:2 binds the shut event of <booking-sheet>, which it does not emit\n/u,
+  );
+  await write(
+    "miniprogram/components/status-tag/status-tag.ts",
+    'declare function Component(options: unknown): void;\nComponent({ methods: { pick() { this.triggerEvent("picked"); this.triggerEvent("shut", {}, { composed: true }); } } });\n',
+  );
+  const passed = await map.checkChanges({}, signal());
+  assert.doesNotMatch(passed.text, /does not emit/u);
+  // Nor when the name of an event that crosses them is not known.
+  await write(
+    "miniprogram/components/status-tag/status-tag.ts",
+    "declare function Component(options: unknown): void;\nComponent({ methods: { pick(name: string) { this.triggerEvent(name, {}, { composed: true }); } } });\n",
+  );
+  const unknown = await map.checkChanges({}, signal());
+  assert.doesNotMatch(unknown.text, /does not emit/u);
+
+  // A registration that finds the component no more leaves the pages that show it showing nothing.
+  await run("git", ["checkout", "--", "miniprogram"], { cwd: root });
+  await write(
+    "miniprogram/app.json",
+    FILES["miniprogram/app.json"].replace(
+      "/components/booking-sheet/booking-sheet",
+      "/components/booking/booking",
+    ),
+  );
+  const unregistered = await map.checkChanges({}, signal());
+  assert.match(
+    unregistered.text,
+    /STILL USED[^\n]*\n {2}miniprogram\/components\/booking-sheet\/booking-sheet\.wxml \(template\) ← miniprogram\/pages\/home\/home\.wxml \(template\)\n/u,
+  );
 });
 
 test("the templates and their configuration reach the analysis with the scripts, so it runs once", async (t) => {
