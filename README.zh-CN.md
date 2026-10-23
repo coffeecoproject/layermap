@@ -182,7 +182,7 @@ setup 只配置当前这台机器；整个团队要用，请每人各装一次�
 | `project_explore_map` | 查看目录、文件，或一个声明的调用方和被调用方（`direction` 为 INCOMING 或 OUTGOING，`depth` 最多 8）。 |
 | `project_search_map` | 按名称、路径或文档里的词查找声明。 |
 | `project_find_references` | 一个声明的所有用法，基于当前源码编译得出。 |
-| `project_check_changes` | 未提交的改动（或自 `base` 以来的改动）影响到哪里：改动和删除的声明、经过它们的路由、定时任务和命令、共用这段代码的功能、改动去掉但别处还在用的环境变量和配置键、请求受影响接口的代码和模板、模块之间新加的依赖和由此形成的循环、和已有代码几乎一样的新代码、需要人工核对的地方，以及相关测试。 |
+| `project_check_changes` | 未提交的改动（或自 `base` 以来的改动）影响到哪里：改动和删除的声明、经过它们的路由、定时任务和命令、共用这段代码的功能、改动去掉但别处还在用的环境变量和配置键、请求受影响接口的代码和模板、模块之间新加的依赖和由此形成的循环、和已有代码几乎一样的新代码、需要人工核对的地方，以及相关测试。传入 `tests` 时，还会列出这些测试文件既没调用、也没通过路由请求到的改动代码，以及它们上面的入口。 |
 
 命令行用法：
 
@@ -191,6 +191,7 @@ npx layermap explore src/api/users.ts --name createUser --direction INCOMING --d
 npx layermap search "invoice total"
 npx layermap refs src/billing/tax.ts calculateTax
 npx layermap check --base main
+npx layermap check test/billing.test.ts   # 另外列出改动里这个测试没跑到的代码
 ```
 
 ## 常见问题

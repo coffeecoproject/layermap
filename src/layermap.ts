@@ -447,9 +447,13 @@ export class LayerMap {
   /**
    * What the working tree's changes against a commit (HEAD by default) affect: the changed and
    * removed declarations, the entry points and tests their callers reach, and what the map cannot
-   * see. The base commit's map is built only when the diff removes or changes lines there.
+   * see; with test files, by path from the repository root, also the changed code they do not run.
+   * The base commit's map is built only when the diff removes or changes lines there.
    */
-  checkChanges(input: { base?: string }, signal: AbortSignal): Promise<{ text: string }> {
+  checkChanges(
+    input: { base?: string; tests?: readonly string[] },
+    signal: AbortSignal,
+  ): Promise<{ text: string }> {
     return this.using(async (hold) =>
       checkMapChanges(
         {
@@ -458,6 +462,7 @@ export class LayerMap {
           working: await this.current(signal, hold),
           base: input.base ?? "HEAD",
           baseVersion: (commit, baseSignal) => this.versionAt(commit, baseSignal, hold),
+          ...(input.tests ? { tests: input.tests } : {}),
         },
         signal,
       ),

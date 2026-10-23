@@ -656,3 +656,171 @@ test("code still implemented or overridden is not left without callers; tests' u
   const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
   assert.equal(left, "  src/shape.ts: Old c11\n  src/state.ts: count v1\n");
 });
+
+// A service a route serves, whose changed code a test of the presenter alone does not run.
+const FUNDS = (overdue: string, label: string) => ({
+  "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src", "test"] }),
+  "src/funds.ts": `export function readReceivableOverdueIds(ids: number[]) {
+  return ids.filter((id) => ${overdue});
+}
+
+export function readFundsReceivableList(ids: number[]) {
+  return readReceivableOverdueIds(ids).length;
+}
+
+export function presentReceivable(count: number) {
+  return \`${label} \${count}\`;
+}
+
+export class FundsService {
+  listReceivables(ids: number[]) {
+    return presentReceivable(readFundsReceivableList(ids));
+  }
+}
+
+export function summarize(ids: number[]) {
+  return presentReceivable(ids.length);
+}
+`,
+  "src/routes.ts": `import { FundsService } from "./funds";
+declare const router: { get(path: string, h: unknown): void };
+const service = new FundsService();
+router.get("/funds/receivables", () => service.listReceivables([1, 2]));
+`,
+  // One test drives the service from its module scope, one calls only the presenter, one calls
+  // it through other code, and one requests the route.
+  "test/service.test.ts":
+    'import { FundsService } from "../src/funds";\n\nexport const listed = new FundsService().listReceivables([3]);\n',
+  "test/present.test.ts":
+    'import { presentReceivable } from "../src/funds";\n\nexport function testPresent() {\n  return presentReceivable(2);\n}\n',
+  "test/summary.test.ts":
+    'import { summarize } from "../src/funds";\n\nexport const summary = summarize([1]);\n',
+  "test/http.test.ts":
+    'declare const request: (app: unknown) => { get(path: string): unknown };\n\nexport const response = request(undefined).get("/funds/receivables");\n',
+});
+
+test("given test files, the check names the changed code none of them runs and the entry points above it", async (t) => {
+  const { root, write } = await project(FUNDS("id > 1", "count"));
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  for (const [file, content] of Object.entries(FUNDS("id > 2", "receivables")))
+    await write(file, content);
+
+  const plain = (await map.checkChanges({}, signal())).text;
+  assert.doesNotMatch(plain, /NOT REACHED/u);
+  const section = (text: string) =>
+    text.slice(
+      text.indexOf("\nNOT REACHED BY THE GIVEN TESTS\n") + 1,
+      text.indexOf("\nRELATED TESTS") + 1,
+    );
+
+  const presenter = (
+    await map.checkChanges({ tests: ["test/present.test.ts", "test/gone.test.ts"] }, signal())
+  ).text;
+  const left = section(presenter);
+  assert.match(presenter, /· 1 changed declarations not reached by the given tests$/mu);
+  assert.match(left, /given files: test\/gone\.test\.ts$/mu);
+  assert.match(left, /1 of 2 changed declarations/u);
+  assert.match(
+    left,
+    /^ {2}"GET \/funds\/receivables" → FundsService\.listReceivables → readFundsReceivableList → readReceivableOverdueIds \(registered at src\/routes\.ts:4\)$/mu,
+  );
+  assert.match(left, /^ {2}src\/funds\.ts: readReceivableOverdueIds f1-3$/mu);
+  assert.doesNotMatch(left, /presentReceivable|only through a route/u);
+  assert.ok(presenter.indexOf("AFFECTED ENTRY POINTS") < presenter.indexOf(left));
+  // The section and its count are all the given tests add to the report.
+  assert.equal(
+    presenter
+      .replace(left, "")
+      .replace(" · 1 changed declarations not reached by the given tests", ""),
+    plain,
+  );
+
+  const service = (await map.checkChanges({ tests: ["test/service.test.ts"] }, signal())).text;
+  assert.match(
+    section(service),
+    /^NOT REACHED BY THE GIVEN TESTS\n {2}none: the given tests reach all 2 changed declarations\nReach is followed[^\n]*\n$/u,
+  );
+
+  // A test that requests the route by its path runs what its handler calls, as far as text tells;
+  // code another given test calls, even through other code, counts as called.
+  const requested = (
+    await map.checkChanges({ tests: ["test/http.test.ts", "test/summary.test.ts"] }, signal())
+  ).text;
+  assert.match(
+    section(requested),
+    /^NOT REACHED BY THE GIVEN TESTS\n {2}none: the given tests reach all 2 changed declarations\n {2}1 changed declarations are reached only through a route whose path a given test names, found by text \("GET \/funds\/receivables"\):\n {2}src\/funds\.ts: readReceivableOverdueIds f1-3\nReach is followed/u,
+  );
+
+  const none = (await map.checkChanges({ tests: [] }, signal())).text;
+  assert.match(none, /2 of 2 changed declarations/u);
+  assert.match(none, /^ {2}src\/funds\.ts: presentReceivable f9-11$/mu);
+
+  // The route's handler, changed itself, runs when the route is requested.
+  await write(
+    "src/funds.ts",
+    FUNDS("id > 2", "receivables")["src/funds.ts"].replace(
+      "readFundsReceivableList(ids)",
+      "readFundsReceivableList([...ids])",
+    ),
+  );
+  const handler = section(
+    (await map.checkChanges({ tests: ["test/http.test.ts"] }, signal())).text,
+  );
+  assert.match(handler, /none: the given tests reach all 3 changed declarations/u);
+  assert.match(handler, /^ {2}3 changed declarations are reached only through a route/mu);
+  assert.match(handler, /^ {2}src\/funds\.ts: FundsService\.listReceivables m14-16$/mu);
+});
+
+// low ← b0 … b3 ← high ← a0 … a3 ← a test: ten calls from the test down to low; and
+// low ← z0 … z9, callers past the trace's eight levels that no test calls.
+const CHAIN = (low: string, high: string) => {
+  const above = (name: string, count: number, below: string) =>
+    Array.from(
+      { length: count },
+      (_, at) =>
+        `export function ${name}${at}(n: number) {\n  return ${at ? `${name}${at - 1}` : below}(n);\n}`,
+    );
+  return {
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/chain.ts": [
+      `export function low(n: number) {\n  return n + ${low};\n}`,
+      ...above("b", 4, "low"),
+      `export function high(n: number) {\n  return b3(n) * ${high};\n}`,
+      ...above("a", 4, "high"),
+      ...above("z", 10, "low"),
+    ].join("\n\n"),
+    "test/chain.test.ts": 'import { a3 } from "../src/chain";\n\nexport const value = a3(1);\n',
+  };
+};
+
+test("a given test reaches what the changed code it calls calls, however far below; beyond the trace's limits it says so", async (t) => {
+  const { root, write } = await project(CHAIN("1", "2"));
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const tests = ["test/chain.test.ts"];
+
+  // high is five calls from the test and low five from high: both are reached, and the callers
+  // the trace stops at above low leave nothing unseen.
+  await write("src/chain.ts", CHAIN("3", "4")["src/chain.ts"]);
+  const both = (await map.checkChanges({ tests }, signal())).text;
+  assert.match(both, /^ {2}none: the given tests reach all 2 changed declarations$/mu);
+  assert.match(both, /the trace stopped at 8 levels/u);
+  assert.doesNotMatch(both, /callers were followed/u);
+
+  // low alone is ten calls from the test, past the trace's eight levels.
+  await write("src/chain.ts", CHAIN("3", "2")["src/chain.ts"]);
+  const deep = (await map.checkChanges({ tests }, signal())).text;
+  assert.match(deep, /^ {2}1 of 1 changed declarations are reached by none of the given tests/mu);
+  assert.match(
+    deep,
+    /^ {2}callers were followed 8 levels or 800 declarations up; a given test or entry point further up is not seen$/mu,
+  );
+});

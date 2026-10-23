@@ -86,11 +86,19 @@ export async function routeMapCall(
             : `. Name a file or directory in one, relative to ${start.directory} or absolute${such}`
         }.`;
   }
-  if (!holder)
-    return {
-      project: located.project,
-      args: value === undefined ? args : { ...args, path: located.path },
-    };
+  if (!holder) {
+    const routed = value === undefined ? args : { ...args, path: located.path };
+    if (!Array.isArray(args.tests)) return { project: located.project, args: routed };
+    // The tests a check is judged by are files of the repository it checks.
+    const tests: string[] = [];
+    for (const test of args.tests as string[]) {
+      const within = await locate(start, test);
+      if (within?.project !== located.project)
+        return `PROJECT_PATH_INVALID: test ${test} is not in ${located.project}, the repository checked.`;
+      tests.push(within.path);
+    }
+    return { project: located.project, args: { ...routed, tests } };
+  }
   const routed = {
     ...args,
     [holder]: { ...(args[holder] as Record<string, unknown>), path: located.path },

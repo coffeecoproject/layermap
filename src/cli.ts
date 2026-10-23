@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import {
   cacheDirectory,
@@ -26,13 +28,31 @@ Usage:
                    [--depth N] [--tests] [--unresolved] [--offset N]
   layermap search QUERY [--path DIR] [--mode ANY|ALL|LITERAL] [--max N] [--offset N]
   layermap refs PATH NAME [--line N] [--path DIR] [--max N] [--cursor C]
-  layermap check [--base REF]             what the uncommitted changes (or those since REF) affect
+  layermap check [--base REF] [TEST...]   what the uncommitted changes (or those since REF) affect,
+                                          and what of them the test files given do not run
 
 The project is the Git work tree around the current directory unless --project names one; the MCP
 server also maps any other repository a tool call's path names.
 Maps are kept in ${cacheDirectory()}.`;
 
 const log = (line: string) => process.stderr.write(`${line}\n`);
+
+// Test files named from the current directory, by path from the root of the repository checked,
+// which Git names by its real path.
+async function checkedTests(project: string, tests: readonly string[]): Promise<string[]> {
+  const here = await realpath(process.cwd());
+  return tests.map((test) => {
+    const relative = path.relative(project, path.resolve(here, test));
+    if (
+      !relative ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    )
+      throw new Error(`${test} is not in ${project}.`);
+    return relative.split(path.sep).join("/");
+  });
+}
 const usage = (code: number) => {
   (code ? process.stderr : process.stdout).write(`${USAGE}\n`);
   return code;
@@ -141,7 +161,13 @@ async function main(argv: string[]): Promise<number> {
           offset: number(values.offset),
         },
       ],
-      check: [MAP_TOOL_NAMES.check, { base: values.base }],
+      check: [
+        MAP_TOOL_NAMES.check,
+        {
+          base: values.base,
+          tests: command === "check" && rest.length ? await checkedTests(project, rest) : undefined,
+        },
+      ],
       refs: [
         MAP_TOOL_NAMES.references,
         {

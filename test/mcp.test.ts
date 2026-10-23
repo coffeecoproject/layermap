@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
@@ -312,6 +312,23 @@ test("a session started in a folder holding several repositories maps the one ea
     const checked = await call("project_check_changes", { path: "b" });
     assert.equal(checked.result.isError, false, checked.result.content[0]?.text ?? "");
     assert.ok(named(checked, b));
+    // The tests a check is judged by are named as other paths are, and must be in its repository.
+    await writeFile(path.join(b, "src/target.ts"), FILES["src/target.ts"].replace("* 2", "* 3"));
+    const judged = await call("project_check_changes", {
+      path: "b",
+      tests: [path.join(b, "test", "target.test.ts")],
+    });
+    assert.equal(judged.result.isError, false, judged.result.content[0]?.text ?? "");
+    assert.match(
+      judged.result.content[0]?.text ?? "",
+      /^NOT REACHED BY THE GIVEN TESTS\n {2}the map has no code for these given files: test\/target\.test\.ts$/mu,
+    );
+    const across = await call("project_check_changes", { path: "b", tests: ["a/src/target.ts"] });
+    assert.equal(across.result.isError, true);
+    assert.equal(
+      across.result.content[0]?.text,
+      `PROJECT_PATH_INVALID: test a/src/target.ts is not in ${b}, the repository checked.`,
+    );
 
     assert.deepEqual(opened, [a, b], "each repository's map is opened once");
   } finally {

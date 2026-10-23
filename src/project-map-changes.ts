@@ -268,6 +268,23 @@ export type MapChangeImpact = Readonly<{
   uncalled: readonly string[];
   /** Imports between the overview's modules that the base did not have. */
   dependencies: readonly MapModuleDependency[];
+  /** With test files given, the changed code they do not run as far as the map follows. */
+  untested?: MapUntestedChanges;
+  truncated: boolean;
+}>;
+
+export type MapUntestedChanges = Readonly<{
+  /** The changed declarations no code in the given files calls, directly or through other code. */
+  changed: readonly string[];
+  /** The entry points above those declarations. */
+  entries: readonly MapChangeEntry[];
+  /** Changed declarations reached only through a route whose path a given file names. */
+  throughRoutes: readonly string[];
+  /** The routes above the change whose paths the given files name. */
+  routes: readonly string[];
+  /** The given files the map has no code for. */
+  missing: readonly string[];
+  /** Whether following callers above the unreached declarations stopped at the trace's limits. */
   truncated: boolean;
 }>;
 
@@ -287,6 +304,7 @@ const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
 
 // A declaration the trace reached, and the one below it on the way from the change.
 type Reached = { ref: string; depth: number; certain: boolean; via?: string };
+type Caller = { ref: string; relation: MapRelation; certain: boolean };
 
 // The unit a feature lives in: a package in Go and Java, a module (file) elsewhere.
 const areaOf = (file: string) =>
@@ -301,8 +319,11 @@ class Tracer {
   readonly unclear: string[] = [];
   truncated = false;
   private readonly callerCount = new Map<string, number>();
+  private readonly known = new Map<string, Caller[]>();
   // Declarations a decorator maps to a route: entry points already, never "top of a chain".
   private readonly routes = new Set<string>();
+  /** The declarations each route entry reaches the change through: its handlers. */
+  readonly handlers = new Map<string, Set<string>>();
   /** Test support files that call the changed code; the tests beside and below them may use it. */
   readonly support = new Set<string>();
 
@@ -430,8 +451,63 @@ class Tracer {
     return [...new Set(uses)];
   }
 
-  callers(ref: string): { ref: string; relation: MapRelation; certain: boolean }[] {
-    const callers: { ref: string; relation: MapRelation; certain: boolean }[] = [];
+  /**
+   * How code in the files runs each declaration: "call" when it calls it, directly or through other
+   * code (their module-scope code counts, and other test code is passed through); "route" when it
+   * does not, but one of the handlers is the declaration or calls it. Callers are followed from all
+   * the declarations at once, as the trace follows them, and what reaches a caller reaches what it
+   * calls.
+   */
+  reach(
+    refs: readonly string[],
+    files: ReadonlySet<string>,
+    handlers: ReadonlySet<string>,
+  ): { how: Map<string, "call" | "route">; truncated: boolean } {
+    const how = new Map<string, "call" | "route">();
+    const below = new Map<string, string[]>();
+    const seen = new Set(refs);
+    let truncated = false;
+    let frontier = [...seen];
+    for (let depth = 0; frontier.length; depth++) {
+      const next: string[] = [];
+      for (const current of frontier) {
+        if (handlers.has(current)) how.set(current, "route");
+        for (const caller of this.callers(current)) {
+          if (files.has(this.graph.object(caller.ref).anchor.path)) {
+            how.set(current, "call");
+            continue;
+          }
+          const callees = below.get(caller.ref);
+          if (callees) callees.push(current);
+          else below.set(caller.ref, [current]);
+          if (seen.has(caller.ref)) continue;
+          if (depth + 1 > LIMITS.depth || seen.size >= LIMITS.declarations) {
+            truncated = true;
+            continue;
+          }
+          seen.add(caller.ref);
+          next.push(caller.ref);
+        }
+      }
+      frontier = next;
+    }
+    // A call reaches down first, so a declaration a route also reaches still counts as called.
+    for (const kind of ["call", "route"] as const) {
+      const pending = [...how].filter(([, found]) => found === kind).map(([ref]) => ref);
+      for (let ref = pending.pop(); ref !== undefined; ref = pending.pop())
+        for (const callee of below.get(ref) ?? [])
+          if (!how.has(callee)) {
+            how.set(callee, kind);
+            pending.push(callee);
+          }
+    }
+    return { how, truncated };
+  }
+
+  callers(ref: string): Caller[] {
+    const known = this.known.get(ref);
+    if (known) return known;
+    const callers: Caller[] = [];
     for (const relation of this.graph.relationsTo([ref]))
       if (CALLER_KINDS.has(relation.kind)) {
         const owner = this.graph.owner(relation.from);
@@ -485,6 +561,7 @@ class Tracer {
               if (owner !== ref) callers.push({ ref: owner, relation, certain: only });
             }
         }
+    this.known.set(ref, callers);
     return callers;
   }
 
@@ -524,6 +601,7 @@ class Tracer {
     certain: boolean,
     top = false,
   ) {
+    if (route) this.handlers.set(label, (this.handlers.get(label) ?? new Set()).add(at.ref));
     const chain: string[] = [];
     // The chain runs from the declaration the entry reaches toward the change; a declaration at
     // the top of a chain is the entry itself, so its chain starts below it.
@@ -574,10 +652,12 @@ export function mapChangeImpact(
   base: string | undefined,
   changes: MapChanges,
   project?: string,
+  tests?: readonly string[],
 ): MapChangeImpact {
   const graph = new MapViewGraph(store, working);
   const cache = new MapViewCache();
-  const tracer = new Tracer(graph, cache.memberCalls(store, working));
+  const memberCalls = cache.memberCalls(store, working);
+  const tracer = new Tracer(graph, memberCalls);
   const changed: string[] = [];
   const unclear: string[] = [];
   const removed: { declaration: string; usedBy: string[] }[] = [];
@@ -675,6 +755,8 @@ export function mapChangeImpact(
     mirroredTests(mappedPaths(), file.path, tracer);
   }
   tracer.trace(starts);
+  const untested =
+    tests && untestedChanges(project, graph, tracer, memberCalls, starts, changed, tests);
   if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
   supportTests(store, working, tracer);
 
@@ -932,12 +1014,7 @@ export function mapChangeImpact(
     changed,
     removed,
     rewrittenTests,
-    entries: [...tracer.entries.values()].sort(
-      (left, right) =>
-        Number(right.certain) - Number(left.certain) ||
-        Number(right.route) - Number(left.route) ||
-        (left.label < right.label ? -1 : left.label > right.label ? 1 : 0),
-    ),
+    entries: [...tracer.entries.values()].sort(entryOrder),
     tests: [...tracer.tests]
       .map(([path, test]) => ({
         path,
@@ -962,7 +1039,65 @@ export function mapChangeImpact(
     removedRoutes,
     uncalled,
     dependencies: newModuleDependencies(store, cache, working, base, changes.files),
+    ...(untested ? { untested } : {}),
     truncated: tracer.truncated,
+  };
+}
+
+// Certain entries first, routes before other entry points, then by label.
+const entryOrder = (left: MapChangeEntry, right: MapChangeEntry) =>
+  Number(right.certain) - Number(left.certain) ||
+  Number(right.route) - Number(left.route) ||
+  (left.label < right.label ? -1 : left.label > right.label ? 1 : 0);
+
+// The changed declarations the given test files do not run as far as the map follows: none of
+// their code calls them, and they name the path of no route above them. The entry points above
+// those are traced apart, so they are found exactly as the affected entry points are.
+function untestedChanges(
+  project: string | undefined,
+  graph: MapViewGraph,
+  tracer: Tracer,
+  memberCalls: ReturnType<MapViewCache["memberCalls"]>,
+  starts: readonly string[],
+  changed: readonly string[],
+  tests: readonly string[],
+): MapUntestedChanges {
+  const given = new Set(tests);
+  // A test that requests a route spells out its path, as the related tests are found by it.
+  const routes = new Set<string>();
+  const handlers = new Set<string>();
+  if (project)
+    for (const test of given) {
+      let text: string;
+      try {
+        text = readFileSync(path.join(project, test), "utf8");
+      } catch {
+        continue;
+      }
+      for (const [label, refs] of tracer.handlers) {
+        const fragment = routeFragment(label);
+        if (!fragment || !text.includes(fragment)) continue;
+        routes.add(label);
+        for (const ref of refs) handlers.add(ref);
+      }
+    }
+  const { how, truncated } = tracer.reach(starts, given, handlers);
+  const unreached: number[] = [];
+  const throughRoutes: string[] = [];
+  for (const [at, ref] of starts.entries()) {
+    const found = how.get(ref);
+    if (found === "route") throughRoutes.push(changed[at] ?? "");
+    else if (!found) unreached.push(at);
+  }
+  const above = new Tracer(graph, memberCalls);
+  above.trace(unreached.map((at) => starts[at] ?? ""));
+  return {
+    changed: unreached.map((at) => changed[at] ?? ""),
+    entries: [...above.entries.values()].sort(entryOrder),
+    throughRoutes,
+    routes: throughRoutes.length ? [...routes].sort() : [],
+    missing: tests.filter((test) => !graph.objectsAt(test).length),
+    truncated: unreached.length > 0 && (truncated || above.truncated),
   };
 }
 
@@ -1106,12 +1241,8 @@ function routeTests(
 ) {
   const fragments = new Map<string, string>();
   for (const entry of entries) {
-    if (!entry.route) continue;
-    const route = entry.label.slice(entry.label.indexOf("/"));
-    const longest = route
-      .split(/\/(?:\{[^}]*\}|:[^/]+|<[^>]*>|\*)(?=\/|$)/u)
-      .sort((left, right) => right.length - left.length)[0];
-    if (longest && longest.replace(/\//gu, "").length >= 4) fragments.set(longest, entry.label);
+    const fragment = entry.route ? routeFragment(entry.label) : undefined;
+    if (fragment) fragments.set(fragment, entry.label);
   }
   if (!fragments.size) return;
   let budget = 32 * 1024 * 1024;
@@ -1194,6 +1325,15 @@ function routesIn(graph: MapViewGraph, path: string): Set<string> {
 
 const routePath = (route: string) => route.slice(route.indexOf("/"));
 
+// The longest literal part of a route's path, which code requesting it spells out: "/funds/items"
+// of "GET /funds/items/{id}"; a part too short to tell routes apart is none.
+function routeFragment(label: string): string | undefined {
+  const longest = routePath(label)
+    .split(/\/(?:\{[^}]*\}|:[^/]+|<[^>]*>|\*)(?=\/|$)/u)
+    .sort((left, right) => right.length - left.length)[0];
+  return longest && longest.replace(/\//gu, "").length >= 4 ? longest : undefined;
+}
+
 export type MapChangeCheckInput = Readonly<{
   /** The index holding the map of the working tree. */
   index: CodeIndex;
@@ -1209,6 +1349,12 @@ export type MapChangeCheckInput = Readonly<{
    * the diff removes or changes lines that existed in the base.
    */
   baseVersion: (commit: string, signal: AbortSignal) => Promise<string>;
+  /**
+   * Test files in the working tree, by path from the repository root, to judge the change by: the
+   * report then names the changed declarations they do not run, and the entry points above those.
+   * Only these files count, not the project's other tests.
+   */
+  tests?: readonly string[];
 }>;
 
 /**
@@ -1231,7 +1377,7 @@ export async function checkMapChanges(
   )
     ? await input.baseVersion(changes.commit, signal)
     : undefined;
-  const impact = mapChangeImpact(index.store, working, base, changes, project);
+  const impact = mapChangeImpact(index.store, working, base, changes, project, input.tests);
   return {
     text: mapChangesText(
       changes,
@@ -1289,7 +1435,7 @@ export function mapChangesText(
   const indirect = impact.tests.filter((test) => test.rank >= 4);
   const routes = impact.entries.filter((entry) => entry.route);
   const lines = [
-    `PROJECT MAP · CHANGES against ${changes.base} (${changes.commit.slice(0, 12)}) · ${files} changed file${files === 1 ? "" : "s"} · ${impact.changed.length} changed and ${impact.removed.length} removed declarations · ${routes.length} routes and ${impact.entries.length - routes.length} other entry points reached · ${direct.length} related test files${indirect.length ? ` (+${indirect.length} importing the changes indirectly)` : ""}`,
+    `PROJECT MAP · CHANGES against ${changes.base} (${changes.commit.slice(0, 12)}) · ${files} changed file${files === 1 ? "" : "s"} · ${impact.changed.length} changed and ${impact.removed.length} removed declarations · ${routes.length} routes and ${impact.entries.length - routes.length} other entry points reached · ${direct.length} related test files${indirect.length ? ` (+${indirect.length} importing the changes indirectly)` : ""}${impact.untested ? ` · ${impact.untested.changed.length} changed declarations not reached by the given tests` : ""}`,
   ];
   if (!files) return `${lines[0]}\nNothing changed against ${changes.base}.`;
   const list = (title: string, items: readonly string[], limit: number) => {
@@ -1438,6 +1584,46 @@ export function mapChangesText(
     impact.entries.filter((e) => !e.certain).map(entry),
     LIST.entries,
   );
+  // What the given tests leave out: none of them runs the code under these entry points.
+  if (impact.untested) {
+    const { changed, entries, throughRoutes, routes, missing, truncated } = impact.untested;
+    const items = (shown: readonly string[], limit: number) => {
+      lines.push(...shown.slice(0, limit).map((item) => `  ${item}`));
+      if (shown.length > limit) lines.push(`  +${shown.length - limit} more`);
+    };
+    lines.push("NOT REACHED BY THE GIVEN TESTS");
+    if (missing.length)
+      lines.push(`  the map has no code for these given files: ${missing.join(", ")}`);
+    if (changed.length) {
+      lines.push(
+        `  ${changed.length} of ${impact.changed.length} changed declarations are reached by none of the given tests; ${entries.length ? "the entry points above them, then the declarations:" : "the declarations:"}`,
+      );
+      items(
+        entries.map((item) => `${entry(item)}${item.certain ? "" : " (possibly)"}`),
+        LIST.entries,
+      );
+      items(changed, LIST.changed);
+    } else
+      lines.push(
+        impact.changed.length
+          ? `  none: the given tests reach all ${impact.changed.length} changed declarations`
+          : "  none: the diff changes no declarations outside the tests",
+      );
+    if (throughRoutes.length) {
+      lines.push(
+        `  ${throughRoutes.length} changed declarations are reached only through a route whose path a given test names, found by text (${routes.map((route) => JSON.stringify(route)).join(", ")}):`,
+      );
+      items(throughRoutes, LIST.changed);
+    }
+    if (truncated)
+      lines.push(
+        `  callers were followed ${LIMITS.depth} levels or ${LIMITS.declarations} declarations up; a given test or entry point further up is not seen`,
+      );
+    if (impact.changed.length)
+      lines.push(
+        "Reach is followed through resolved calls from the given files and the routes whose paths they name. Reached means a given test calls code that leads to it, not that the test takes that path or checks what it does; a call through dependency injection, reflection or a receiver of unknown type, or a path built at run time, may run code the map does not see.",
+      );
+  }
   // Requests by path, which no compiler links: a frontend, a generated client, a template.
   if (clients.length) {
     list(

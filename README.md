@@ -206,7 +206,7 @@ nothing anywhere ([privacy](https://github.com/coffeecoproject/layermap/blob/mai
 | `project_explore_map` | A directory, a file, or a declaration's callers and callees (`direction` INCOMING or OUTGOING, `depth` up to 8). |
 | `project_search_map` | Find declarations by words in their names, paths or documentation. |
 | `project_find_references` | Every usage of a declaration, compiled from current source. |
-| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, the areas that share the changed code, environment variables and configuration keys it removed that other files still use, code and templates that request the affected routes, new dependencies between modules and the cycles they close, new code that repeats existing code, what to check by hand, and related tests. |
+| `project_check_changes` | What the uncommitted changes (or those since `base`) affect: changed and removed declarations, the routes, jobs and commands they reach, the areas that share the changed code, environment variables and configuration keys it removed that other files still use, code and templates that request the affected routes, new dependencies between modules and the cycles they close, new code that repeats existing code, what to check by hand, and related tests. Given `tests`, also the changed code none of those test files calls or requests through a route, and the entry points above it. |
 
 The same from the command line:
 
@@ -215,6 +215,7 @@ npx layermap explore src/api/users.ts --name createUser --direction INCOMING --d
 npx layermap search "invoice total"
 npx layermap refs src/billing/tax.ts calculateTax
 npx layermap check --base main
+npx layermap check test/billing.test.ts   # also: what of the change this test does not run
 ```
 
 ## FAQ

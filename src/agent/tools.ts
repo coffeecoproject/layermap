@@ -125,7 +125,15 @@ export async function runMapTool(
     if (name === MAP_TOOL_NAMES.check) {
       const input = args as unknown as z.infer<typeof ProjectMapCheckInputSchema>;
       // The path chose the repository; the check covers its whole working tree.
-      return { text: (await map.checkChanges({ base: input.base }, signal)).text, isError: false };
+      return {
+        text: (
+          await map.checkChanges(
+            { base: input.base, ...(input.tests ? { tests: input.tests } : {}) },
+            signal,
+          )
+        ).text,
+        isError: false,
+      };
     }
     if (name === MAP_TOOL_NAMES.search) {
       const input = args as unknown as z.infer<typeof ProjectMapSearchInputSchema>;
