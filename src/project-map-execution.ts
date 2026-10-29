@@ -68,6 +68,7 @@ type ValueParent = Node & {
   body?: Node;
   left?: Node;
   operatorToken?: Node;
+  tagName?: Node;
 };
 const choosingOperators = new Set([SyntaxKind.BarBarToken, SyntaxKind.QuestionQuestionToken]);
 const assigningOperators = new Set([
@@ -108,6 +109,10 @@ export function mapValueUse(node: Node): boolean {
     }
     case SyntaxKind.ArrowFunction:
       return parent.body === expression;
+    // A component named as a tag is rendered from when the tree is.
+    case SyntaxKind.JsxOpeningElement:
+    case SyntaxKind.JsxSelfClosingElement:
+      return parent.tagName === expression;
     case SyntaxKind.ArrayLiteralExpression:
     case SyntaxKind.ReturnStatement:
     case SyntaxKind.JsxExpression:

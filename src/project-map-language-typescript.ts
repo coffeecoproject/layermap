@@ -23,7 +23,7 @@ import { MapReferencePageSchema, type MapReferenceRequest } from "./project-map-
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "typescript-7.0.2-map-v20",
+  id: "typescript-7.0.2-map-v21",
   claims: (path: string) => /\.[cm]?[jt]sx?$/u.test(path),
   reads: (path: string) =>
     path.endsWith(".json") || path.endsWith(".wxml") || path === "pnpm-workspace.yaml",
