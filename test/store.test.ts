@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { DatabaseSync } from "@photostructure/sqlite";
 import { CodeCommitReader } from "../src/code-commit-reader";
+import type { CodeIndexStore } from "../src/code-index-store";
 import { GitRunner } from "../src/git-runner";
 import { mapDatabasePath } from "../src/layermap";
 import { FILES, openMap, project, sandbox, signal } from "./support";
@@ -70,6 +71,23 @@ test("a version another process holds outlasts this one's cleanup, until the hol
   await write("src/target.ts", target(7));
   await map.refresh(signal());
   assert.equal(kept(), false);
+});
+
+test("a map publishes while another read of its connection is part way through", async (t) => {
+  const { root, write } = await project(FILES);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await map.refresh(signal());
+  // A read stopped after its first row, as a traversal that yields part way through leaves one.
+  const { database } = (map as unknown as { store: CodeIndexStore }).store;
+  const reading = database.prepare("SELECT path FROM project_code_files").iterate();
+  assert.equal(reading.next().done, false);
+
+  for (const factor of [3, 4]) {
+    await write("src/target.ts", target(factor));
+    await map.refresh(signal());
+  }
+  reading.return?.();
 });
 
 test("a commit is captured once, and later checks against it reuse its map", async (t) => {

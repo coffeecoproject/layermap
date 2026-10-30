@@ -248,7 +248,18 @@ export class CodeIndexStore {
       build_ref TEXT NOT NULL, kind TEXT NOT NULL, position INTEGER PRIMARY KEY,
       value_json TEXT NOT NULL CHECK (json_valid(value_json))
     );
-    CREATE INDEX IF NOT EXISTS temp.project_map_staging_build ON project_map_staging(build_ref, kind, position);`);
+    CREATE INDEX IF NOT EXISTS temp.project_map_staging_build ON project_map_staging(build_ref, kind, position);
+    CREATE TEMP TABLE IF NOT EXISTS project_map_publish_objects (
+      entity_ref TEXT PRIMARY KEY, context_ref TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
+      kind TEXT NOT NULL, object_json TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS temp.project_map_publish_object_path ON project_map_publish_objects(path);
+    CREATE TEMP TABLE IF NOT EXISTS project_map_publish_relations (
+      relation_ref TEXT PRIMARY KEY, from_ref TEXT NOT NULL, to_ref TEXT, path TEXT NOT NULL,
+      relation_json TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS temp.project_map_publish_relation_path ON project_map_publish_relations(path);
+    CREATE TEMP TABLE IF NOT EXISTS project_map_publish_notes (
+      entity_ref TEXT NOT NULL, path TEXT NOT NULL, note_json TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS temp.project_map_publish_note_path ON project_map_publish_notes(path);`);
     database
       .prepare("INSERT OR IGNORE INTO project_code_meta VALUES ('cursor-secret', ?)")
       .run(randomBytes(32).toString("base64url"));
@@ -417,15 +428,16 @@ export class CodeIndexStore {
           .prepare("INSERT INTO project_map_coverage VALUES (?, ?)")
           .run(version.version, canonicalJson(coverage));
       }
+      // Emptied within the transaction, as a rollback empties them: dropping a table fails while
+      // a statement of the connection is part way through.
+      this.database.exec(`DELETE FROM project_map_publish_objects;
+        DELETE FROM project_map_publish_relations;
+        DELETE FROM project_map_publish_notes;`);
       this.database.exec("COMMIT");
       return Object.freeze({ ...version, pathPrefixes: Object.freeze([...version.pathPrefixes]) });
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
-    } finally {
-      this.database.exec(`DROP TABLE IF EXISTS temp.project_map_publish_objects;
-        DROP TABLE IF EXISTS temp.project_map_publish_relations;
-        DROP TABLE IF EXISTS temp.project_map_publish_notes;`);
     }
   }
 
@@ -441,14 +453,6 @@ export class CodeIndexStore {
     linked?: Readonly<{ version: string; paths: ReadonlySet<string> }>,
   ): { path: string; unit: string }[] {
     const database = this.database;
-    database.exec(`CREATE TEMP TABLE project_map_publish_objects (
-      entity_ref TEXT PRIMARY KEY, context_ref TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
-      kind TEXT NOT NULL, object_json TEXT NOT NULL);
-    CREATE TEMP TABLE project_map_publish_relations (
-      relation_ref TEXT PRIMARY KEY, from_ref TEXT NOT NULL, to_ref TEXT, path TEXT NOT NULL,
-      relation_json TEXT NOT NULL);
-    CREATE TEMP TABLE project_map_publish_notes (
-      entity_ref TEXT NOT NULL, path TEXT NOT NULL, note_json TEXT NOT NULL);`);
     database
       .prepare(`INSERT INTO project_map_publish_objects
           SELECT json_extract(value_json, '$.id'), json_extract(value_json, '$.contextRef'),
@@ -524,9 +528,6 @@ export class CodeIndexStore {
       )
         throw new MapReplayConflict();
     }
-    database.exec(`CREATE INDEX temp.project_map_publish_object_path ON project_map_publish_objects(path);
-        CREATE INDEX temp.project_map_publish_relation_path ON project_map_publish_relations(path);
-        CREATE INDEX temp.project_map_publish_note_path ON project_map_publish_notes(path);`);
     const objects = database.prepare(
       "SELECT entity_ref, object_json FROM project_map_publish_objects WHERE path = ? ORDER BY entity_ref",
     );
