@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { CodeIndex } from "../src/code-index";
 import { CodeIndexStore } from "../src/code-index-store";
 import type { CodeIndexSource } from "../src/code-index-types";
+import { ProjectEvidenceError } from "../src/core";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
 import { checkMapChanges, parseMapDiff } from "../src/project-map-changes";
@@ -1003,7 +1004,7 @@ test("a field's reads count across languages, and who uses it is left to a perso
   const limited = (await map.checkChanges({}, signal())).text;
   assert.match(
     limited,
-    /^ {2}who uses \d+ changed fields or types was not read, so what they affect is not known \(Many\.f\d+.*\); project_find_references/mu,
+    /^ {2}who uses \d+ fields or types the change reaches was not read, so what they affect is not known \(Many\.f\d+.*\); project_find_references/mu,
   );
   // Not reading a field's uses does not mean finding none.
   assert.doesNotMatch(limited, /Many\.f\d+ has no callers/u);
@@ -1034,6 +1035,179 @@ test("who uses a field is read up to a limit of declarations and time, and what 
   const counted = await mapShapeUses(graph, fields, async () => ({ uses: [], complete: true }));
   assert.equal(counted.uses.size, 60);
   assert.deepEqual([...counted.unread], ["f60"]);
+});
+
+test("read without following, only the given declarations are read", async () => {
+  const graph = {
+    object: () => ({ kind: "PROPERTY" }),
+    owner: (ref: string) => ref,
+  } as never;
+  const reached: string[] = [];
+  await mapShapeUses(
+    graph,
+    ["field"],
+    async (ref) => {
+      reached.push(ref);
+      return { uses: [{ owner: "other", anchor: {} as never, write: false }], complete: true };
+    },
+    false,
+  );
+  assert.deepEqual(reached, ["field"]);
+});
+
+// A read that fails, as the index would say it, on the reads the given test picks.
+const failReads = (map: unknown, code: string, fails: (read: number) => boolean) => {
+  const index = (map as { index: { findReferences: (...args: unknown[]) => unknown } }).index;
+  const findReferences = index.findReferences.bind(index);
+  let reads = 0;
+  const counted = {
+    get reads() {
+      return reads;
+    },
+  };
+  index.findReferences = (...args: unknown[]) => {
+    if (fails(++reads)) throw new ProjectEvidenceError(code, false);
+    return findReferences(...args);
+  };
+  return counted;
+};
+
+test("a read that fails for a reason not of the declaration fails the check", async (t) => {
+  const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts": row("number"),
+    "src/user.ts": 'import type { Row } from "./row";\n\nexport const user = (r: Row) => r.a;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/row.ts", row("string"));
+
+  failReads(map, "PROJECT_EVIDENCE_MAINTENANCE_BUSY", () => true);
+  await assert.rejects(map.checkChanges({}, signal()), {
+    code: "PROJECT_EVIDENCE_MAINTENANCE_BUSY",
+  });
+});
+
+for (const code of [
+  "PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE",
+  "PROJECT_MAP_REFERENCE_CONTEXT_UNAVAILABLE",
+])
+  test(`${code} leaves one declaration unread, and what is unread is named as reached, not changed`, async (t) => {
+    const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
+    const { root, write } = await project({
+      "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+      "src/row.ts": row("number"),
+      "src/idle.ts":
+        'import type { Row } from "./row";\n\nexport interface Idle {\n  key: Row["a"];\n}\n',
+    });
+    await run("git", ["add", "-A"], { cwd: root });
+    await commit(root);
+    const map = await openMap(root);
+    t.after(() => map.close());
+    await write("src/row.ts", row("string"));
+
+    failReads(map, code, (read) => read === 2);
+    const { text } = await map.checkChanges({}, signal());
+    assert.match(
+      text,
+      /^ {2}who uses 1 fields or types the change reaches was not read, so what they affect is not known \(Idle\.key\); project_find_references lists their uses$/mu,
+    );
+  });
+
+test("a removed field whose uses could not be read says what to do, which is not to ask the working tree", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts": "export interface Row {\n  kept: string;\n  gone: number;\n}\n",
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/row.ts", "export interface Row {\n  kept: string;\n}\n");
+
+  failReads(map, "PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", () => true);
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /src\/row\.ts: Row\.gone was removed, and who used it was not read; search the code for its name/u,
+  );
+  assert.doesNotMatch(text, /on the base/u);
+});
+
+test("fields losing callers are read up to the limit, and those past it are named, not listed", async (t) => {
+  const fields = Array.from({ length: 61 }, (_, at) => `f${String(at).padStart(2, "0")}`);
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/deps.ts": `export interface Deps {\n${fields.map((f) => `  ${f}: () => void;`).join("\n")}\n}\n`,
+    "src/reader.ts": `import type { Deps } from "./deps";\n\nexport function reader(d: Deps) {\n${fields.map((f) => `  d.${f}();`).join("\n")}\n}\n`,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/reader.ts", "export const nothing = 1;\n");
+
+  const counted = failReads(map, "unused", () => false);
+  const { text } = await map.checkChanges({}, signal());
+  assert.equal(counted.reads, 60);
+  assert.match(
+    text,
+    /^ {2}1 fields lost callers the diff removed, and whether others use them was not read \(Deps\.f\d+\); project_find_references lists their uses$/mu,
+  );
+  assert.match(text, /^LEFT WITHOUT CALLERS/mu);
+  const named = /\(Deps\.(f\d+)\); project_find_references/u.exec(text)?.[1];
+  assert.doesNotMatch(text, new RegExp(`Deps\\.${named} p\\d+`, "u"));
+});
+
+test("a field losing callers is asked about alone, and a test's read does not keep it", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/deps.ts": "export interface Deps {\n  held: () => void;\n  tested: () => void;\n}\n",
+    "src/idle.ts":
+      'import type { Deps } from "./deps";\n\nexport interface Idle {\n  key: Deps["held"];\n}\n',
+    "src/reader.ts":
+      'import type { Deps } from "./deps";\n\nexport function reader(d: Deps) {\n  d.held();\n  d.tested();\n}\n',
+    "test/deps.test.ts":
+      'import type { Deps } from "../src/deps";\n\nexport const seen = (d: Deps) => d.tested;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/reader.ts", "export const nothing = 1;\n");
+
+  const counted = failReads(map, "unused", () => false);
+  const { text } = await map.checkChanges({}, signal());
+  // Each field once: who uses Idle.key says nothing of whether Deps.held is still used.
+  assert.equal(counted.reads, 2);
+  const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
+  assert.equal(left, "  src/deps.ts: Deps.tested p3\n");
+});
+
+test("a field that both uses a changed type and calls a changed method is an entry point", async (t) => {
+  const code = (type: string, value: string) =>
+    `export interface T {\n  a: ${type};\n  b: ${type};\n}\nexport interface Svc {\n  run(): number;\n}\nexport class One implements Svc {\n  run() {\n    return ${value};\n  }\n}\nexport class Two implements Svc {\n  run() {\n    return ${value};\n  }\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/t.ts": code("number", "1"),
+    "src/holder.ts":
+      'import type { Svc, T } from "./t";\n\ndeclare const svc: Svc;\nexport class Holder {\n  value: T["a"] = svc.run();\n  only: T["a"] | T["b"] = 1;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/t.ts", code("string", "2"));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /^ {2}src\/holder\.ts: Holder\.value → /mu);
+  assert.doesNotMatch(text, /Holder\.only/u);
 });
 
 test("a function held in a field is followed as a function, and importing a type does not use it", async (t) => {
@@ -1234,6 +1408,69 @@ test("an index on a generic or a union names the same field of each type", async
 });
 
 // A field's reads are not all in the map, so its last recorded read going says nothing by itself.
+test("a field an owner both writes and reads is still read, whichever comes first", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/box.ts":
+      "declare function make(): () => void;\nexport class Box {\n  first = make();\n  last = make();\n  only = make();\n}\n",
+    "src/report.ts":
+      'import { Box } from "./box";\n\nexport function report(box: Box) {\n  box.first();\n  box.last();\n  box.only();\n}\n',
+    "src/keeper.ts":
+      'import { Box } from "./box";\ndeclare function make(): () => void;\n\nexport function keeper(box: Box) {\n  box.first = make();\n  const read = box.first;\n  const held = box.last;\n  box.last = make();\n  box.only = make();\n  return [read, held];\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/report.ts", "export const nothing = 1;\n");
+  const { text } = await map.checkChanges({}, signal());
+  const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
+  assert.equal(left, "  src/box.ts: Box.only p5\n");
+});
+
+test("a removed field is still used while any use of it is on a line the diff left alone", async (t) => {
+  const code = `export interface Shape {
+  side: number;
+  name: string;
+}
+export function area(s: Shape) {
+  const a = s.side;
+  const b = s.side;
+  return a + b + s.name.length;
+}
+`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/shape.ts": code,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const without = code.replace("  side: number;\n", "");
+
+  // Whichever of its two uses the diff changes, the other still names what is gone.
+  for (const use of ["const a = s.side;", "const b = s.side;"]) {
+    await write("src/shape.ts", without.replace(use, "const c = 1;"));
+    assert.match(
+      (await map.checkChanges({}, signal())).text,
+      /^REMOVED OR RENAMED, STILL USED[^\n]*\n {2}src\/shape\.ts: Shape\.side p2 ← src\/shape\.ts: area$/mu,
+    );
+  }
+
+  await write(
+    "src/shape.ts",
+    without
+      .replace("const a = s.side;", "const a = 1;")
+      .replace("const b = s.side;", "const b = 1;"),
+  );
+  assert.match(
+    (await map.checkChanges({}, signal())).text,
+    /^REMOVED OR RENAMED \(no code[^\n]*\n {2}src\/shape\.ts: Shape\.side p2$/mu,
+  );
+});
+
 test("a field other code still reads is not left without callers", async (t) => {
   const reader = (reads: string) =>
     `import { Box } from "./box";\ndeclare function use(value: unknown): void;\n\nexport function report(box: Box) {\n  ${reads}\n}\n`;
