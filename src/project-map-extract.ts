@@ -99,9 +99,8 @@ type Pending = {
   readsState?: true;
 };
 
-// Where a name is not a read of a value at run time: a type, a JSX tag, a key or an import.
+// Where a name is not a read of a value at run time: a type, a JSX tag or an import.
 const NOT_STATE_READS = new Set<SyntaxKind>([
-  SyntaxKind.PropertyAssignment,
   SyntaxKind.ImportClause,
   SyntaxKind.ExportSpecifier,
   SyntaxKind.TypeReference,
@@ -454,6 +453,9 @@ export async function extractProjectMap(
           kind: "REFERENCES",
           target: label(node.name),
           holder: node,
+          ...(isIdentifier(node.name) && state.names.has(node.name.text)
+            ? { readsState: true }
+            : {}),
         };
       } else if (isImportSpecifier(node)) {
         valueNames.add(node.name.text);
@@ -682,8 +684,8 @@ export async function extractProjectMap(
     for (const [index, item] of batch.entries()) {
       // A read links only to a module-level variable, once per reading declaration; other values
       // are data flow, and find_references lists every read.
-      const readState = async () => {
-        for (const destination of await targets.resolveMapped(symbols[index], moduleVariable)) {
+      const readState = async (symbol = symbols[index]) => {
+        for (const destination of await targets.resolveMapped(symbol, moduleVariable)) {
           const read = `${item.owner}\u0000${destination.id}`;
           if (stateReads.has(read)) continue;
           stateReads.add(read);
@@ -709,7 +711,7 @@ export async function extractProjectMap(
         // unless they read module state.
         const callable = await targets.resolveCallable(symbol);
         if (!callable?.objects.length && item.readsState) {
-          await readState();
+          await readState(symbol);
           continue;
         }
         const holder = callable && item.holder ? materialize(item.holder) : undefined;

@@ -197,3 +197,42 @@ test("each declaration's reads of a constant are stored once, in every language"
     assert.equal(text.match(/← used as value by /gu)?.length, 1, `${path}: ${text}`);
   }
 });
+
+test("a constant held as an object's value is read there; a key of the same name is not", async (t) => {
+  const { root } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/state.ts": "export const LIMIT = 3;\nexport const OTHER = 4;\nexport const SHORT = 5;\n",
+    "src/use.ts":
+      'import { LIMIT, OTHER, SHORT } from "./state";\n\nexport function valued() {\n  return { limit: LIMIT };\n}\nexport function keyed() {\n  return { OTHER: 1 };\n}\nexport function short() {\n  return { SHORT };\n}\nexport const other = OTHER;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const incoming = async (name: string) =>
+    (await map.explore({ path: "src/state.ts", name, direction: "INCOMING", depth: 1 }, signal()))
+      .text;
+
+  assert.match(await incoming("LIMIT"), /src\/use\.ts: valued/u);
+  assert.doesNotMatch(await incoming("OTHER"), /keyed/u);
+  assert.match(await incoming("SHORT"), /src\/use\.ts: short/u);
+});
+
+test("a constant only another constant holds is reached through it, not named as an entry point", async () => {
+  const products = (name: string) => `export const PRODUCTS = [{ name: "${name}" }];\n`;
+  const text = await checkAfter(
+    {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+      "src/products.ts": products("a"),
+      "src/batches.ts":
+        'import { PRODUCTS } from "./products";\n\nexport const BATCHES = [{ products: PRODUCTS }];\n',
+      "src/cli.ts":
+        'import { BATCHES } from "./batches";\n\nexport function main() {\n  return BATCHES.length;\n}\n',
+    },
+    ["src/products.ts", products("b")],
+  );
+  assert.match(text, /^ {2}src\/cli\.ts: main → BATCHES → PRODUCTS$/mu);
+  assert.doesNotMatch(text, /PRODUCTS has no callers/u);
+});

@@ -15,6 +15,7 @@ import { GoMapAnalyzer } from "../src/project-map-language-go";
 import { JavaMapAnalyzer } from "../src/project-map-language-java";
 import { PythonMapAnalyzer } from "../src/project-map-language-python";
 import { TypeScriptMapAnalyzer } from "../src/project-map-language-typescript";
+import { mapShapeUses } from "../src/project-map-shapes";
 import { analyzers, openMap, project, sandbox, signal } from "./support";
 
 const run = promisify(execFile);
@@ -279,6 +280,7 @@ test("a host embedding the index gets the same change check as LayerMap, whateve
     {
       index,
       project: directory,
+      source,
       // Unlike LayerMap, this host keeps every file of the project, code or not.
       working: (await index.prepare(source, signal())).version,
       base: "HEAD",
@@ -514,6 +516,56 @@ test("a change names the code it adds that reads almost the same as code the pro
   await commit(root);
   await write("src/util/money.ts", "export {};\n");
   await write("src/util/currency.ts", money);
+  assert.equal(await similar(), "");
+});
+
+test("a short declaration counts as a copy only when it repeats one of its name word for word", async (t) => {
+  const directoryOf =
+    'const directoryOf = (path: string) => path.slice(0, path.lastIndexOf("/"));\n';
+  const convention = (name: string) => `const ${name} = console.log.bind(console, "app");\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/paths.ts": `${directoryOf}export const LIMIT = 10;\nexport function same(path: string) { return path; }\nexport { directoryOf };\n`,
+    "src/other.ts": `${directoryOf}export { directoryOf };\n`,
+    // What many files repeat is a convention; a few files' copies are not yet.
+    "src/a.ts": `${convention("logger")}${convention("tracer")}export { logger, tracer };\n`,
+    "src/b.ts": `${convention("logger")}${convention("tracer")}export { logger, tracer };\n`,
+    "src/c.ts": `${convention("logger")}${convention("tracer")}export { logger, tracer };\n`,
+    "src/d.ts": `${convention("logger")}export { logger };\n`,
+    // Calls the new declaration of its name, in the same words: it uses it rather than repeats it.
+    "src/linked.ts": 'import { go as helper } from "./new";\nexport const go = () => helper();\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const similar = async () => {
+    const { text } = await map.checkChanges({}, signal());
+    const at = text.indexOf("EXISTING CODE LIKE THE NEW CODE");
+    return at < 0
+      ? ""
+      : text.slice(at, text.indexOf("\n", text.indexOf("Use the existing code", at)));
+  };
+
+  // Exported or not, however it is spaced, the same code under the same name is a copy. The same
+  // name with other code, the same code under another name, and a convention are not.
+  await write(
+    "src/new.ts",
+    `export ${directoryOf}export const LIMIT = 20;\nfunction same(path: string) {  return path;  }\nexport const parent = (path: string) => path.slice(0, path.lastIndexOf("/"));\n${convention("logger")}${convention("tracer")}declare const helper: () => void;\nexport const go = () => helper();\nexport { same, logger, tracer };\n`,
+  );
+  const text = await similar();
+  assert.match(
+    text,
+    /^ {2}src\/new\.ts: directoryOf v1 ~ src\/other\.ts: directoryOf v1 \(\+1 more alike\)$/mu,
+  );
+  assert.match(text, /^ {2}src\/new\.ts: same f3 ~ src\/paths\.ts: same f3$/mu);
+  assert.match(text, /^ {2}src\/new\.ts: tracer v6 ~ src\/a\.ts: tracer v2 \(\+2 more alike\)$/mu);
+  assert.doesNotMatch(text, /LIMIT|parent|logger|\bgo\b/u);
+
+  // Moved to another file, it adds nothing, though another copy is still there.
+  await run("git", ["clean", "-qfd"], { cwd: root });
+  await write("src/paths.ts", "export const LIMIT = 10;\n");
+  await write("src/moved.ts", `${directoryOf}export { directoryOf };\n`);
   assert.equal(await similar(), "");
 });
 
@@ -772,6 +824,436 @@ test("given test files, the check names the changed code none of them runs and t
   assert.match(handler, /none: the given tests reach all 3 changed declarations/u);
   assert.match(handler, /^ {2}3 changed declarations are reached only through a route/mu);
   assert.match(handler, /^ {2}src\/funds\.ts: FundsService\.listReceivables m14-16$/mu);
+});
+
+// A field or type has no relations in the map; a search for its references links it to its users.
+const SHAPES = (side: string, key: string, unread = "") => ({
+  "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src", "test"] }),
+  "src/keys.ts": `export type Key = ${key};\n`,
+  "src/shape.ts": `import type { Key } from "./keys";
+
+export interface Shape {
+  side: ${side};
+  ${unread}
+}
+export interface Row {
+  key: Key;
+}
+export interface Idle {
+  key: Key;
+}
+export const area = (s: Shape) => s.side + 1;
+export function perimeter({ side }: Shape) {
+  return String(side);
+}
+export const label = (row: Row) => String(row.key).length;
+`,
+  "src/routes.ts": `import { area, label, perimeter } from "./shape";
+declare const router: { get(path: string, h: unknown): void };
+router.get("/shapes/area", () => area({ side: 2 } as never));
+router.get("/shapes/perimeter", () => perimeter({ side: 2 } as never));
+router.get("/shapes/label", () => label({ key: "a" } as never));
+`,
+  "test/shape.test.ts":
+    'import { area } from "../src/shape";\n\nexport const value = area({ side: 3 } as never);\n',
+  "test/other.test.ts": "export const other = 1;\n",
+});
+
+test("a changed field or type reaches the code that uses it, the entry points above it and the tests", async (t) => {
+  const { root, write } = await project({
+    ...SHAPES("number", "string"),
+    "test/direct.test.ts":
+      'import type { Shape } from "../src/shape";\n\nexport const direct = (s: Shape) => s.side;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const possibly = (text: string) =>
+    text.slice(
+      text.indexOf("\nPOSSIBLY AFFECTED"),
+      text.indexOf("\n", text.indexOf('"', text.lastIndexOf("/shapes/"))),
+    );
+
+  // A read and a destructured read, through a route each; what changed in a field may not matter
+  // to them, so they are possibly affected, not certainly.
+  await write("src/shape.ts", SHAPES("bigint", "string")["src/shape.ts"]);
+  const field = (await map.checkChanges({}, signal())).text;
+  assert.match(field, /^ {2}src\/shape\.ts: Shape\.side p4$/mu);
+  assert.match(field, /^ {2}"GET \/shapes\/area" → area → Shape\.side/mu);
+  assert.match(field, /^ {2}"GET \/shapes\/perimeter" → perimeter → Shape\.side/mu);
+  assert.ok(field.indexOf("POSSIBLY AFFECTED") < field.indexOf('"GET /shapes/area"'));
+  assert.doesNotMatch(field, /AFFECTED ENTRY POINTS/u);
+  assert.doesNotMatch(field, /has no callers/u);
+  assert.match(
+    field,
+    /test\/shape\.test\.ts: test\/shape\.test\.ts \((?:calls area|uses Shape\.side)\)/u,
+  );
+  assert.match(field, /test\/direct\.test\.ts: direct \(uses Shape\.side\)/u);
+
+  // A test that runs code using the field reaches it; one that does not, does not.
+  const covered = (await map.checkChanges({ tests: ["test/shape.test.ts"] }, signal())).text;
+  assert.match(covered, /^ {2}none: the given tests reach all 1 changed declarations$/mu);
+  const uncovered = (await map.checkChanges({ tests: ["test/other.test.ts"] }, signal())).text;
+  assert.match(uncovered, /^ {2}1 of 1 changed declarations are reached by none/mu);
+  assert.match(uncovered, /^ {2}"GET \/shapes\/area" → area → Shape\.side.* \(possibly\)$/mu);
+
+  // A type named by another type's field: the code reading that field uses it. A field nothing
+  // reads ends the chain without being an entry point.
+  await write("src/shape.ts", SHAPES("number", "string")["src/shape.ts"]);
+  await write("src/keys.ts", SHAPES("number", "number")["src/keys.ts"]);
+  const type = (await map.checkChanges({}, signal())).text;
+  assert.match(type, /^ {2}"GET \/shapes\/label" → label → Row\.key → Key/mu);
+  assert.doesNotMatch(type, /^ {2}src\/shape\.ts: Row/mu);
+  assert.ok(possibly(type));
+  assert.doesNotMatch(type, /Idle/u);
+
+  // A field nothing uses is named as such, and is no entry point.
+  await write("src/keys.ts", SHAPES("number", "string")["src/keys.ts"]);
+  await write("src/shape.ts", SHAPES("number", "string", "ghost: number;")["src/shape.ts"]);
+  const ghost = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    ghost,
+    /^ {2}src\/shape\.ts: Shape\.ghost has no callers in the map, and a search for references found no use/mu,
+  );
+  assert.doesNotMatch(ghost, /ENTRY POINTS|POSSIBLY AFFECTED/u);
+});
+
+test("a removed field or type code still uses is named as used; one that moved is not", async (t) => {
+  const { root, write } = await project(SHAPES("number", "string"));
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const shape = SHAPES("number", "string")["src/shape.ts"];
+
+  await write("src/shape.ts", shape.replace("  side: number;\n", ""));
+  const kept = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    kept,
+    /^REMOVED OR RENAMED, STILL USED[^\n]*\n {2}src\/shape\.ts: Shape\.side p4 ← src\/shape\.ts: area, src\/shape\.ts: perimeter$/mu,
+  );
+
+  // The diff also rewrites the code that used it: nothing it left alone does.
+  await write(
+    "src/shape.ts",
+    shape
+      .replace("  side: number;\n", "")
+      .replace("(s: Shape) => s.side + 1", "(s: Shape) => s")
+      .replace("{ side }: Shape", "side: Shape"),
+  );
+  await write(
+    "src/routes.ts",
+    SHAPES("number", "string")["src/routes.ts"].replaceAll("{ side: 2 } as never", "{} as never"),
+  );
+  await write("test/shape.test.ts", "export const value = 1;\n");
+  const gone = (await map.checkChanges({}, signal())).text;
+  assert.doesNotMatch(gone, /Shape\.side p4 ←/u);
+  assert.match(gone, /^REMOVED OR RENAMED \(no code[^\n]*\n {2}src\/shape\.ts: Shape\.side p4$/mu);
+  await run("git", ["checkout", "--", "."], { cwd: root });
+
+  // Moved to another file with the imports following it: the code naming it still has it.
+  await write("src/keys.ts", "export {};\n");
+  await write("src/moved.ts", "export type Key = string;\n");
+  await write("src/shape.ts", shape.replace('from "./keys"', 'from "./moved"'));
+  const moved = (await map.checkChanges({}, signal())).text;
+  assert.doesNotMatch(moved, /Key t\d+ ←/u);
+});
+
+test("a field's reads count across languages, and who uses it is left to a person when it cannot be read", async (t) => {
+  const fields = Array.from({ length: 61 }, (_, at) => `  f${at}: number;`).join("\n");
+  const reads = Array.from({ length: 61 }, (_, at) => `m.f${at}`).join(", ");
+  const many = (body: string) =>
+    `export interface Many {\n${body}\n}\nexport const sum = (m: Many) => [${reads}];\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "go.mod": "module example.com/m\n\ngo 1.22\n",
+    "models/row.go":
+      'package models\n\ntype Row struct {\n\tName string `json:"name"`\n}\n\nfunc Title(r Row) string {\n\treturn r.Name\n}\n',
+    "app/__init__.py": "",
+    "app/point.py":
+      "class Point:\n    x: int = 1\n    y: int = 1\n\n\ndef norm(p: Point) -> int:\n    return p.x\n\n\ndef blind(p):\n    return p.y\n",
+    "src/many.ts": many(fields),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(
+    "models/row.go",
+    'package models\n\ntype Row struct {\n\tName string `json:"title"`\n}\n\nfunc Title(r Row) string {\n\treturn r.Name\n}\n',
+  );
+  await write(
+    "app/point.py",
+    "class Point:\n    x: int = 2\n    y: int = 2\n\n\ndef norm(p: Point) -> int:\n    return p.x\n\n\ndef blind(p):\n    return p.y\n",
+  );
+  const known = (await map.checkChanges({}, signal())).text;
+  assert.match(known, /^ {2}models\/row\.go: Title → Row\.Name/mu);
+  assert.match(known, /^ {2}app\/point\.py: norm → Point\.x/mu);
+  // Through a value of unknown type no search finds it.
+  assert.match(
+    known,
+    /app\/point\.py: Point\.y has no callers in the map, and a search for references found no use/u,
+  );
+
+  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write("src/many.ts", many(fields.replaceAll("number", "string")));
+  // The limit of time may leave out more than the limit of declarations does.
+  const limited = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    limited,
+    /^ {2}who uses \d+ changed fields or types was not read, so what they affect is not known \(Many\.f\d+.*\); project_find_references/mu,
+  );
+  // Not reading a field's uses does not mean finding none.
+  assert.doesNotMatch(limited, /Many\.f\d+ has no callers/u);
+});
+
+test("who uses a field is read up to a limit of declarations and time, and what was not all read is named", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const graph = {
+    object: (ref: string) => ({ kind: ref === "reader" ? "FUNCTION" : "PROPERTY" }),
+    owner: (ref: string) => ref,
+  } as never;
+  const uses = [{ owner: "reader", anchor: {} as never, write: false }];
+
+  const reached: string[] = [];
+  const timed = await mapShapeUses(graph, ["partial", "failed", "slow", "late"], async (ref) => {
+    reached.push(ref);
+    if (ref === "failed") return undefined;
+    if (ref === "slow") t.mock.timers.tick(20_001);
+    return { uses, complete: ref !== "partial" };
+  });
+  assert.deepEqual(reached, ["partial", "failed", "slow"]);
+  assert.deepEqual([...timed.unread], ["partial", "failed", "late"]);
+  assert.equal(timed.uses.get("partial")?.length, 1);
+  assert.deepEqual(timed.uses.get("failed"), []);
+  assert.equal(timed.uses.has("late"), false);
+
+  const fields = Array.from({ length: 61 }, (_, at) => `f${at}`);
+  const counted = await mapShapeUses(graph, fields, async () => ({ uses: [], complete: true }));
+  assert.equal(counted.uses.size, 60);
+  assert.deepEqual([...counted.unread], ["f60"]);
+});
+
+test("a function held in a field is followed as a function, and importing a type does not use it", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/work.ts": "export function work() {\n  return 1;\n}\n",
+    "src/job.ts":
+      'import { work } from "./work";\n\nexport class Job {\n  run = () => work();\n}\n',
+    "src/keys.ts": "export type Lonely = string;\n",
+    "src/barrel.ts": 'export type { Lonely } from "./keys";\n',
+    "src/importer.ts": 'import type { Lonely } from "./keys";\n\nexport const one = 1;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/work.ts", "export function work() {\n  return 2;\n}\n");
+  const called = (await map.checkChanges({}, signal())).text;
+  assert.match(called, /^ {2}src\/job\.ts: Job\.run → work/mu);
+  await run("git", ["checkout", "--", "."], { cwd: root });
+
+  await write("src/keys.ts", "export type Lonely = number;\n");
+  const named = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    named,
+    /src\/keys\.ts: Lonely has no callers in the map, and a search for references found no use/u,
+  );
+});
+
+test("an entry point both a call and a use reach is certainly affected, however short the use", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/thing.ts":
+      "export interface Thing {\n  size: number;\n}\nexport function low() {\n  return 1;\n}\nexport function mid() {\n  return low();\n}\n",
+    "src/command.ts":
+      'import { mid, type Thing } from "./thing";\n\nexport function command(thing: Thing) {\n  return thing.size + mid();\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(
+    "src/thing.ts",
+    "export interface Thing {\n  size: 1 | 2;\n}\nexport function low() {\n  return 2;\n}\nexport function mid() {\n  return low();\n}\n",
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /^AFFECTED ENTRY POINTS[^\n]*\n {2}src\/command\.ts: command → mid → low$/mu);
+  assert.doesNotMatch(text, /^POSSIBLY AFFECTED/mu);
+});
+
+test("a field holding a function others call by key is an entry point; one using a type is not", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/compare.ts": "export function compare() {\n  return 1;\n}\nexport type Stage = string;\n",
+    "src/pipeline.ts":
+      'import { compare, type Stage } from "./compare";\n\nexport const handlers = { comparing: compare };\nexport interface Row {\n  stage: Stage;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(
+    "src/compare.ts",
+    "export function compare() {\n  return 2;\n}\nexport type Stage = number;\n",
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^AFFECTED ENTRY POINTS[^\n]*\n {2}src\/pipeline\.ts: handlers\.comparing → compare$/mu,
+  );
+  assert.doesNotMatch(text, /Row\.stage/u);
+});
+
+test("removing one key of a type generic code indexes is not a use of it; a class's fields still count", async (t) => {
+  const operations = (extra: string) =>
+    `export interface Operations {\n${extra}  "GET /kept": {\n    readonly request: { id: string };\n  };\n}\n`;
+  const fields = (extra: string) => `export class Account {\n  ${extra}id = "a";\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/operations.ts": operations(
+      '  "POST /gone": {\n    readonly request: { name: string };\n  };\n',
+    ),
+    "src/client.ts":
+      'import type { Operations } from "./operations";\n\ntype Key = keyof Operations;\nexport type Input<K extends Key> = {\n  readonly body?: Operations[K]["request"];\n};\n',
+    "src/account.ts": fields("gone = 1;\n  "),
+    "src/reader.ts":
+      'import type { Account } from "./account";\n\nexport const read = (account: Account) => account.gone;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/operations.ts", operations(""));
+  const key = (await map.checkChanges({}, signal())).text;
+  assert.doesNotMatch(key, /STILL USED/u);
+  assert.match(
+    key,
+    /^REMOVED OR RENAMED \(no code[^\n]*\n {2}src\/operations\.ts: Operations\.POST \/gone p\d+/mu,
+  );
+  await run("git", ["checkout", "--", "."], { cwd: root });
+
+  await write("src/account.ts", "export {};\n");
+  const whole = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    whole,
+    /^REMOVED OR RENAMED, STILL USED[^\n]*\n {2}src\/account\.ts: Account c\S+ ← src\/reader\.ts: read$/mu,
+  );
+});
+
+test("a field or key only a type's index names is used, by that type alone", async (t) => {
+  const row = (fields: string) => `export interface Row {\n${fields}  kept: string;\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts": row(
+      '  total: number;\n  "POST /gone": { request: string };\n  lonely: number;\n',
+    ),
+    // Offsets count past text that is not ASCII, and past names that only look like an index.
+    "src/user.ts":
+      'import type { Row } from "./row";\n\n// 中文注释 😀\nexport function show(value: Row["total"], body: Row["POST /gone"]) {\n  return [value, body];\n}\n',
+    "src/other.ts":
+      'interface Other {\n  lonely: number;\n}\nexport const names = ["lonely"];\n// Row["lonely"]\nexport function unrelated(value: Other["lonely"]) {\n  return [value, names];\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/row.ts", row("  total: string;\n  lonely: string;\n"));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^REMOVED OR RENAMED, STILL USED[^\n]*\n {2}src\/row\.ts: Row\.POST \/gone p\d+ ← src\/user\.ts: show$/mu,
+  );
+  assert.match(
+    text,
+    /^POSSIBLY AFFECTED[^\n]*\n(?: {2}[^\n]*\n)*? {2}src\/user\.ts: show → Row\.total/mu,
+  );
+  assert.doesNotMatch(text, /Row\.total has no callers/u);
+  assert.match(
+    text,
+    /Row\.lonely has no callers in the map, and a search for references found no use/u,
+  );
+  assert.doesNotMatch(text, /unrelated/u);
+});
+
+test("a field a file both reads and indexes is one reference for each place", async (t) => {
+  const { root } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts": "export interface Row {\n  total: number;\n}\n",
+    "src/user.ts":
+      'import type { Row } from "./row";\n\nexport const show = (row: Row, value: Row["total"]) => row.total + value;\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  const { references } = await map.references(
+    { symbol: { path: "src/row.ts", name: "Row.total" }, maxResults: 20 },
+    signal(),
+  );
+  assert.deepEqual(references.map((reference) => reference.kind).sort(), [
+    "DECLARATION",
+    "READ",
+    "REFERENCE",
+  ]);
+});
+
+test("an index on a generic or a union names the same field of each type", async (t) => {
+  const { root } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts":
+      "export interface Row {\n  total: number;\n}\nexport interface Sum {\n  total: string;\n}\n",
+    "src/union.ts":
+      'import type { Row, Sum } from "./row";\n\nexport type Union = (Row | Sum)["total"];\n',
+    "src/generic.ts":
+      'import type { Row } from "./row";\n\nexport type Generic<T extends Row> = T["total"];\n',
+    "src/other.ts": 'import type { Sum } from "./row";\n\nexport type Other = Sum["total"];\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  const { references } = await map.references(
+    { symbol: { path: "src/row.ts", name: "Row.total" }, maxResults: 20 },
+    signal(),
+  );
+  assert.deepEqual([...new Set(references.map((reference) => reference.anchor.path))].sort(), [
+    "src/generic.ts",
+    "src/row.ts",
+    "src/union.ts",
+  ]);
+});
+
+// A field's reads are not all in the map, so its last recorded read going says nothing by itself.
+test("a field other code still reads is not left without callers", async (t) => {
+  const reader = (reads: string) =>
+    `import { Box } from "./box";\ndeclare function use(value: unknown): void;\n\nexport function report(box: Box) {\n  ${reads}\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/box.ts":
+      "declare function make(): () => void;\nexport class Box {\n  size = make();\n  spare = make();\n  reset() {\n    this.spare = make();\n  }\n}\n",
+    "src/report.ts": reader("box.size();\n  box.spare();"),
+    "src/total.ts":
+      'import { Box } from "./box";\n\nexport function total(box: Box) {\n  const { size } = box;\n  return size;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/report.ts", reader("use(1);"));
+  const { text } = await map.checkChanges({}, signal());
+  const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
+  assert.equal(left, "  src/box.ts: Box.spare p4\n");
 });
 
 // low ← b0 … b3 ← high ← a0 … a3 ← a test: ten calls from the test down to low; and

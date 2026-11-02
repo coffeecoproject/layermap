@@ -459,6 +459,7 @@ export class LayerMap {
         {
           index: this.index,
           project: this.project,
+          source: this.source,
           working: await this.current(signal, hold),
           base: input.base ?? "HEAD",
           baseVersion: (commit, baseSignal) => this.versionAt(commit, baseSignal, hold),

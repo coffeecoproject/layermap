@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { CodeIndex } from "./code-index";
 import type { CodeIndexStore } from "./code-index-store";
+import type { CodeIndexSource } from "./code-index-types";
 import { ProjectEvidenceError } from "./core";
 import { GitRunner } from "./git-runner";
 import {
@@ -16,7 +17,14 @@ import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
-import { type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
+import {
+  MAP_NO_SHAPE_USES,
+  type MapShapeReader,
+  type MapShapeUse,
+  mapIsShape,
+  mapShapeUses,
+} from "./project-map-shapes";
+import { type MapAnchor, type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
 import { inExcludedDirectory } from "./source-scope";
@@ -24,7 +32,8 @@ import { inExcludedDirectory } from "./source-scope";
 // "What does this change affect?": the declarations a diff touches, the entry points and tests
 // their callers reach, and what a static map cannot see. It borrows test impact analysis practice:
 // tests are chosen by file (call paths only explain them), an import graph backs up the call
-// graph, and anything uncertain is named rather than ruled out.
+// graph, and anything uncertain is named rather than ruled out. Who uses a changed field or type is
+// not in the call graph, so it is found on demand (project-map-shapes.ts).
 
 /** Inclusive 1-based line ranges. */
 type Lines = readonly (readonly [number, number])[];
@@ -288,7 +297,14 @@ export type MapUntestedChanges = Readonly<{
   truncated: boolean;
 }>;
 
-const LIMITS = Object.freeze({ depth: 8, declarations: 800, changed: 200, chain: 3, byName: 40 });
+const LIMITS = Object.freeze({
+  depth: 8,
+  declarations: 800,
+  changed: 200,
+  chain: 3,
+  byName: 40,
+  referencePages: 5,
+});
 const CALLER_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES"]);
 /** The relations whose source names their target, which removing the target breaks. */
 const NAMING_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES", "EXTENDS", "IMPLEMENTS"]);
@@ -302,9 +318,24 @@ const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // A literal is a route when it is a path, optionally after its methods: "/x", "GET|POST /x".
 const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
 
-// A declaration the trace reached, and the one below it on the way from the change.
-type Reached = { ref: string; depth: number; certain: boolean; via?: string };
-type Caller = { ref: string; relation: MapRelation; certain: boolean };
+// A declaration the trace reached, and the one below it on the way from the change; used: it was
+// reached by reading or naming a field or type, not by calling.
+type Reached = { ref: string; depth: number; certain: boolean; via?: string; used?: boolean };
+// uses: a declaration that reads or names a field or type, which is not known to depend on what
+// changed in it, rather than one that calls it.
+type Caller = {
+  ref: string;
+  anchor: MapAnchor;
+  argument?: string;
+  certain: boolean;
+  uses?: boolean;
+};
+const callerFrom = (ref: string, relation: MapRelation, certain: boolean): Caller => ({
+  ref,
+  anchor: relation.anchor,
+  ...(relation.argument ? { argument: relation.argument } : {}),
+  certain,
+});
 
 // The unit a feature lives in: a package in Go and Java, a module (file) elsewhere.
 const areaOf = (file: string) =>
@@ -326,6 +357,8 @@ class Tracer {
   readonly handlers = new Map<string, Set<string>>();
   /** Test support files that call the changed code; the tests beside and below them may use it. */
   readonly support = new Set<string>();
+  /** Who uses the fields and types traced; set before tracing them. */
+  shapes = MAP_NO_SHAPE_USES;
 
   constructor(
     private readonly graph: MapViewGraph,
@@ -349,7 +382,14 @@ class Tracer {
         frontier.push(start);
       }
     for (const start of frontier) this.byName(start.ref);
-    while (frontier.length) {
+    // Uncertain steps wait until every certain path has been walked: a declaration both reach,
+    // however much shorter the uncertain way, is certainly affected.
+    const uncertain: { current: Reached; caller: Caller }[] = [];
+    while (frontier.length || uncertain.length) {
+      if (!frontier.length)
+        frontier = uncertain
+          .splice(0)
+          .flatMap(({ current, caller }) => this.step(current, caller, false));
       const next: Reached[] = [];
       for (const current of frontier) {
         const object = this.graph.object(current.ref);
@@ -358,10 +398,10 @@ class Tracer {
         const callers = this.callers(current.ref);
         this.callerCount.set(current.ref, callers.length);
         for (const caller of callers) {
-          const site = `${caller.relation.anchor.path}:${caller.relation.anchor.startLine}`;
+          const site = `${caller.anchor.path}:${caller.anchor.startLine}`;
           const certain = current.certain && caller.certain;
-          if (caller.relation.argument && ROUTE.test(caller.relation.argument))
-            this.entry(caller.relation.argument, true, current, site, certain);
+          if (caller.argument && ROUTE.test(caller.argument))
+            this.entry(caller.argument, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
           if (testCode(callerObject.anchor.path)) {
             // Test support (conftest.py, fixtures, helpers) reaches tests by injection or import.
@@ -370,7 +410,7 @@ class Tracer {
             this.test(
               callerObject.anchor.path,
               this.name(caller.ref),
-              `calls ${this.name(current.ref)}`,
+              `${caller.uses ? "uses" : "calls"} ${this.name(current.ref)}`,
               // Tests closer to the change come first; all of them rank before other relations.
               current.depth / 10,
             );
@@ -378,14 +418,8 @@ class Tracer {
               this.area(current.ref, callerObject.anchor.path, this.name(caller.ref));
             continue;
           }
-          if (this.reached.has(caller.ref)) continue;
-          if (current.depth + 1 > LIMITS.depth || this.reached.size >= LIMITS.declarations) {
-            this.truncated = true;
-            continue;
-          }
-          const reached = { ref: caller.ref, depth: current.depth + 1, certain, via: current.ref };
-          this.reached.set(caller.ref, reached);
-          next.push(reached);
+          if (certain) next.push(...this.step(current, caller, true));
+          else uncertain.push({ current, caller });
         }
       }
       frontier = next;
@@ -411,7 +445,7 @@ class Tracer {
     // Declarations nothing calls are where the chains start: commands, jobs, framework-wired
     // handlers, or code that is not used. Routes already name the more useful entry points.
     for (const reached of this.reached.values()) {
-      if (this.callerCount.get(reached.ref) !== 0) continue;
+      if (this.callerCount.get(reached.ref) !== 0 || this.shapes.unread.has(reached.ref)) continue;
       const object = this.graph.object(reached.ref);
       if (testCode(object.anchor.path) || this.routes.has(reached.ref)) continue;
       // A page's template that changed is the entry itself: the page shows it.
@@ -420,18 +454,40 @@ class Tracer {
         this.unclear.push(
           uses.length
             ? `${this.where(reached.ref)} has no callers in the map, and is used without a call: ${uses.join("; ")}`
-            : `${this.where(reached.ref)} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
+            : mapIsShape(object)
+              ? `${this.where(reached.ref)} has no callers in the map, and a search for references found no use: it may be read through reflection, serialization or a value of unknown type, or be unused`
+              : `${this.where(reached.ref)} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
         );
-      } else this.entry(this.where(reached.ref), false, reached, undefined, reached.certain, true);
+        // A type or field that only uses one is no entry point: nothing runs from it. A field that
+        // holds a function others call by key is one.
+      } else if (!reached.used || !mapIsShape(object))
+        this.entry(this.where(reached.ref), false, reached, undefined, reached.certain, true);
     }
+  }
+
+  private step(current: Reached, caller: Caller, certain: boolean): Reached[] {
+    if (this.reached.has(caller.ref)) return [];
+    if (current.depth + 1 > LIMITS.depth || this.reached.size >= LIMITS.declarations) {
+      this.truncated = true;
+      return [];
+    }
+    const reached = {
+      ref: caller.ref,
+      depth: current.depth + 1,
+      certain,
+      via: current.ref,
+      ...(caller.uses ? { used: true } : {}),
+    };
+    this.reached.set(caller.ref, reached);
+    return [reached];
   }
 
   /**
    * The uses outside tests the map sees of a declaration besides calls: a class others extend or
    * implement, a member that overrides another or that others override, and a decorator that may
    * wire it to be run (a route, a task, a registry). A decorator of the language's own library
-   * (dataclass, staticmethod) only shapes the declaration. Reading a value is a reference, so a
-   * caller; writing one is not a use, as a value nothing reads is unused.
+   * (dataclass, staticmethod) only shapes the declaration. Reading a value of module state is a
+   * reference, so a caller; writing one is not a use, as a value nothing reads is unused.
    */
   usesWithoutCalls(ref: string): string[] {
     const uses: string[] = [];
@@ -511,11 +567,14 @@ class Tracer {
     for (const relation of this.graph.relationsTo([ref]))
       if (CALLER_KINDS.has(relation.kind)) {
         const owner = this.graph.owner(relation.from);
-        if (owner !== ref) callers.push({ ref: owner, relation, certain: true });
+        if (owner !== ref) callers.push(callerFrom(owner, relation, true));
       }
+    // Who reads or names a field or type: what changes in it may or may not matter to them.
+    for (const use of this.shapes.uses.get(ref) ?? [])
+      callers.push({ ref: use.owner, anchor: use.anchor, certain: false, uses: true });
     // Members the language runs without naming them run wherever their class is used: a
     // constructor where it is instantiated, a special method (__call__, __aenter__, __getitem__)
-    // through syntax, a property when it is read. The class's users are their callers too.
+    // through syntax, a decorated property when it is read. The class's users are their callers too.
     const object = this.graph.object(ref);
     const parent = this.graph.parent(ref);
     const constructs =
@@ -526,7 +585,6 @@ class Tracer {
       const implicit =
         constructs ||
         /^__\w+__$/u.test(object.name) ||
-        object.kind === "PROPERTY" ||
         this.graph
           .relationsFrom([ref])
           .some(
@@ -539,11 +597,7 @@ class Tracer {
           if (CALLER_KINDS.has(relation.kind)) {
             const owner = this.graph.owner(relation.from);
             if (owner !== ref && owner !== parent)
-              callers.push({
-                ref: owner,
-                relation,
-                certain: constructs && relation.kind === "CALLS",
-              });
+              callers.push(callerFrom(owner, relation, constructs && relation.kind === "CALLS"));
           }
     }
     // A call through an interface or base member may reach this implementation, or another;
@@ -558,7 +612,7 @@ class Tracer {
           for (const relation of relations)
             if (CALLER_KINDS.has(relation.kind)) {
               const owner = this.graph.owner(relation.from);
-              if (owner !== ref) callers.push({ ref: owner, relation, certain: only });
+              if (owner !== ref) callers.push(callerFrom(owner, relation, only));
             }
         }
     this.known.set(ref, callers);
@@ -646,21 +700,22 @@ export const mapRunnableTest = (file: string) =>
 const renamedTemplate = (file: MapChangedFile) =>
   file.status === "RENAMED" && file.basePath !== undefined && mapMiniprogramTemplate(file.basePath);
 
-export function mapChangeImpact(
+export async function mapChangeImpact(
   store: CodeIndexStore,
   working: string,
   base: string | undefined,
   changes: MapChanges,
+  shapes: Readonly<{ working: MapShapeReader; base: MapShapeReader }>,
   project?: string,
   tests?: readonly string[],
-): MapChangeImpact {
+): Promise<MapChangeImpact> {
   const graph = new MapViewGraph(store, working);
   const cache = new MapViewCache();
   const memberCalls = cache.memberCalls(store, working);
   const tracer = new Tracer(graph, memberCalls);
   const changed: string[] = [];
   const unclear: string[] = [];
-  const removed: { declaration: string; usedBy: string[] }[] = [];
+  const removed: { declaration: string; usedBy: Set<string> }[] = [];
   const declarations = (g: MapViewGraph, path: string) =>
     g.objectsAt(path).filter((object) => !mapIsModule(object) && g.isAddressable(object));
   // What a change is read in: a file's declarations, or a template as one unit, the page or
@@ -754,7 +809,18 @@ export function mapChangeImpact(
     sameDirectoryTests(mappedPaths(), file.path, tracer);
     mirroredTests(mappedPaths(), file.path, tracer);
   }
+  tracer.shapes = await mapShapeUses(graph, starts, shapes.working);
   tracer.trace(starts);
+  const unread = [...tracer.shapes.unread];
+  if (unread.length)
+    unclear.push(
+      `who uses ${unread.length} changed fields or types was not read, so what they affect is not known (${unread
+        .slice(0, LIST.names)
+        .map((ref) => graph.qualifiedName(ref))
+        .join(
+          ", ",
+        )}${unread.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
+    );
   const untested =
     tests && untestedChanges(project, graph, tracer, memberCalls, starts, changed, tests);
   if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
@@ -814,6 +880,14 @@ export function mapChangeImpact(
         );
     };
     const gone: string[] = [];
+    // The fields and types each removed declaration takes away, whose uses are read once all are
+    // known. A removed field or type counts alone: what is nested in it is reached through it, and
+    // a generic access such as Operations[K]["request"] finds the same member of every key.
+    const goneShapes: {
+      shapes: readonly string[];
+      inside: (ref: string) => boolean;
+      usedBy: Set<string>;
+    }[] = [];
     for (const file of changes.files) {
       if (!file.basePath || file.binary || testCode(file.basePath)) continue;
       const renamed = renamedTemplate(file);
@@ -855,14 +929,62 @@ export function mapChangeImpact(
               : `${user.anchor.path}: ${before.qualifiedName(owner)}`,
           );
         }
+        goneShapes.push({
+          shapes: mapIsShape(object)
+            ? [object.id]
+            : before
+                .objectsAt(file.basePath)
+                .filter((member) => inside(member.id) && mapIsShape(member))
+                .map((member) => member.id),
+          inside,
+          usedBy,
+        });
         removed.push({
           declaration: mapIsModule(object)
             ? `${file.basePath} (template)`
             : `${file.basePath}: ${before.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`,
-          usedBy: [...usedBy].sort(),
+          usedBy,
         });
       }
     }
+    // The code that reads or names the fields and types the diff removed, on lines it left alone;
+    // one still declared under its name was moved, and a compiler follows it.
+    beforeTracer.shapes = await mapShapeUses(
+      before,
+      goneShapes.flatMap((item) => item.shapes),
+      shapes.base,
+    );
+    const nowDeclared = new Set(
+      changes.files.flatMap((file) =>
+        file.status === "DELETED"
+          ? []
+          : graph.objectsAt(file.path).map((object) => same(graph, object.id)),
+      ),
+    );
+    for (const { shapes: inRemoved, inside, usedBy } of goneShapes)
+      for (const shape of inRemoved) {
+        if (nowDeclared.has(same(before, shape))) continue;
+        if (beforeTracer.shapes.unread.has(shape))
+          unclear.push(
+            `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; project_find_references on the base lists them`,
+          );
+        for (const { owner, anchor } of beforeTracer.shapes.uses.get(shape) ?? []) {
+          const file = changedIn.get(anchor.path);
+          if (
+            inside(owner) ||
+            (file &&
+              (file.status === "DELETED" ||
+                overlaps(file.baseLines, anchor.startLine, anchor.endLine)))
+          )
+            continue;
+          const user = before.object(owner);
+          usedBy.add(
+            mapIsModule(user)
+              ? `${user.anchor.path}: top-level code`
+              : `${user.anchor.path}: ${before.qualifiedName(owner)}`,
+          );
+        }
+      }
     // Template links the diff broke: a template's binding or tag that reached a method, a component
     // or an event in the base and reaches nothing now, as when a component stops emitting an event
     // a page binds, or app.json registers a component where there is none. No compiler checks a
@@ -917,8 +1039,7 @@ export function mapChangeImpact(
         lost.set(name, users);
       }
     }
-    for (const [declaration, users] of lost)
-      removed.push({ declaration, usedBy: [...users].sort() });
+    for (const [declaration, users] of lost) removed.push({ declaration, usedBy: users });
 
     // Top-level code the diff removed: imports, calls and registrations outside any declaration,
     // not the declarations it holds.
@@ -1002,6 +1123,18 @@ export function mapChangeImpact(
       )
         continue;
       if (!outsideTests(beforeTracer.callers(ref), before).length) continue;
+      // A field's other reads are not all in the map; it counts only if a search finds none.
+      if (mapIsShape(now)) {
+        const found = await shapes.working(now.id);
+        if (
+          !found?.complete ||
+          found.uses.some(({ owner, write }) => {
+            const user = graph.owner(owner);
+            return !write && user !== now.id && !testCode(graph.object(user).anchor.path);
+          })
+        )
+          continue;
+      }
       const tested = tracer.callers(now.id).length > 0;
       uncalled.push(
         `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
@@ -1012,7 +1145,10 @@ export function mapChangeImpact(
 
   return {
     changed,
-    removed,
+    removed: removed.map(({ declaration, usedBy }) => ({
+      declaration,
+      usedBy: [...usedBy].sort(),
+    })),
     rewrittenTests,
     entries: [...tracer.entries.values()].sort(entryOrder),
     tests: [...tracer.tests]
@@ -1090,6 +1226,7 @@ function untestedChanges(
     else if (!found) unreached.push(at);
   }
   const above = new Tracer(graph, memberCalls);
+  above.shapes = tracer.shapes;
   above.trace(unreached.map((at) => starts[at] ?? ""));
   return {
     changed: unreached.map((at) => changed[at] ?? ""),
@@ -1339,6 +1476,8 @@ export type MapChangeCheckInput = Readonly<{
   index: CodeIndex;
   /** The directory that map was captured from; the diff against the base is read there. */
   project: string;
+  /** Where the map was captured from, to find who uses a changed field or type. */
+  source: CodeIndexSource;
   /** The map version of that directory as it is now. */
   working: string;
   /** The commit, branch or tag to compare with. */
@@ -1377,7 +1516,44 @@ export async function checkMapChanges(
   )
     ? await input.baseVersion(changes.commit, signal)
     : undefined;
-  const impact = mapChangeImpact(index.store, working, base, changes, project, input.tests);
+  // The uses of a field or type in one version, a page of references at a time; what a repository
+  // uses too widely to read says little about this change.
+  const usesIn =
+    (version: string, source: CodeIndexSource): MapShapeReader =>
+    async (ref) => {
+      const uses: MapShapeUse[] = [];
+      let cursor: string | undefined;
+      try {
+        for (let page = 0; page < LIMITS.referencePages; page++) {
+          const found = await index.findReferences(
+            { version, source, entityRef: ref, maxResults: 200, ...(cursor ? { cursor } : {}) },
+            signal,
+          );
+          for (const { kind, owner, anchor } of found.references)
+            if (owner && kind !== "IMPORT_EXPORT")
+              uses.push({ owner: owner.id, anchor, write: kind === "WRITE" });
+          cursor = found.nextCursor;
+          if (!cursor) break;
+        }
+      } catch (error) {
+        // Some declarations have no reference target, as in a file read only for its syntax.
+        if (signal.aborted || !(error instanceof ProjectEvidenceError)) throw error;
+        return undefined;
+      }
+      return { uses, complete: !cursor };
+    };
+  const impact = await mapChangeImpact(
+    index.store,
+    working,
+    base,
+    changes,
+    {
+      working: usesIn(working, input.source),
+      base: usesIn(base ?? working, { ...input.source, kind: "COMMIT", commit: changes.commit }),
+    },
+    project,
+    input.tests,
+  );
   return {
     text: mapChangesText(
       changes,
@@ -1580,7 +1756,7 @@ export function mapChangesText(
     LIST.entries,
   );
   list(
-    "POSSIBLY AFFECTED (through a call on an interface or base member, which may dispatch elsewhere)",
+    "POSSIBLY AFFECTED (through a call on an interface or base member, which may dispatch elsewhere, or through code that uses a changed field or type, which may not depend on what changed)",
     impact.entries.filter((e) => !e.certain).map(entry),
     LIST.entries,
   );

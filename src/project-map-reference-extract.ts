@@ -3,6 +3,8 @@ import {
   isCallExpression,
   isElementAccessExpression,
   isIdentifier,
+  isIndexedAccessTypeNode,
+  isLiteralTypeNode,
   isNewExpression,
   isPrivateIdentifier,
   isPropertyAccessExpression,
@@ -43,6 +45,43 @@ function referenceKind(node: Node): MapReferencePage["references"][number]["kind
     : "REFERENCE";
 }
 
+/**
+ * Where a type's index names the symbol at the given token, as T["total"] does. The compiler's
+ * search skips a file that does not name what it looks for, and a string in a type's index is no
+ * name to it, so it finds these only in a file that also says .total.
+ */
+async function indexedAccesses(
+  project: Project,
+  input: MapWorkerInput,
+  token: Node,
+): Promise<readonly Node[]> {
+  const target = await project.checker.getSymbolAtLocation(token);
+  if (!target) return [];
+  const name = (token as Node & { text: string }).text;
+  const index = new RegExp(
+    `\\[\\s*(["'\`])${name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\1`,
+    "gu",
+  );
+  const literals: Node[] = [];
+  for (const [path, text] of Object.entries(input.files)) {
+    const matches = [...text.matchAll(index)];
+    const file = matches.length && (await project.program.getSourceFile(mapVirtualPath(path)));
+    if (!file) continue;
+    for (const match of matches) {
+      const literal = getTokenAtPosition(file, match.index + match[0].length - name.length - 2);
+      const type = literal.parent;
+      if (isLiteralTypeNode(type) && isIndexedAccessTypeNode(type.parent)) literals.push(literal);
+    }
+  }
+  if (!literals.length) return [];
+  // An index on a generic or a union names one symbol standing for the same member of each type.
+  const declarations = new Set(target.declarations.map((node) => `${node.path}:${node.index}`));
+  const symbols = await project.checker.getSymbolAtLocation(literals);
+  return literals.filter((_, at) =>
+    symbols[at]?.declarations.some((node) => declarations.has(`${node.path}:${node.index}`)),
+  );
+}
+
 export async function extractMapReferences(
   project: Project,
   input: MapWorkerInput,
@@ -61,23 +100,27 @@ export async function extractMapReferences(
   if (!groups.length) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
   const positions = new MapSourcePositions(input.files);
   const references = new Map<string, MapReferencePage["references"][number]>();
+  const add = (node: Node) => {
+    const relative = mapRelativePath(node.getSourceFile().fileName);
+    if (!relative || !Object.hasOwn(input.files, relative)) return;
+    if (!mapQueryPathMatches(relative, query.path ?? ".")) return;
+    const kind = referenceKind(node);
+    if (query.kinds && !query.kinds.includes(kind)) return;
+    const anchor = positions.anchor(node, node.getSourceFile());
+    references.set(`${relative}:${anchor.start}:${anchor.end}`, {
+      anchor,
+      kind,
+    });
+  };
   for (const group of groups) {
     for (const handle of group.references) {
       if (mapRelativePath(handle.path) === undefined) continue;
       const node = await handle.resolve(project);
       if (!node) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
-      const relative = mapRelativePath(node.getSourceFile().fileName);
-      if (!relative || !Object.hasOwn(input.files, relative)) continue;
-      if (!mapQueryPathMatches(relative, query.path ?? ".")) continue;
-      const kind = referenceKind(node);
-      if (query.kinds && !query.kinds.includes(kind)) continue;
-      const anchor = positions.anchor(node, node.getSourceFile());
-      references.set(`${relative}:${anchor.start}:${anchor.end}`, {
-        anchor,
-        kind,
-      });
+      add(node);
     }
   }
+  for (const node of await indexedAccesses(project, input, token)) add(node);
   const ordered = [...references.values()].sort(
     (left, right) =>
       Buffer.compare(Buffer.from(left.anchor.path), Buffer.from(right.anchor.path)) ||
