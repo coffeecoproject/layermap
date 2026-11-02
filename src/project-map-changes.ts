@@ -321,6 +321,10 @@ const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
 // A declaration the trace reached, and the one below it on the way from the change; used: it was
 // reached by reading or naming a field or type, not by calling.
 type Reached = { ref: string; depth: number; certain: boolean; via?: string; used?: boolean };
+const NO_REFERENCE_TARGET = new Set([
+  "PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE",
+  "PROJECT_MAP_REFERENCE_CONTEXT_UNAVAILABLE",
+]);
 // uses: a declaration that reads or names a field or type, which is not known to depend on what
 // changed in it, rather than one that calls it.
 type Caller = {
@@ -466,7 +470,12 @@ class Tracer {
   }
 
   private step(current: Reached, caller: Caller, certain: boolean): Reached[] {
-    if (this.reached.has(caller.ref)) return [];
+    const known = this.reached.get(caller.ref);
+    if (known) {
+      // Whichever came first, what a call also reaches does more than use the change.
+      if (!caller.uses) known.used = false;
+      return [];
+    }
     if (current.depth + 1 > LIMITS.depth || this.reached.size >= LIMITS.declarations) {
       this.truncated = true;
       return [];
@@ -814,7 +823,7 @@ export async function mapChangeImpact(
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
-      `who uses ${unread.length} changed fields or types was not read, so what they affect is not known (${unread
+      `who uses ${unread.length} fields or types the change reaches was not read, so what they affect is not known (${unread
         .slice(0, LIST.names)
         .map((ref) => graph.qualifiedName(ref))
         .join(
@@ -966,7 +975,7 @@ export async function mapChangeImpact(
         if (nowDeclared.has(same(before, shape))) continue;
         if (beforeTracer.shapes.unread.has(shape))
           unclear.push(
-            `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; project_find_references on the base lists them`,
+            `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; search the code for its name`,
           );
         for (const { owner, anchor } of beforeTracer.shapes.uses.get(shape) ?? []) {
           const file = changedIn.get(anchor.path);
@@ -1105,6 +1114,7 @@ export async function mapChangeImpact(
     }
     const outsideTests = (callers: { ref: string }[], g: MapViewGraph) =>
       callers.filter((caller) => !testCode(g.object(caller.ref).anchor.path));
+    const candidates: { path: string; name: string; now: MapObject }[] = [];
     for (const ref of called) {
       const object = before.object(ref);
       if (mapIsModule(object) || testCode(object.anchor.path) || gone.includes(ref)) continue;
@@ -1123,24 +1133,39 @@ export async function mapChangeImpact(
       )
         continue;
       if (!outsideTests(beforeTracer.callers(ref), before).length) continue;
-      // A field's other reads are not all in the map; it counts only if a search finds none.
-      if (mapIsShape(now)) {
-        const found = await shapes.working(now.id);
-        if (
-          !found?.complete ||
-          found.uses.some(({ owner, write }) => {
-            const user = graph.owner(owner);
-            return !write && user !== now.id && !testCode(graph.object(user).anchor.path);
-          })
-        )
-          continue;
+      candidates.push({ path, name, now });
+    }
+    // A field's other reads are not all in the map; it counts only if a search finds none.
+    const fields = await mapShapeUses(
+      graph,
+      candidates.map(({ now }) => now.id),
+      shapes.working,
+      false,
+    );
+    const unknown: string[] = [];
+    for (const { path, name, now } of candidates) {
+      if (fields.unread.has(now.id)) unknown.push(name);
+      else if (
+        !fields.uses
+          .get(now.id)
+          ?.some(({ owner, write }) => !write && !testCode(graph.object(owner).anchor.path))
+      ) {
+        const tested = tracer.callers(now.id).length > 0;
+        uncalled.push(
+          `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
+        );
       }
-      const tested = tracer.callers(now.id).length > 0;
-      uncalled.push(
-        `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
-      );
     }
     uncalled.sort();
+    if (unknown.length)
+      unclear.push(
+        `${unknown.length} fields lost callers the diff removed, and whether others use them was not read (${unknown
+          .sort()
+          .slice(0, LIST.names)
+          .join(
+            ", ",
+          )}${unknown.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
+      );
   }
 
   return {
@@ -1536,8 +1561,10 @@ export async function checkMapChanges(
           if (!cursor) break;
         }
       } catch (error) {
-        // Some declarations have no reference target, as in a file read only for its syntax.
-        if (signal.aborted || !(error instanceof ProjectEvidenceError)) throw error;
+        // Some declarations have no reference target, as in a file read only for its syntax. Any
+        // other failure says nothing of the declaration, and the check fails with it.
+        if (!(error instanceof ProjectEvidenceError) || !NO_REFERENCE_TARGET.has(error.code))
+          throw error;
         return undefined;
       }
       return { uses, complete: !cursor };
