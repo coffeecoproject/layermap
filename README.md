@@ -166,7 +166,9 @@ depend on each other; whether that direction suits the project's layers is for t
 declaration the change adds reads almost the same as code the project already has, it names both, so
 the agent can use the existing code instead of a copy. When the change takes away the last call to a
 declaration, as when new code replaces old, it names that declaration, so the agent can delete what
-the change left behind. It never writes or runs tests. In Claude Code and
+the change left behind. The map does not link a field or type to the code reading it, so for one the
+change touches, the check searches for its references and follows that code up to the entry points
+and tests, as possibly affected. It never writes or runs tests. In Claude Code and
 CodeBuddy Code the plugin asks the agent once, before it finishes, to run this check for each repository it edited code in
 and has not checked since, whether through its edit tools or shell commands, which count for the code files they name
 (changes another session makes in the same work tree do not count); the Pi extension does the same after the agent's own

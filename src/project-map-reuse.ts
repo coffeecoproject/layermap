@@ -8,7 +8,8 @@ import { MapViewGraph, mapDeclarationLabel } from "./project-map-view-graph";
 // has by the words of their code, weighted by how rare each word is in the project, so a copy
 // renamed or lightly edited still matches while code that only shares the project's common words
 // does not. Code that does the same with other words is not found; whether to reuse, replace or
-// keep both is the agent's call.
+// keep both is the agent's call. A declaration too short for its words to tell it apart counts only
+// when it repeats one of the same name word for word.
 
 /** A declaration the diff adds whose code reads almost the same as an existing declaration's. */
 export type MapSimilarCode = Readonly<{
@@ -48,6 +49,9 @@ const MEMBER_CONTAINERS = new Set<MapObject["kind"]>(["CLASS", "INTERFACE", "TYP
 const KINDS = new Set<MapObject["kind"]>(["FUNCTION", "METHOD", "CLASS", "VARIABLE"]);
 // Shorter declarations are constants and one-line wrappers, alike by nature.
 const MIN_LINES = 3;
+// A short copy more files than this already hold is the project's convention: a logger, a
+// framework's export.
+const SHORT_COPIES = 3;
 const ALIKE = 0.8;
 // Members of one class or object follow one pattern on purpose; only a near copy counts there.
 const SIBLINGS_ALIKE = 0.95;
@@ -130,6 +134,13 @@ function lineWords(line: string): string[] {
 const within = (lines: ChangedFile["lines"], declaration: Declaration) =>
   lines.some(([from, to]) => from <= declaration.startLine && declaration.endLine <= to);
 
+// A short declaration's code as two copies of it share it, whichever of them is exported.
+const copyText = (code: string) =>
+  code
+    .replace(/^export\s+(?:default\s+)?/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+
 /**
  * The declarations the diff adds, each with the existing declaration whose code reads most like
  * it, when that is almost the same. A declaration is added when all its lines are new and the base
@@ -155,9 +166,10 @@ export async function similarCode(
       const now = file.status === "DELETED" ? new Set<string>() : names(working, file.path);
       for (const name of names(base, file.basePath)) if (!now.has(name)) movedOut.add(name);
     }
-  const eligible = (item: Declaration) =>
-    KINDS.has(item.kind) && item.endLine - item.startLine + 1 >= MIN_LINES;
+  const long = (item: Declaration) => item.endLine - item.startLine + 1 >= MIN_LINES;
   const added = new Set<string>();
+  const shortNames = new Set<string>();
+  let longAdded = false;
   for (const file of changed) {
     const had =
       base !== undefined && file.basePath && file.status !== "ADDED"
@@ -165,17 +177,20 @@ export async function similarCode(
         : undefined;
     for (const item of declarations(rows(store, working, file.path)))
       if (
-        eligible(item) &&
+        KINDS.has(item.kind) &&
         within(file.lines, item) &&
         !had?.has(item.qualifiedName) &&
         !movedOut.has(item.qualifiedName)
-      )
+      ) {
         added.add(item.id);
+        if (long(item)) longAdded = true;
+        else shortNames.add(item.qualifiedName);
+      }
   }
   if (!added.size) return [];
 
-  // Every eligible declaration of the project's code, with the words of its code as the working
-  // tree the map was built from has them.
+  // Every long enough declaration of the project's code, with the words of its code as the working
+  // tree the map was built from has them, and the short ones named as a short one the diff adds.
   const byPath = new Map<string, Row[]>();
   for (const row of rows(store, working)) {
     if (!code(row.path)) continue;
@@ -184,14 +199,23 @@ export async function similarCode(
     byPath.set(row.path, inFile);
   }
   const all: Code[] = [];
+  const shortCopies = new Map<string, Declaration[]>();
   await Promise.all(
     [...byPath].map(async ([path, inFile]) => {
-      const found = declarations(inFile).filter(eligible);
+      const found = declarations(inFile).filter(
+        (item) =>
+          KINDS.has(item.kind) && (long(item) ? longAdded : shortNames.has(item.qualifiedName)),
+      );
       if (!found.length) return;
       const text = await read(path);
       if (text === undefined) return;
       const lines = text.split("\n").map(lineWords);
       for (const declaration of found) {
+        if (!long(declaration)) {
+          const key = `${declaration.qualifiedName}\u0000${copyText(text.slice(declaration.start, declaration.end))}`;
+          shortCopies.set(key, [...(shortCopies.get(key) ?? []), declaration]);
+          continue;
+        }
         const words = new Map<string, number>();
         for (const line of lines.slice(declaration.startLine - 1, declaration.endLine))
           for (const word of line) words.set(word, (words.get(word) ?? 0) + 1);
@@ -232,7 +256,26 @@ export async function similarCode(
       kind: row.kind,
       anchor: { startLine: row.startLine, endLine: row.endLine },
     });
+  // Code that calls or is called by the new declaration uses it rather than repeats it.
+  const linkedTo = (declaration: Declaration) => {
+    const scope = graph.scope(declaration.id).refs;
+    return new Set([
+      ...graph
+        .relationsFrom(scope)
+        .flatMap((relation) => (relation.to ? [graph.owner(relation.to)] : [])),
+      ...graph.relationsTo(scope).map((relation) => graph.owner(relation.from)),
+    ]);
+  };
   const found: (MapSimilarCode & { score: number })[] = [];
+  const add = (declaration: Declaration, best: Declaration, others: number, score: number) =>
+    found.push({
+      path: declaration.path,
+      name: declaration.qualifiedName,
+      label: label(declaration),
+      like: { path: best.path, name: best.qualifiedName, label: label(best) },
+      others,
+      score,
+    });
   for (const item of all) {
     const declaration = item.declaration;
     if (!added.has(declaration.id)) continue;
@@ -255,29 +298,23 @@ export async function similarCode(
       })
       .sort(([, left], [, right]) => right - left);
     if (!alike.length) continue;
-    // Code that calls or is called by the new declaration uses it rather than repeats it.
-    const scope = graph.scope(declaration.id).refs;
-    const linked = new Set([
-      ...graph
-        .relationsFrom(scope)
-        .flatMap((relation) => (relation.to ? [graph.owner(relation.to)] : [])),
-      ...graph.relationsTo(scope).map((relation) => graph.owner(relation.from)),
-    ]);
+    const linked = linkedTo(declaration);
     const unlinked = alike.filter(([other]) => !linked.has(other.declaration.id));
     const best = unlinked[0];
-    if (!best) continue;
-    found.push({
-      path: declaration.path,
-      name: declaration.qualifiedName,
-      label: label(declaration),
-      like: {
-        path: best[0].declaration.path,
-        name: best[0].declaration.qualifiedName,
-        label: label(best[0].declaration),
-      },
-      others: unlinked.length - 1,
-      score: best[1],
-    });
+    if (best) add(declaration, best[0].declaration, unlinked.length - 1, best[1]);
+  }
+  for (const copies of shortCopies.values()) {
+    const existing = copies
+      .filter((copy) => !added.has(copy.id))
+      .sort((left, right) => (left.path < right.path ? -1 : 1));
+    if (!existing.length || existing.length > SHORT_COPIES) continue;
+    for (const declaration of copies) {
+      if (!added.has(declaration.id)) continue;
+      const linked = linkedTo(declaration);
+      const unlinked = existing.filter((copy) => !linked.has(copy.id));
+      const best = unlinked[0];
+      if (best) add(declaration, best, unlinked.length - 1, 1);
+    }
   }
   return found
     .sort(
