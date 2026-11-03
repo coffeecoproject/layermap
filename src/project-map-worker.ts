@@ -114,7 +114,8 @@ process.once(
                     },
                   );
           result.requiredFiles = [...files.required].sort();
-          if ("contexts" in result)
+          if ("contexts" in result) {
+            if (files.libraryMissing) result.gaps.push({ code: "STANDARD_LIBRARY_NOT_LOADED" });
             for (const context of result.contexts) {
               const sourceInputs = new Set(
                 programFiles
@@ -136,6 +137,7 @@ process.once(
                 ...new Set([...sourceInputs, ...files.readInputs, ...context.configurationFiles]),
               ].sort();
             }
+          }
           trace.phase = "DISPOSE";
           await timing?.checkpoint(
             api,

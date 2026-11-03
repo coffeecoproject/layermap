@@ -474,6 +474,8 @@ const MAP_LIMITS: Readonly<Record<string, string>> = {
   LOMBOK_CONFIG_NOT_APPLIED:
     "lombok.config settings are not applied, so names Lombok generates may differ from the build's",
   NO_JAVA_BUILD: "Java files outside a Gradle or Maven build are analyzed together as one program",
+  STANDARD_LIBRARY_NOT_LOADED:
+    "TypeScript's standard library was not found beside the compiler, so built-in types such as Array and ThisType are missing and calls that depend on them are unresolved",
   NO_ADMITTED_TSCONFIG: "TypeScript and JavaScript files outside a tsconfig use inferred settings",
   NO_PYTHON_CONFIGURATION: "Python files outside a project configuration use inferred settings",
 };
