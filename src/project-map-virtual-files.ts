@@ -11,11 +11,14 @@ export const mapRelativePath = (absolute: string) =>
 // The compiler names files with forward slashes on every platform, so do the keys here: the
 // library files' host paths are Windows paths on Windows.
 export const mapForwardSlashes = (file: string) => file.replaceAll("\\", "/");
+const LIBRARY_FILE = /^lib(?:\.[a-z0-9_-]+)*\.d\.ts$/u;
 
 export class MapVirtualFiles {
   readonly required = new Set<string>();
   readonly readInputs = new Set<string>();
   readonly configurations = new Set<string>();
+  // The compiler asked for a standard library file that is not there. It reports no error for one.
+  libraryMissing = false;
   private readonly files = new Map<string, string>();
   private readonly inventory = new Map<string, string>();
   private readonly directories = new Map<
@@ -29,9 +32,10 @@ export class MapVirtualFiles {
     for (const [relative, text] of Object.entries(input.files))
       this.files.set(mapVirtualPath(relative), text);
     for (const relative of input.inventory) this.inventory.set(mapVirtualPath(relative), relative);
-    const libraryDirectory = path.dirname(input.compilerPath);
+    // The compiler names its library files by where it really is, however it was reached.
+    const libraryDirectory = path.dirname(realpathSync.native(input.compilerPath));
     for (const name of readdirSync(libraryDirectory)) {
-      if (!/^lib(?:\.[a-z0-9_-]+)*\.d\.ts$/u.test(name)) continue;
+      if (!LIBRARY_FILE.test(name)) continue;
       const text = readFileSync(path.join(libraryDirectory, name), "utf8");
       this.files.set(mapForwardSlashes(path.join(libraryDirectory, name)), text);
     }
@@ -112,9 +116,11 @@ export class MapVirtualFiles {
         return "";
       }
       const host = this.installed(file);
-      return host && statSync(host, { throwIfNoEntry: false })?.isFile()
-        ? readFileSync(host, "utf8")
-        : null;
+      if (host && statSync(host, { throwIfNoEntry: false })?.isFile())
+        return readFileSync(host, "utf8");
+      if (mapRelativePath(file) === undefined && LIBRARY_FILE.test(path.posix.basename(file)))
+        this.libraryMissing = true;
+      return null;
     },
     fileExists: (file) => {
       file = this.canonical(file);

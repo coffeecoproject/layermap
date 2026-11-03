@@ -401,6 +401,7 @@ test("a workspace package's output directories can come from an installed config
 
 test("the compiler is shown only what lies in the project", async () => {
   const library = await sandbox();
+  await put(library, { tsc: "" });
   const outside = await sandbox();
   await put(outside, { "linked/index.d.ts": "export {};\n" });
   const root = await sandbox();
