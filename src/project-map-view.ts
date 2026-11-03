@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError, type ProjectEvidenceRevisionFileEntryV1 } from "./core";
+import { MAP_DEPENDENCY_NOT_INSTALLED } from "./project-map-installed";
 import {
   mapCodePath,
   mapExternalImport,
@@ -11,6 +12,7 @@ import { JAVA_MAP_LANGUAGE } from "./project-map-language-java";
 import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { type MapQueryOutputBudget, mapQueryPage } from "./project-map-query-page";
 import {
+  type MapGap,
   type MapObject,
   type MapRelation,
   mapPathAllowed,
@@ -34,6 +36,7 @@ export const MAP_VIEW_LIMITS = Object.freeze({
   members: 40,
   externalPackages: 20,
   unresolvedTargets: 12,
+  notInstalled: 8,
   // Call targets are written text; a long call chain keeps its receiver and its last members.
   targetText: 120,
   // Calls naming a method on an unknown receiver are listed up to this many, else counted.
@@ -479,18 +482,23 @@ type MapCoverageNotes = Readonly<{
   // What each file's coverage gaps say (a syntax error, not in any analyzed program).
   files: ReadonlyMap<string, readonly string[]>;
   limits: readonly string[];
+  /** Packages the code needs that are not installed. */
+  notInstalled: readonly string[];
 }>;
 
 function loadCoverageNotes(store: CodeIndexStore, version: string): MapCoverageNotes {
   const row = store.database
     .prepare("SELECT coverage_json FROM project_map_coverage WHERE version_ref = ?")
     .get(version);
-  const gaps = row
-    ? (JSON.parse(String(row.coverage_json)) as { gaps: { code: string; path?: string }[] }).gaps
-    : [];
+  const gaps = row ? (JSON.parse(String(row.coverage_json)) as { gaps: MapGap[] }).gaps : [];
   const files = new Map<string, string[]>();
   const limits = new Set<string>();
+  const notInstalled = new Set<string>();
   for (const gap of gaps) {
+    if (gap.code === MAP_DEPENDENCY_NOT_INSTALLED && gap.package) {
+      notInstalled.add(gap.package);
+      continue;
+    }
     if (gap.path === undefined) {
       const limit = MAP_LIMITS[gap.code];
       if (limit) limits.add(limit);
@@ -508,7 +516,12 @@ function loadCoverageNotes(store: CodeIndexStore, version: string): MapCoverageN
         path,
         codes.filter((code) => code !== "NOT_IN_PARSED_CONTEXT"),
       );
-  return { files, limits: [...limits] };
+  const missing = [...notInstalled].sort();
+  if (missing.length)
+    limits.add(
+      `${missing.slice(0, MAP_VIEW_LIMITS.notInstalled).join(", ")}${missing.length > MAP_VIEW_LIMITS.notInstalled ? ` and ${missing.length - MAP_VIEW_LIMITS.notInstalled} more packages` : ""} are not installed in this directory, so values typed by them have no type to follow and calls through them may be missing`,
+    );
+  return { files, limits: [...limits], notInstalled: missing };
 }
 
 export class MapViewCache {
@@ -768,7 +781,7 @@ function directoryView(
         : "Files are omitted because this directory is large: open a module directory to list its files.",
     ...(rates.length
       ? [
-          `Static calls linked to project declarations: ${rates.join(", ")}; the rest have a callee of unknown type, such as a value from a package whose types are not loaded. ${externalCalls} calls into the standard library or into packages that are not loaded are not counted.`,
+          `Static calls linked to project declarations: ${rates.join(", ")}; the rest have a callee of unknown type, such as a value from a package that is not installed or has no types. ${externalCalls} calls into the standard library or into packages are not counted.`,
         ]
       : []),
     ...(directory === "." && coverage.limits.length
@@ -978,7 +991,11 @@ class DeclarationGroups {
       else
         add(
           "→",
-          shows(relation) ? "shows" : (OUTGOING[relation.kind] ?? relation.kind.toLowerCase()),
+          relation.event
+            ? `calls via ${relation.event} event`
+            : shows(relation)
+              ? "shows"
+              : (OUTGOING[relation.kind] ?? relation.kind.toLowerCase()),
           other,
           relation.anchor.startLine,
           relation.argument,
@@ -1003,8 +1020,9 @@ class DeclarationGroups {
         if (mapPathAllowed(relation.anchor.path, this.prefixes)) omittedTests++;
         continue;
       }
-      const label =
-        relation.kind === "CALLS" && focus.kind === "CLASS"
+      const label = relation.event
+        ? `called via ${relation.event} event by`
+        : relation.kind === "CALLS" && focus.kind === "CLASS"
           ? "instantiated by"
           : shows(relation)
             ? "shown by"

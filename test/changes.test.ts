@@ -157,7 +157,7 @@ test("a rename that updates its callers removes the old name without saying code
   const { text } = await map.checkChanges({}, signal());
   assert.match(
     text,
-    /^REMOVED OR RENAMED \(no code the diff left unchanged uses them\)\n {2}src\/store\.ts: legacy f5-7\n/mu,
+    /^REMOVED OR RENAMED \(no reference found on a line the diff left unchanged\)\n {2}src\/store\.ts: legacy f5-7\n/mu,
   );
   assert.doesNotMatch(text, /STILL USED/u);
 });
@@ -200,7 +200,7 @@ test("a declaration moved to another file, its callers importing it from there, 
   const { text } = await map.checkChanges({}, signal());
   assert.match(
     text,
-    /^REMOVED OR RENAMED \(no code the diff left unchanged uses them\)\n {2}src\/a\.ts: foo f5-7\n/mu,
+    /^REMOVED OR RENAMED \(no reference found on a line the diff left unchanged\)\n {2}src\/a\.ts: foo f5-7\n/mu,
   );
   assert.doesNotMatch(text, /STILL USED/u);
   // Taking out what followed keep left keep as it was.
@@ -951,7 +951,10 @@ test("a removed field or type code still uses is named as used; one that moved i
   await write("test/shape.test.ts", "export const value = 1;\n");
   const gone = (await map.checkChanges({}, signal())).text;
   assert.doesNotMatch(gone, /Shape\.side p4 ←/u);
-  assert.match(gone, /^REMOVED OR RENAMED \(no code[^\n]*\n {2}src\/shape\.ts: Shape\.side p4$/mu);
+  assert.match(
+    gone,
+    /^REMOVED OR RENAMED \(no reference[^\n]*\n {2}src\/shape\.ts: Shape\.side p4$/mu,
+  );
   await run("git", ["checkout", "--", "."], { cwd: root });
 
   // Moved to another file with the imports following it: the code naming it still has it.
@@ -1485,7 +1488,7 @@ test("removing one key of a type generic code indexes is not a use of it; a clas
   assert.doesNotMatch(key, /STILL USED/u);
   assert.match(
     key,
-    /^REMOVED OR RENAMED \(no code[^\n]*\n {2}src\/operations\.ts: Operations\.POST \/gone p\d+/mu,
+    /^REMOVED OR RENAMED \(no reference[^\n]*\n {2}src\/operations\.ts: Operations\.POST \/gone p\d+/mu,
   );
   await run("git", ["checkout", "--", "."], { cwd: root });
 
@@ -1643,7 +1646,7 @@ export function area(s: Shape) {
   );
   assert.match(
     (await map.checkChanges({}, signal())).text,
-    /^REMOVED OR RENAMED \(no code[^\n]*\n {2}src\/shape\.ts: Shape\.side p2$/mu,
+    /^REMOVED OR RENAMED \(no reference[^\n]*\n {2}src\/shape\.ts: Shape\.side p2$/mu,
   );
 });
 

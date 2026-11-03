@@ -316,6 +316,7 @@ export class CodeIndexStore {
   publish(
     version: CodeIndexVersion,
     entries: readonly ProjectEvidenceRevisionFileEntryV1[],
+    installedDigest: string,
     buildRef: string,
     coverage: MapBuildCoverage,
     // Files whose units the version lists as that version stored them: the files of replayed
@@ -329,6 +330,7 @@ export class CodeIndexStore {
           pathPrefixes: version.pathPrefixes,
           entries,
           analyzer: version.analyzer,
+          installed: installedDigest,
         }) ||
       entries.length !== version.fileCount ||
       entries.filter((entry) => entry.state === "TEXT").length !== version.readableTextFileCount ||

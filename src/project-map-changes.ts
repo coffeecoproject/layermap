@@ -13,10 +13,11 @@ import {
   routeRegistrations,
 } from "./project-map-clients";
 import { type MapModuleDependency, newModuleDependencies } from "./project-map-dependencies";
+import { mapPackageOf } from "./project-map-installed";
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
-import { MAP_REFERENCES_MAX } from "./project-map-reference-types";
+import { MAP_REFERENCES_MAX, type MapDiagnostic } from "./project-map-reference-types";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import {
   type MapShapeReader,
@@ -126,7 +127,7 @@ export async function readMapChanges(
       gitOptions(project, signal),
     )
   ).stdout.toString("utf8");
-  // A map never reads dependencies or coding agents' own directories, so their files are not
+  // A map never holds dependencies or coding agents' own directories, so their files are not
   // changes to check.
   const files = parseMapDiff(diff).filter((file) => !inExcludedDirectory(file.path));
   for (const [index, file] of files.entries())
@@ -590,8 +591,11 @@ class Tracer {
     const known = this.known.get(ref);
     if (known) return known;
     const callers: Caller[] = [];
+    // An event reaches its handler only where the template binding it is, and that template's own
+    // relation says so: followed up to the component that emits it, the trace would reach every
+    // page showing that component.
     for (const relation of this.graph.relationsTo([ref]))
-      if (CALLER_KINDS.has(relation.kind)) {
+      if (CALLER_KINDS.has(relation.kind) && !relation.event) {
         const owner = this.graph.owner(relation.from);
         if (owner !== ref) callers.push(callerFrom(owner, relation, true));
       }
@@ -732,13 +736,14 @@ export async function mapChangeImpact(
   base: string | undefined,
   changes: MapChanges,
   shapes: Readonly<{ working: MapShapeReader; base: MapShapeReader }>,
+  /** When the check stops reading uses and compiling. */
+  until: number,
   project?: string,
   tests?: readonly string[],
 ): Promise<MapChangeImpact> {
   const graph = new MapViewGraph(store, working);
   const cache = new MapViewCache();
   const memberCalls = cache.memberCalls(store, working);
-  const until = mapShapeDeadline();
   const tracer = new Tracer(graph, memberCalls, new MapShapeUses(graph, shapes.working, until));
   const changed: string[] = [];
   const unclear: string[] = [];
@@ -1572,6 +1577,9 @@ export async function checkMapChanges(
         ]),
       );
     };
+  // One deadline for what the check reads on demand, once the maps it reads from exist. Uses come
+  // first, as they decide what the trace reaches; the compile has what they leave.
+  const until = mapShapeDeadline();
   const impact = await mapChangeImpact(
     index.store,
     working,
@@ -1581,6 +1589,7 @@ export async function checkMapChanges(
       working: usesIn(working, input.source),
       base: usesIn(base ?? working, { ...input.source, kind: "COMMIT", commit: changes.commit }),
     },
+    until,
     project,
     input.tests,
   );
@@ -1592,6 +1601,7 @@ export async function checkMapChanges(
       await similarCode(index.store, working, base, changes.files, (file) =>
         readFile(path.join(project, file), "utf8").catch(() => undefined),
       ),
+      changes.files.length ? await compileBreaks(input, changes, base, until, signal) : undefined,
     ),
   };
 }
@@ -1630,11 +1640,116 @@ export async function mapRouteClients(
   return routeClients(routes, registrations, git, gitOptions(project, signal));
 }
 
+/** What the compiler says the diff broke, on the lines it left unchanged. */
+export type MapCompileBreaks = Readonly<{
+  errors: readonly string[];
+  /** Packages the changed code needs that are not there: what comes from them has no type. */
+  missing: readonly string[];
+  /** Configurations the report says nothing of: they were not compiled on both sides. */
+  unchecked: readonly string[];
+}>;
+
+/**
+ * The errors on lines the diff left unchanged that the base did not have on such lines, each error
+ * counted, as the same text at another place in a file is another error. A context compares with
+ * the same configuration's in the base, and only one compiled on both sides says anything: without
+ * the base's errors, those it had would look new. Both compile against the packages installed now,
+ * so a version the base needed differently is not seen.
+ */
+async function compileBreaks(
+  input: MapChangeCheckInput,
+  changes: MapChanges,
+  base: string | undefined,
+  until: number,
+  signal: AbortSignal,
+): Promise<MapCompileBreaks> {
+  const { index, working } = input;
+  const present = changes.files
+    .filter((file) => file.status !== "DELETED")
+    .map((file) => file.path);
+  const gone = changes.files.flatMap((file) => (file.basePath ? [file.basePath] : []));
+  const after = await index.findDiagnostics(
+    {
+      version: working,
+      source: input.source,
+      configurations: [
+        ...new Set([
+          ...index.contextConfigurations(working, present),
+          ...(base ? index.contextConfigurations(base, gone) : []),
+        ]),
+      ],
+      until,
+    },
+    signal,
+  );
+  const missing = new Set(after.contexts.flatMap((context) => context.missing));
+  // A context without a configuration is not compiled here, but its imports still tell.
+  const views = new MapViewCache();
+  const { notInstalled } = views.coverageNotes(index.store, working);
+  if (notInstalled.length)
+    for (const { source, target, specifier } of views.imports(index.store, working))
+      if (target === null && present.includes(source)) {
+        const name = mapPackageOf(specifier);
+        if (name && notInstalled.includes(name)) missing.add(name);
+      }
+  const changedIn = new Map(changes.files.map((file) => [file.path, file]));
+  const onUnchanged = after.contexts.flatMap(({ configPath, errors }) => {
+    const unchanged = errors.filter((item) => {
+      const file = changedIn.get(item.path);
+      return !file || !overlaps(file.lines, item.line, item.line);
+    });
+    return unchanged.length ? [{ configPath, unchanged }] : [];
+  });
+  // The base is compiled only for contexts with something to compare, as long as time is left.
+  const before =
+    onUnchanged.length && Date.now() <= until
+      ? await index.findDiagnostics(
+          {
+            version: base ?? (await input.baseVersion(changes.commit, signal)),
+            source: { ...input.source, kind: "COMMIT", commit: changes.commit },
+            configurations: onUnchanged.map(({ configPath }) => configPath),
+            until,
+          },
+          signal,
+        )
+      : { contexts: [], unchecked: [] };
+  const inBase = new Map(
+    changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
+  );
+  const named = (path: string, item: MapDiagnostic) =>
+    `${path}\u0000${item.code}\u0000${item.span}\u0000${item.text}`;
+  const compiled = new Map(before.contexts.map((context) => [context.configPath, context.errors]));
+  const unchecked = new Set(after.unchecked);
+  const errors = new Set<string>();
+  for (const { configPath, unchanged } of onUnchanged) {
+    const had = compiled.get(configPath);
+    if (!had) {
+      unchecked.add(configPath);
+      continue;
+    }
+    const known = new Map<string, number>();
+    for (const item of had) {
+      const file = inBase.get(item.path);
+      if (file && overlaps(file.baseLines, item.line, item.line)) continue;
+      const name = named(file?.path ?? item.path, item);
+      known.set(name, (known.get(name) ?? 0) + 1);
+    }
+    for (const item of unchanged) {
+      const name = named(item.path, item);
+      const left = known.get(name) ?? 0;
+      if (left) known.set(name, left - 1);
+      else errors.add(`${item.path}:${item.line} TS${item.code} ${item.text.split("\n")[0]}`);
+    }
+  }
+  return { errors: [...errors], missing: [...missing].sort(), unchecked: [...unchecked].sort() };
+}
+
 export function mapChangesText(
   changes: MapChanges,
   impact: MapChangeImpact,
   clients: readonly MapRouteClients[] = [],
   similar: readonly MapSimilarCode[] = [],
+  compile: MapCompileBreaks = { errors: [], missing: [], unchecked: [] },
 ): string {
   const files = changes.files.length;
   const direct = impact.tests.filter((test) => test.rank < 4);
@@ -1661,10 +1776,23 @@ export function mapChangesText(
     LIST.changed,
   );
   list(
-    "REMOVED OR RENAMED (no code the diff left unchanged uses them)",
+    "REMOVED OR RENAMED (no reference found on a line the diff left unchanged)",
     impact.removed.filter(({ usedBy }) => !usedBy.length).map(({ declaration }) => declaration),
     LIST.changed,
   );
+  list(
+    "NEW COMPILE ERRORS ON LINES THE DIFF LEFT UNCHANGED (the compiler reports these now and did not before: the diff broke this code)",
+    compile.errors,
+    LIST.changed,
+  );
+  if (compile.missing.length)
+    lines.push(
+      `PACKAGES NOT FOUND (${compile.missing.slice(0, LIST.names).join(", ")}${compile.missing.length > LIST.names ? `, +${compile.missing.length - LIST.names} more` : ""}): are dependencies installed in this directory? Values typed by them have no type to follow, so calls through them (framework page methods among them), their uses and compile errors are not seen, and this report can miss what the change reaches.`,
+    );
+  if (compile.unchecked.length)
+    lines.push(
+      `NOT CHECKED FOR NEW COMPILE ERRORS (${compile.unchecked.slice(0, LIST.names).join(", ")}${compile.unchecked.length > LIST.names ? `, +${compile.unchecked.length - LIST.names} more` : ""}): the check ran out of time before compiling them on both sides, or the base has no such configuration, so errors the diff caused there are not listed.`,
+    );
   list(
     "LEFT WITHOUT CALLERS (the diff removed or changed their last callers; nothing outside tests calls or otherwise uses them now)",
     impact.uncalled,

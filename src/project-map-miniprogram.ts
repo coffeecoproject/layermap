@@ -426,6 +426,7 @@ export function linkMiniprogramTemplates(
             kind: "CALLS",
             anchor: emit.anchor,
             target: target.name,
+            event: binding.event,
             basis: "SYNTAX_DECLARED",
           });
         }

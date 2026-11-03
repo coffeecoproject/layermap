@@ -14,8 +14,10 @@ import {
 import type { CodeIndexSource, CodeIndexVersion } from "./code-index-types";
 import { ProjectEvidenceError } from "./core";
 import { digestValue } from "./digest";
+import { GitRunner } from "./git-runner";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
 import { checkMapChanges, resolveMapBase } from "./project-map-changes";
+import { mapInstalledDigest } from "./project-map-installed";
 import { GoMapAnalyzer } from "./project-map-language-go";
 import { JavaMapAnalyzer } from "./project-map-language-java";
 import { PythonMapAnalyzer } from "./project-map-language-python";
@@ -227,12 +229,22 @@ export class LayerMap {
    */
   private versionAt(commit: string, signal: AbortSignal, hold: Hold): Promise<string> {
     return this.serialized(async () => {
+      const root = this.source.directory.canonicalPath;
+      const tree = await new GitRunner().run(
+        ["ls-tree", "-r", "-z", "--name-only", "--full-tree", commit],
+        { cwd: root, signal, timeoutMs: 60_000, maxOutputBytes: null },
+      );
       const key = digestValue({
         projectRef: this.source.projectRef,
         commit,
         scope: DEFAULT_INITIAL_EVIDENCE_SCOPE,
         analyzer: this.analyzer,
         policy: SOURCE_POLICY,
+        // A commit's map holds what its types resolve to now, so the packages count too.
+        installed: mapInstalledDigest(
+          root,
+          tree.stdout.toString("utf8").split("\0").filter(Boolean),
+        ),
       });
       const known = this.store.database
         .prepare("SELECT version_ref FROM layermap_commit_versions WHERE capture_key = ?")

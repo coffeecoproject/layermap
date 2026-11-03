@@ -203,7 +203,8 @@ npx layermap check test/billing.test.ts   # 另外列出改动里这个测试没
 - Conductor（1,500 个 Java 文件和 1,300 个 TypeScript 文件）：不到 2 分钟。
 
 **有什么看不到？** 编译器无法静态解析的调用，比如依赖注入、它不认识的框架路由、反射和计算出的名字。追踪停在
-哪里工具会说明。另外，地图上没有某条关系，不代表它不存在。
+哪里工具会说明。另外，地图上没有某条关系，不代表它不存在。TypeScript 和 JavaScript 的类型来自项目 `node_modules` 里已安装的包（包本身不进地图）；没有安装时（比如新建的
+worktree），这些包提供类型的值就无法继续追踪，工具会点名这些包。
 
 **支持 Windows 吗？** 实验性支持。LayerMap 的测试在 Windows 上都能通过，但还没在真实的 Windows 电脑上配合
 Claude Code 或 Codex 试过，请先在自己的项目上测试，遇到问题请[反馈](https://github.com/coffeecoproject/layermap/issues)。

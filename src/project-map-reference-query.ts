@@ -10,6 +10,8 @@ import { MAP_QUERY_GUIDANCE, ProjectMapQuery } from "./project-map-query";
 import { mapQueryPage } from "./project-map-query-page";
 import { mapQueryPathMatches, mapQuerySelection } from "./project-map-query-selection";
 import {
+  type MapDiagnostic,
+  type MapDiagnosticsInput,
   type MapReference,
   type MapReferenceInput,
   MapReferenceKindSchema,
@@ -108,8 +110,60 @@ export class ProjectMapReferenceQuery {
         inventory: context.inputFiles,
         syntaxOnly: false,
         workspace: context.workspace,
+        dependencies: source.directory.canonicalPath,
       },
     };
+  }
+
+  /** The configurations of the contexts a version's files are in. */
+  contextConfigurations(version: string, paths: readonly string[]): string[] {
+    return paths.flatMap((path) =>
+      this.contexts(version, path).flatMap((context) => context.configPath ?? []),
+    );
+  }
+
+  /**
+   * What the compiler says is wrong in each context of the given configurations, for as long as
+   * the deadline leaves; a context started is compiled to the end, so what each holds is whole. A
+   * context without a configuration was given options of ours, so its errors say nothing of how
+   * the project compiles. Contexts of a language without a compiler to ask are not counted.
+   */
+  async diagnostics(input: MapDiagnosticsInput, signal: AbortSignal) {
+    const source = this.readable(input.version, input.source);
+    const contexts = new Map<string, MapContext>();
+    for (const row of this.store.database
+      .prepare(`SELECT DISTINCT context_ref, context_json FROM project_map_contexts
+      WHERE version_ref = ? AND json_extract(context_json, '$.mode') != 'SYNTAX_ONLY'
+      ORDER BY context_ref`)
+      .all(input.version)) {
+      const context = MapContextSchema.parse(JSON.parse(String(row.context_json)));
+      if (context.configPath && input.configurations.includes(context.configPath))
+        contexts.set(context.configPath, context);
+    }
+    const compiled: { configPath: string; errors: MapDiagnostic[]; missing: string[] }[] = [];
+    const unchecked: string[] = [];
+    for (const [configPath, context] of contexts) {
+      if (Date.now() > input.until) {
+        unchecked.push(configPath);
+        continue;
+      }
+      const [path] = context.rootFiles ?? context.inputFiles;
+      const { reader, request } = await this.open(input.version, source, context, signal);
+      const result =
+        path === undefined ? undefined : await this.analyzer.diagnostics(request, path, signal);
+      await reader.assertStable();
+      if (!result) continue;
+      if (result.requiredFiles.length)
+        throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
+      const found = new Map(
+        result.diagnostics.map((item) => [
+          `${item.path}:${item.line}:${item.code}:${item.text}`,
+          item,
+        ]),
+      );
+      compiled.push({ configPath, errors: [...found.values()], missing: result.missing });
+    }
+    return { contexts: compiled, unchecked };
   }
 
   // The innermost object around a location.

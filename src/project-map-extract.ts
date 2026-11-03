@@ -47,6 +47,11 @@ import {
 } from "./project-map-execution";
 import type { MapParserTrace } from "./project-map-failure";
 import {
+  MAP_DEPENDENCY_NOT_INSTALLED,
+  mapMissingPackage,
+  mapPackageOf,
+} from "./project-map-installed";
+import {
   linkMiniprogramTemplates,
   miniprogramEmits,
   miniprogramMethods,
@@ -69,6 +74,7 @@ import { mapRelativePath as relativePath } from "./project-map-virtual-files";
 import { isMapWrite } from "./project-map-write";
 
 const key = (node: Node) => `${node.getSourceFile().fileName}:${node.pos}:${node.kind}`;
+const IMPORT_RELATIONS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // Nodes that declare something an object can stand for, and the name it would carry.
 const declares = (node: Node) =>
   Boolean(mapExecutionDeclaration(node) || (mapDeclarationKind(node, true) && named(node)));
@@ -139,6 +145,8 @@ export async function extractProjectMap(
   trace: MapParserTrace,
   /** A file outside the program, read so that it counts among the context's inputs. */
   read: (path: string) => string | undefined,
+  /** Whether a package an owned file imports is installed where that file would find it. */
+  installed: (path: string, name: string) => boolean,
 ): Promise<MapAnalysis> {
   const output: MapAnalysis = {
     contexts: [],
@@ -147,7 +155,6 @@ export async function extractProjectMap(
     notes: [],
     gaps: [
       ...(!input.configPath ? [{ code: "NO_ADMITTED_TSCONFIG" }] : []),
-      { code: "EXTERNAL_DEPENDENCIES_NOT_LOADED" },
       { code: "DYNAMIC_AND_FRAMEWORK_LINKS_REQUIRE_SOURCE_INVESTIGATION" },
       { code: "UNMODELED_LANGUAGE_CONSTRUCTS_REQUIRE_SOURCE_INVESTIGATION" },
       { code: "DETAILED_REFERENCES_AVAILABLE_ON_DEMAND" },
@@ -858,8 +865,22 @@ export async function extractProjectMap(
   for (const diagnostic of await project.program.getConfigFileParsingDiagnostics())
     gap(`TSC_CONFIG_${diagnostic.code}`, input.configPath);
   trace.phase = "PROGRAM_DIAGNOSTICS";
-  for (const diagnostic of await project.program.getProgramDiagnostics())
+  const notInstalled = new Set<string>();
+  for (const diagnostic of await project.program.getProgramDiagnostics()) {
     gap(`TSC_PROGRAM_${diagnostic.code}`, input.configPath);
+    const name = mapMissingPackage(diagnostic.code, diagnostic.text);
+    if (name) notInstalled.add(name);
+  }
+  // An import the compiler found nothing for: of a package that is not there, unless the package
+  // is there without types.
+  for (const relation of output.relations) {
+    if (!IMPORT_RELATIONS.has(relation.kind) || relation.unresolvedReason !== "SYMBOL_NOT_RESOLVED")
+      continue;
+    const name = mapPackageOf(relation.target);
+    if (name && !installed(relation.anchor.path, name)) notInstalled.add(name);
+  }
+  for (const name of [...notInstalled].sort())
+    output.gaps.push({ code: MAP_DEPENDENCY_NOT_INSTALLED, package: name });
   trace.phase = "CONTEXT";
   output.contexts.push(mapParsingContext(project, input));
   return output;

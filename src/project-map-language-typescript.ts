@@ -19,11 +19,15 @@ import {
   type MapParserResources,
   runMapOperation,
 } from "./project-map-process";
-import { MapReferenceBatchSchema, type MapReferenceRequest } from "./project-map-reference-types";
+import {
+  MapDiagnosticsSchema,
+  MapReferenceBatchSchema,
+  type MapReferenceRequest,
+} from "./project-map-reference-types";
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "typescript-7.0.2-map-v22",
+  id: "typescript-7.0.2-map-v23",
   claims: (path: string) => /\.[cm]?[jt]sx?$/u.test(path),
   reads: (path: string) =>
     path.endsWith(".json") || path.endsWith(".wxml") || path === "pnpm-workspace.yaml",
@@ -41,8 +45,8 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
   readonly id = TYPESCRIPT_MAP_LANGUAGE.id;
   readonly claims = TYPESCRIPT_MAP_LANGUAGE.claims;
   readonly reads = TYPESCRIPT_MAP_LANGUAGE.reads;
-  // Discovery reads the texts of the files the language reads and nothing else, so a result
-  // stands while they are the same, as they are when only other languages' files changed.
+  // Discovery reads the texts of the files the language reads and what is installed, nothing else,
+  // so a result stands while they are the same, as they are when only other languages' files changed.
   private readonly configurations = new Map<string, MapConfigurationResult>();
 
   constructor(private readonly resources: MapParserResources = installedMapParserResources()) {}
@@ -84,8 +88,21 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
     );
   }
 
+  diagnostics(
+    input: Omit<MapWorkerInput, "compilerPath">,
+    signal: AbortSignal,
+    observe?: MapAnalyzerObserver,
+  ) {
+    return this.operation(
+      { ...input, operation: "DIAGNOSTICS" },
+      MapDiagnosticsSchema,
+      signal,
+      observe,
+    );
+  }
+
   async analyze(session: MapLanguageSession, signal: AbortSignal): Promise<void> {
-    const { entries, texts: unitTexts, observe } = session;
+    const { entries, texts: unitTexts, observe, installed } = session;
     const byPath = new Map(session.readable.map((entry) => [entry.path, entry]));
     const inventory = [...byPath.keys()];
     const inventorySet = new Set(inventory);
@@ -146,6 +163,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           rootFiles: rootFiles ?? null,
           inventory,
           workspace: workspace ?? null,
+          installed: installed.digest,
         },
         Object.keys(texts),
       );
@@ -163,6 +181,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           inventory,
           syntaxOnly: false,
           ...(workspace ? { workspace } : {}),
+          dependencies: installed.directory,
         };
         const analysis = await this.operation(
           { ...input, operation: "BUILD" },
@@ -189,6 +208,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
     };
     const configurationKey = digestValue({
       files: session.readable.map((entry) => [entry.path, entry.contentDigest ?? null]),
+      installed: installed.digest,
     });
     const discovered =
       this.configurations.get(configurationKey) ??
@@ -199,6 +219,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           files: unitTexts,
           inventory,
           syntaxOnly: false,
+          dependencies: installed.directory,
         },
         MapConfigurationResultSchema,
         signal,
