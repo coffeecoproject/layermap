@@ -499,3 +499,24 @@ test("a handler reached through an event runs where its template is, not whereve
   assert.match(emitter.text, /→ calls via press event miniprogram\/pages\/a\/a\.ts: retryA /u);
   assert.match(emitter.text, /→ calls via press event miniprogram\/pages\/b\/b\.ts: retryB /u);
 });
+
+test("an event emitted from inside a closure does not reach the pages showing the emitter either", async (t) => {
+  const handler = (value: number) =>
+    `declare function Page(options: unknown): void;\nPage({\n  retryA() {\n    const run = () => ${value};\n    return run();\n  },\n});\n`;
+  const { root, write } = await project({
+    ...EVENTS,
+    "miniprogram/components/button/button.ts":
+      'declare function Component(options: unknown): void;\nComponent({\n  methods: {\n    tap() {\n      const fire = () => this.triggerEvent("press");\n      fire();\n    },\n  },\n});\n',
+    "miniprogram/pages/a/a.ts": handler(1),
+  });
+  await commitAll(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  // The change is in a local of the handler, and the emitting relation starts in a local of tap.
+  await write("miniprogram/pages/a/a.ts", handler(10));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /miniprogram\/pages\/a\/a\.wxml/u);
+  assert.doesNotMatch(text, /miniprogram\/pages\/b\/b\.wxml/u);
+  assert.doesNotMatch(text, /button\.(?:wxml|ts)/u);
+});
