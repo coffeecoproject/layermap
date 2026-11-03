@@ -143,7 +143,7 @@ test("the Codex server table gains approval and timeout keys once, other lines u
     "[mcp_servers.layermap]",
     'default_tools_approval_mode = "approve"',
     "startup_timeout_sec = 120",
-    "tool_timeout_sec = 120",
+    "tool_timeout_sec = 300",
     'command = "node"',
     'args = ["cli.mjs", "mcp"]',
   ]);
@@ -224,7 +224,7 @@ test("setup registers the server through each agent's own command and approves i
   );
   assert.match(
     await readFile(path.join(env.CODEX_HOME, "config.toml"), "utf8"),
-    /\[mcp_servers\.layermap\]\ndefault_tools_approval_mode = "approve"\nstartup_timeout_sec = 120\ntool_timeout_sec = 120\ncommand = "node"/u,
+    /\[mcp_servers\.layermap\]\ndefault_tools_approval_mode = "approve"\nstartup_timeout_sec = 120\ntool_timeout_sec = 300\ncommand = "node"/u,
   );
   assert.ok(launch.endsWith(" mcp"));
   assert.ok(!launch.includes(" tsx "), "loaders are passed as absolute URLs");

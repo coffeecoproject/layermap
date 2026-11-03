@@ -18,17 +18,18 @@ import {
 import type { PythonProgram } from "./project-map-python-host";
 
 type ReferenceKind = "DECLARATION" | "CALL" | "READ" | "WRITE" | "IMPORT_EXPORT" | "REFERENCE";
-export type PythonReferenceFacts = {
+type PythonReferencePage = {
   references: { path: string; start: number; end: number; kind: ReferenceKind }[];
 };
+export type PythonReferenceFacts = { pages: (PythonReferencePage | null)[] };
 
 class Names extends ParseTreeWalker {
   readonly found: NameNode[] = [];
-  constructor(private readonly name?: string) {
+  constructor(private readonly names?: ReadonlySet<string>) {
     super();
   }
   override visitName(node: NameNode) {
-    if (this.name === undefined || node.d.value === this.name) this.found.push(node);
+    if (!this.names || this.names.has(node.d.value)) this.found.push(node);
     return false;
   }
 }
@@ -105,39 +106,60 @@ function kindOf(name: NameNode, declarations: readonly Declaration[]): Reference
     : "READ";
 }
 
-/** Every use in the program of the declaration whose name starts at the target offset. */
+/**
+ * Every use in the program of the declarations whose names start at the target offsets, in one walk
+ * of its names. A target that names no declaration has a null page.
+ */
 export function findPythonReferences(
   source: PythonProgram,
-  target: Readonly<{ path: string; offset: number }>,
+  targets: readonly Readonly<{ path: string; offset: number }>[],
 ): PythonReferenceFacts {
   const evaluator = source.program.evaluator;
   if (!evaluator) throw new Error("PROJECT_MAP_ANALYSIS_FAILED");
-  const parsed = source.program.getParseResults(source.uriOf(target.path));
-  if (!parsed) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
-  const all = new Names();
-  all.walk(parsed.parserOutput.parseTree);
-  const at = all.found.find((node) => node.start === target.offset);
-  if (!at) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
-  const declarations = resolved(evaluator, at);
-  const keys = new Set(declarations.map(declarationKey).filter((key) => key !== undefined));
-  const references: PythonReferenceFacts["references"] = [];
+  const named = new Map<string, Map<number, NameNode>>();
+  const namesIn = (path: string) => {
+    const known = named.get(path);
+    if (known) return known;
+    const all = new Names();
+    const parsed = source.program.getParseResults(source.uriOf(path));
+    if (parsed) all.walk(parsed.parserOutput.parseTree);
+    const found = new Map(all.found.map((node) => [node.start, node]));
+    named.set(path, found);
+    return found;
+  };
+  // The pages wanted of each name, by the declarations each is a page of.
+  const wanted = new Map<string, { keys: ReadonlySet<string>; page: PythonReferencePage }[]>();
+  const pages = targets.map((target) => {
+    const at = namesIn(target.path).get(target.offset);
+    if (!at) return null;
+    const keys = new Set(
+      resolved(evaluator, at)
+        .map(declarationKey)
+        .filter((key) => key !== undefined),
+    );
+    const page: PythonReferencePage = { references: [] };
+    wanted.set(at.d.value, [...(wanted.get(at.d.value) ?? []), { keys, page }]);
+    return page;
+  });
   for (const path of source.paths) {
     const uri = source.uriOf(path);
     const tree = source.program.getParseResults(uri)?.parserOutput.parseTree;
     if (!tree) continue;
     source.program.getBoundSourceFile(uri);
-    const names = new Names(at.d.value);
+    const names = new Names(new Set(wanted.keys()));
     names.walk(tree);
     for (const name of names.found) {
       const found = resolved(evaluator, name);
-      if (!found.some((declaration) => keys.has(declarationKey(declaration) ?? ""))) continue;
-      references.push({
-        path,
-        start: name.start,
-        end: name.start + name.length,
-        kind: kindOf(name, found),
-      });
+      const declared = found.map((declaration) => declarationKey(declaration) ?? "");
+      for (const { keys, page } of wanted.get(name.d.value) ?? [])
+        if (declared.some((key) => keys.has(key)))
+          page.references.push({
+            path,
+            start: name.start,
+            end: name.start + name.length,
+            kind: kindOf(name, found),
+          });
     }
   }
-  return { references };
+  return { pages };
 }

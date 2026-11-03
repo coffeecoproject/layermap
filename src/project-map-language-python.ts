@@ -6,7 +6,7 @@ import {
   MapFactsSchema,
   MapReferenceFactsSchema,
   mapFactsAnalysis,
-  mapReferencesPage,
+  mapReferencePages,
 } from "./project-map-facts";
 import type {
   MapAnalyzerObserver,
@@ -20,7 +20,7 @@ import {
   runMapOperation,
 } from "./project-map-process";
 import { PYTHON_STANDARD_LIBRARY } from "./project-map-python-stdlib";
-import type { MapReferencePage, MapReferenceRequest } from "./project-map-reference-types";
+import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
 import { type MapWorkerInput, mapTestPath } from "./project-map-types";
 
 // Configuration that roots a Python context, most specific to Pyright first.
@@ -191,12 +191,10 @@ export class PythonMapAnalyzer implements MapLanguageAnalyzer {
 
   async references(
     input: PythonInput,
-    reference: MapReferenceRequest,
+    references: readonly MapReferenceRequest[],
     signal: AbortSignal,
     observe?: MapAnalyzerObserver,
-  ): Promise<MapReferencePage> {
-    if (input.files[reference.targetPath] === undefined)
-      throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", false);
+  ): Promise<MapReferenceBatch> {
     const files: Record<string, string> = Object.create(null);
     for (const [path, value] of Object.entries(input.files))
       if (this.claims(path) || pythonConfig.test(path)) files[path] = value;
@@ -206,12 +204,15 @@ export class PythonMapAnalyzer implements MapLanguageAnalyzer {
         files,
         ...this.request({ ...input, files }),
         operation: "REFERENCES",
-        target: { path: reference.targetPath, offset: reference.symbolStart },
+        targets: references.map(({ targetPath, symbolStart }) => ({
+          path: targetPath,
+          offset: symbolStart,
+        })),
       },
       MapReferenceFactsSchema,
       signal,
       observe,
     );
-    return mapReferencesPage(facts, files, reference, "UTF16");
+    return mapReferencePages(facts, files, references, "UTF16");
   }
 }

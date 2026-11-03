@@ -11,7 +11,7 @@ import {
   type MapLanguageAnalyzer,
   mapAnalyzerSuite,
 } from "./project-map-language";
-import type { MapReferenceRequest } from "./project-map-reference-types";
+import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
 import type { ProjectMapSourceReader } from "./project-map-source";
 import type {
   MapAnalysis,
@@ -124,15 +124,18 @@ export class ProjectMapAnalyzer {
     return this.languages.some((language) => language.claims(path));
   }
 
-  references(
+  // A context holds one language's code, so its requests are that language's.
+  async references(
     input: Omit<MapWorkerInput, "compilerPath">,
-    reference: MapReferenceRequest,
+    references: readonly MapReferenceRequest[],
     signal: AbortSignal,
-  ) {
-    const language = this.languages.find((language) => language.claims(reference.targetPath));
-    if (!language?.references)
-      throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", false);
-    return language.references(input, reference, signal, this.observe);
+    until?: number,
+  ): Promise<MapReferenceBatch> {
+    const [first] = references;
+    const language = first && this.languages.find((item) => item.claims(first.targetPath));
+    return language?.references
+      ? language.references(input, references, signal, this.observe, until)
+      : { pages: references.map(() => null), requiredFiles: [] };
   }
 
   async analyze(

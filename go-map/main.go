@@ -15,7 +15,7 @@ type request struct {
 	Operation string            `json:"operation"`
 	ModFile   string            `json:"modFile"`
 	Files     map[string]string `json:"files"`
-	Target    *target           `json:"target"`
+	Targets   []target          `json:"targets"`
 }
 
 type target struct {
@@ -35,14 +35,10 @@ func main() {
 	case "BUILD":
 		output = extract(program)
 	case "REFERENCES":
-		if input.Target == nil {
-			fail("PROJECT_MAP_PROTOCOL_INVALID", fmt.Errorf("missing target"))
+		if input.Targets == nil {
+			fail("PROJECT_MAP_PROTOCOL_INVALID", fmt.Errorf("missing targets"))
 		}
-		references, err := findReferences(program, *input.Target)
-		if err != nil {
-			fail("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", err)
-		}
-		output = references
+		output = findReferences(program, input.Targets)
 	default:
 		fail("PROJECT_MAP_PROTOCOL_INVALID", fmt.Errorf("unknown operation %q", input.Operation))
 	}

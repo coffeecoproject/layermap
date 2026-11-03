@@ -8,7 +8,7 @@ import {
   MapFactsSchema,
   MapReferenceFactsSchema,
   mapFactsAnalysis,
-  mapReferencesPage,
+  mapReferencePages,
 } from "./project-map-facts";
 import type {
   MapAnalyzerObserver,
@@ -22,7 +22,7 @@ import {
   type JavaMapResources,
   runMapOperation,
 } from "./project-map-process";
-import type { MapReferencePage, MapReferenceRequest } from "./project-map-reference-types";
+import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
 import { type MapAnalysis, type MapWorkerInput, mapTestPath } from "./project-map-types";
 
 // Build files, the ones that root a whole multi-module build first.
@@ -362,25 +362,28 @@ export class JavaMapAnalyzer implements MapLanguageAnalyzer {
 
   async references(
     input: JavaInput,
-    reference: MapReferenceRequest,
+    references: readonly MapReferenceRequest[],
     signal: AbortSignal,
     observe?: MapAnalyzerObserver,
-  ): Promise<MapReferencePage> {
+  ): Promise<MapReferenceBatch> {
     this.refreshRuntime();
-    if (input.files[reference.targetPath] === undefined || !this.resources.runtimePath)
-      throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", false);
+    if (!this.resources.runtimePath)
+      return { pages: references.map(() => null), requiredFiles: [] };
     const request = this.request(input, JavaMapAnalyzer.buildTexts(input.files, input.configPath));
     const facts = await this.operation(
       {
         ...input,
         ...request,
         operation: "REFERENCES",
-        target: { path: reference.targetPath, offset: reference.symbolStart },
+        targets: references.map(({ targetPath, symbolStart }) => ({
+          path: targetPath,
+          offset: symbolStart,
+        })),
       },
       MapReferenceFactsSchema,
       signal,
       observe,
     );
-    return mapReferencesPage(facts, request.files, reference, "UTF16");
+    return mapReferencePages(facts, request.files, references, "UTF16");
   }
 }

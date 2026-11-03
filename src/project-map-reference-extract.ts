@@ -13,7 +13,11 @@ import {
 } from "typescript/unstable/ast";
 import type { Project } from "typescript/unstable/async";
 import { mapQueryPathMatches } from "./project-map-query-selection";
-import type { MapReferencePage, MapReferenceRequest } from "./project-map-reference-types";
+import type {
+  MapReferenceBatch,
+  MapReferencePage,
+  MapReferenceRequest,
+} from "./project-map-reference-types";
 import { MapSourcePositions } from "./project-map-source-positions";
 import type { MapWorkerInput } from "./project-map-types";
 import { mapRelativePath, mapVirtualPath } from "./project-map-virtual-files";
@@ -82,23 +86,23 @@ async function indexedAccesses(
   );
 }
 
-export async function extractMapReferences(
+async function extractPage(
   project: Project,
   input: MapWorkerInput,
+  positions: MapSourcePositions,
   query: MapReferenceRequest,
-): Promise<MapReferencePage> {
+): Promise<MapReferencePage | null> {
   const file = await project.program.getSourceFile(mapVirtualPath(query.targetPath));
-  if (!file) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
+  if (!file) return null;
   const token = getTokenAtPosition(file, query.symbolStart);
   if (
     !isIdentifier(token) &&
     !isPrivateIdentifier(token) &&
     token.kind !== SyntaxKind.StringLiteral
   )
-    throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
+    return null;
   const groups = await project.checker.getReferencedSymbolsForNode(token, query.symbolStart);
-  if (!groups.length) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
-  const positions = new MapSourcePositions(input.files);
+  if (!groups.length) return null;
   const references = new Map<string, MapReferencePage["references"][number]>();
   const add = (node: Node) => {
     const relative = mapRelativePath(node.getSourceFile().fileName);
@@ -116,7 +120,7 @@ export async function extractMapReferences(
     for (const handle of group.references) {
       if (mapRelativePath(handle.path) === undefined) continue;
       const node = await handle.resolve(project);
-      if (!node) throw new Error("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE");
+      if (!node) return null;
       add(node);
     }
   }
@@ -133,6 +137,21 @@ export async function extractMapReferences(
   return {
     references: selected,
     ...(next < ordered.length ? { nextOffset: next } : {}),
-    requiredFiles: [],
   };
+}
+
+/** Every request's page from one compile; past the deadline, a compile's first is still read. */
+export async function extractMapReferences(
+  project: Project,
+  input: MapWorkerInput,
+  requests: readonly MapReferenceRequest[],
+  until = Number.POSITIVE_INFINITY,
+): Promise<MapReferenceBatch> {
+  const positions = new MapSourcePositions(input.files);
+  const pages: MapReferenceBatch["pages"] = [];
+  for (const query of requests) {
+    if (pages.length && Date.now() > until) break;
+    pages.push(await extractPage(project, input, positions, query));
+  }
+  return { pages, requiredFiles: [] };
 }

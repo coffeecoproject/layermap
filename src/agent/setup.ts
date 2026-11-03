@@ -101,6 +101,9 @@ export async function allowInClaudeSettings(file: string, rule = SETUP_RULE): Pr
   return true;
 }
 
+/** How long Codex waits for a tool, in seconds: a check after a pull first builds the map. */
+export const CODEX_TOOL_TIMEOUT_SEC = 300;
+
 /**
  * Sets keys in the [mcp_servers.layermap] table of a Codex config, leaving every other line as
  * it is. Codex approves the read-only map tools without asking, and waits for npm to install the
@@ -115,7 +118,7 @@ export async function configureCodexServer(file: string): Promise<boolean> {
   const wanted: Record<string, string> = {
     default_tools_approval_mode: '"approve"',
     startup_timeout_sec: "120",
-    tool_timeout_sec: "120",
+    tool_timeout_sec: String(CODEX_TOOL_TIMEOUT_SEC),
   };
   const present = new Set(
     lines.slice(header + 1, end).map((line) => line.split("=")[0]?.trim() ?? ""),
@@ -333,7 +336,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
   } else {
     log(`codex mcp add ${SERVER} -- ${quoted.join(" ")}`);
     log(
-      `set default_tools_approval_mode = "approve", startup_timeout_sec = 120 and tool_timeout_sec = 120 in ${settings}`,
+      `set default_tools_approval_mode = "approve", startup_timeout_sec = 120 and tool_timeout_sec = ${CODEX_TOOL_TIMEOUT_SEC} in ${settings}`,
     );
   }
   if (note) log(`add a note naming the map tools to ${instructions}`);
