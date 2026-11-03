@@ -314,6 +314,10 @@ const USED_BY: Partial<Record<MapRelation["kind"], string>> = {
   IMPLEMENTS: "implemented",
   OVERRIDES: "overridden",
 };
+// An event reaches its handler only where the template binding it is, and that template's own
+// relation says so: followed up to the component that emits it, the trace would reach every page
+// showing that component.
+const runsTarget = (relation: MapRelation) => CALLER_KINDS.has(relation.kind) && !relation.event;
 const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // A literal is a route when it is a path, optionally after its methods: "/x", "GET|POST /x".
 const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
@@ -330,14 +334,19 @@ type Reached = {
   shaped?: boolean;
 };
 // uses: a declaration that reads or names a field or type, which is not known to depend on what
-// changed in it, rather than one that calls it.
+// changed in it, rather than one that calls it. holds: the declaration around a local nothing outside
+// tests is seen to call, which is the only way left that it runs.
 type Caller = {
   ref: string;
   anchor: MapAnchor;
   argument?: string;
   certain: boolean;
   uses?: boolean;
+  holds?: boolean;
 };
+// Where a changed declaration is followed from. own: the declarations whose own code changed, not
+// only the locals inside them.
+type ChangeStart = Readonly<{ refs: readonly string[]; own: readonly string[] }>;
 const callerFrom = (ref: string, relation: MapRelation, certain: boolean): Caller => ({
   ref,
   anchor: relation.anchor,
@@ -358,6 +367,7 @@ class Tracer {
   readonly unclear: string[] = [];
   truncated = false;
   private readonly callerCount = new Map<string, number>();
+  private readonly owners = new Set<string>();
   private readonly known = new Map<string, Caller[]>();
   // Declarations a decorator maps to a route: entry points already, never "top of a chain".
   private readonly routes = new Set<string>();
@@ -373,26 +383,43 @@ class Tracer {
     readonly shapes: MapShapeUses,
   ) {}
 
-  private name = (ref: string) => this.graph.qualifiedName(ref);
+  // The trace walks the declarations relations name, closures and locals among them; a reader sees
+  // the addressable declaration around each.
+  private name = (ref: string) => this.graph.qualifiedName(this.graph.owner(ref));
   // A module is named by its path alone.
   private where = (ref: string) => {
-    const object = this.graph.object(ref);
+    const object = this.graph.object(this.graph.owner(ref));
     return mapIsModule(object) ? object.anchor.path : `${object.anchor.path}: ${this.name(ref)}`;
   };
 
-  /** Follows callers up from the given declarations, recording entry points and tests. */
-  async trace(starts: readonly string[]) {
+  /**
+   * Follows callers up from the given declarations, recording entry points and tests. The code of
+   * one in own may flow into its members: the map keeps no reads of its locals, so they may be
+   * affected, unlike what calls it.
+   */
+  async trace(starts: readonly string[], own: readonly string[] = []) {
     let frontier: Reached[] = [];
     for (const ref of starts)
       if (!this.reached.has(ref)) {
         const start = { ref, depth: 0, certain: true, shaped: true };
         this.reached.set(ref, start);
+        this.owners.add(this.graph.owner(ref));
         frontier.push(start);
       }
-    for (const start of frontier) this.byName(start.ref);
+    for (const start of frontier)
+      for (const ref of new Set([start.ref, this.graph.owner(start.ref)])) this.byName(ref);
     // Uncertain steps wait until every certain path has been walked: a declaration both reach,
     // however much shorter the uncertain way, is certainly affected.
     const uncertain: { current: Reached; caller: Caller }[] = [];
+    for (const ref of own) {
+      const current = this.reached.get(ref);
+      if (current)
+        for (const member of this.members(ref))
+          uncertain.push({
+            current,
+            caller: { ref: member, anchor: this.graph.object(member).anchor, certain: false },
+          });
+    }
     while (frontier.length || uncertain.length) {
       if (!frontier.length)
         frontier = uncertain
@@ -405,7 +432,12 @@ class Tracer {
         frontier
           .filter(({ ref, shaped }) => {
             const object = this.graph.object(ref);
-            return !testCode(object.anchor.path) && (shaped || object.kind === "PROPERTY");
+            // What a local's field or type is used for stays inside the declaration around it.
+            return (
+              this.graph.isAddressable(object) &&
+              !testCode(object.anchor.path) &&
+              (shaped || object.kind === "PROPERTY")
+            );
           })
           .map(({ ref }) => ref),
       );
@@ -456,7 +488,7 @@ class Tracer {
           this.test(
             call.path,
             this.name(this.graph.owner(call.from)),
-            `may call ${this.name(reached.ref)} through a receiver of unknown type`,
+            `may call ${this.graph.qualifiedName(reached.ref)} through a receiver of unknown type`,
             3.5,
           );
     }
@@ -494,19 +526,99 @@ class Tracer {
       this.known.delete(caller.ref);
       return [known];
     }
-    if (current.depth + 1 > LIMITS.depth || this.reached.size >= LIMITS.declarations) {
+    const depth = this.climb(current.ref, caller.ref, current.depth, this.owners);
+    if (depth === undefined) {
       this.truncated = true;
       return [];
     }
     const reached = {
       ref: caller.ref,
-      depth: current.depth + 1,
+      depth,
       certain,
       via: current.ref,
       ...(caller.uses ? { used: true, ...(current.shaped ? { shaped: true } : {}) } : {}),
     };
     this.reached.set(caller.ref, reached);
     return [reached];
+  }
+
+  // The depth of a step from one declaration to another, unless it passes the trace's limits. The
+  // limits count what a reader sees: moving between the locals of one declaration climbs nothing.
+  private climb(from: string, to: string, depth: number, owners: Set<string>) {
+    const owner = this.graph.owner(to);
+    const next = depth + (owner === this.graph.owner(from) ? 0 : 1);
+    if (next > LIMITS.depth || (!owners.has(owner) && owners.size >= LIMITS.declarations))
+      return undefined;
+    owners.add(owner);
+    return next;
+  }
+
+  // Whether a relation starts in the declaration, not in an addressable declaration inside it.
+  private within(from: string, ref: string) {
+    for (let at: string | undefined = from; at !== undefined; at = this.graph.parent(at)) {
+      if (at === ref) return true;
+      if (this.graph.isAddressable(this.graph.object(at))) return false;
+    }
+    return false;
+  }
+
+  /**
+   * The locals of a declaration that code outside it calls, as the methods of the object a factory
+   * returns. Fields and types are read by name, not called, so they have none.
+   */
+  members(ref: string): string[] {
+    const object = this.graph.object(ref);
+    if (mapIsModule(object) || mapIsShape(object)) return [];
+    return this.graph
+      .scope(ref)
+      .refs.slice(1)
+      .filter((local) =>
+        this.callers(local).some((caller) => this.graph.owner(caller.ref) !== ref),
+      );
+  }
+
+  /**
+   * Where a change on the lines of a declaration is followed from: the innermost local around each
+   * line that runs apart from it, as a function does or as what others call does, and the declaration
+   * itself for lines in none. Fields and types change as a whole.
+   */
+  startsAt(ref: string, lines: Lines): ChangeStart {
+    const object = this.graph.object(ref);
+    if (mapIsModule(object) || mapIsShape(object)) return { refs: [ref], own: [] };
+    const locals = this.graph
+      .scope(ref)
+      .refs.slice(1)
+      .map((local) => this.graph.object(local))
+      .filter((local) => local.execution || this.callers(local.id).some((caller) => !caller.holds));
+    const refs = new Set<string>();
+    let own = false;
+    const at = (from: number, to: number) => {
+      const around = locals.filter(
+        (local) => local.anchor.startLine <= to && from <= local.anchor.endLine,
+      );
+      for (const local of around)
+        if (
+          !around.some(
+            (other) =>
+              other !== local &&
+              local.anchor.start <= other.anchor.start &&
+              other.anchor.end <= local.anchor.end,
+          )
+        )
+          refs.add(local.id);
+      if (!around.length) own = true;
+    };
+    for (const [from, to] of lines) {
+      // A pure deletion is the point between two lines, around which only code containing both is.
+      if (from > to) {
+        if (object.anchor.startLine <= to && from <= object.anchor.endLine) at(from, to);
+        continue;
+      }
+      const last = Math.min(to, object.anchor.endLine);
+      for (let line = Math.max(from, object.anchor.startLine); line <= last; line++) at(line, line);
+    }
+    if (own) refs.add(ref);
+    return { refs: [...refs], own: own ? [ref] : [] };
   }
 
   /**
@@ -548,10 +660,11 @@ class Tracer {
   ): { how: Map<string, "call" | "route">; truncated: boolean } {
     const how = new Map<string, "call" | "route">();
     const below = new Map<string, string[]>();
-    const seen = new Set(refs);
+    const depths = new Map(refs.map((ref) => [ref, 0]));
+    const owners = new Set(refs.map((ref) => this.graph.owner(ref)));
     let truncated = false;
-    let frontier = [...seen];
-    for (let depth = 0; frontier.length; depth++) {
+    let frontier = [...depths.keys()];
+    while (frontier.length) {
       const next: string[] = [];
       for (const current of frontier) {
         if (handlers.has(current)) how.set(current, "route");
@@ -563,12 +676,13 @@ class Tracer {
           const callees = below.get(caller.ref);
           if (callees) callees.push(current);
           else below.set(caller.ref, [current]);
-          if (seen.has(caller.ref)) continue;
-          if (depth + 1 > LIMITS.depth || seen.size >= LIMITS.declarations) {
+          if (depths.has(caller.ref)) continue;
+          const depth = this.climb(current, caller.ref, depths.get(current) ?? 0, owners);
+          if (depth === undefined) {
             truncated = true;
             continue;
           }
-          seen.add(caller.ref);
+          depths.set(caller.ref, depth);
           next.push(caller.ref);
         }
       }
@@ -591,14 +705,9 @@ class Tracer {
     const known = this.known.get(ref);
     if (known) return known;
     const callers: Caller[] = [];
-    // An event reaches its handler only where the template binding it is, and that template's own
-    // relation says so: followed up to the component that emits it, the trace would reach every
-    // page showing that component.
     for (const relation of this.graph.relationsTo([ref]))
-      if (CALLER_KINDS.has(relation.kind) && !relation.event) {
-        const owner = this.graph.owner(relation.from);
-        if (owner !== ref) callers.push(callerFrom(owner, relation, true));
-      }
+      if (runsTarget(relation) && !this.within(relation.from, ref))
+        callers.push(callerFrom(relation.from, relation, true));
     // Who reads or names a field or type: what changes in it may or may not matter to them.
     for (const use of this.shapes.uses.get(ref) ?? [])
       callers.push({ ref: use.owner, anchor: use.anchor, certain: false, uses: true });
@@ -624,27 +733,52 @@ class Tracer {
       // functools.partial, isinstance) may construct it or not.
       if (implicit)
         for (const relation of this.graph.relationsTo([parent]))
-          if (CALLER_KINDS.has(relation.kind)) {
-            const owner = this.graph.owner(relation.from);
-            if (owner !== ref && owner !== parent)
-              callers.push(callerFrom(owner, relation, constructs && relation.kind === "CALLS"));
-          }
+          if (
+            runsTarget(relation) &&
+            !this.within(relation.from, ref) &&
+            !this.within(relation.from, parent)
+          )
+            callers.push(
+              callerFrom(relation.from, relation, constructs && relation.kind === "CALLS"),
+            );
     }
+    const local = !this.graph.isAddressable(object);
     // A call through an interface or base member may reach this implementation, or another;
     // with no other implementation in the project, it reaches this one. A constructor is not
     // dispatched: the base's constructor, or super().__init__ in a sibling class, never runs it.
+    // A local implementation is made by the code around it and handed on, as an option's callback
+    // is: where running code has several, a call of the contract says nothing of whose it runs, and
+    // following it would reach everything using that contract, so it runs through what holds it.
+    // Test doubles run in no running code, so they do not make it one of several.
     if (!constructs)
       for (const override of this.graph.relationsFrom([ref]))
         if (override.kind === "OVERRIDES" && override.to !== undefined) {
           const contract = override.to;
           const relations = this.graph.relationsTo([contract]);
-          const only = relations.filter((relation) => relation.kind === "OVERRIDES").length === 1;
+          const only =
+            relations.filter(
+              (relation) =>
+                relation.kind === "OVERRIDES" && !(local && testCode(relation.anchor.path)),
+            ).length === 1;
+          if (local && !only) continue;
           for (const relation of relations)
-            if (CALLER_KINDS.has(relation.kind)) {
-              const owner = this.graph.owner(relation.from);
-              if (owner !== ref) callers.push(callerFrom(owner, relation, only));
-            }
+            if (runsTarget(relation) && !this.within(relation.from, ref))
+              callers.push(callerFrom(relation.from, relation, only));
         }
+    // A local nothing is seen to call runs through what holds it: a callback through the code passing
+    // it, a method of the object a factory returns through whoever gets that object. Called only by
+    // tests, it may still run that way, through a call the map could not resolve.
+    if (
+      parent &&
+      local &&
+      callers.every((caller) => testCode(this.graph.object(caller.ref).anchor.path))
+    )
+      callers.push({
+        ref: parent,
+        anchor: object.anchor,
+        certain: callers.length === 0,
+        holds: true,
+      });
     this.known.set(ref, callers);
     return callers;
   }
@@ -673,7 +807,7 @@ class Tracer {
     const calls = this.memberCalls.get(`${language}\u0000${object.name}`) ?? [];
     if (calls.length)
       this.unclear.push(
-        `${calls.length} calls of a member named ${object.name} on receivers of unknown type may reach ${this.name(ref)}; a text search finds them`,
+        `${calls.length} calls of a member named ${object.name} on receivers of unknown type may reach ${this.graph.qualifiedName(ref)}; a text search finds them`,
       );
   }
 
@@ -687,11 +821,15 @@ class Tracer {
   ) {
     if (route) this.handlers.set(label, (this.handlers.get(label) ?? new Set()).add(at.ref));
     const chain: string[] = [];
-    // The chain runs from the declaration the entry reaches toward the change; a declaration at
-    // the top of a chain is the entry itself, so its chain starts below it.
-    let step: Reached | undefined = !top ? at : at.via ? this.reached.get(at.via) : undefined;
+    // The chain runs from the declaration the entry reaches toward the change, each declaration once
+    // however many of its locals the trace passed; a declaration at the top of a chain is the entry
+    // itself, so its chain starts below it.
+    let shown = top ? this.graph.owner(at.ref) : undefined;
+    let step: Reached | undefined = at;
     for (; step && chain.length < LIMITS.chain; ) {
-      chain.push(this.name(step.ref));
+      const owner = this.graph.owner(step.ref);
+      if (owner !== shown) chain.push(this.name(owner));
+      shown = owner;
       step = step.via ? this.reached.get(step.via) : undefined;
     }
     const known = this.entries.get(label);
@@ -757,7 +895,7 @@ export async function mapChangeImpact(
       ? g.objectsAt(path).filter((object) => mapIsModule(object) && object.parsing === "PARSED")
       : declarations(g, path);
   let changedCount = 0;
-  const starts: string[] = [];
+  const starts: ChangeStart[] = [];
   // Read once for all changed files, as a large change (thousands of files nobody has added to
   // Git yet) would otherwise query the same importers, and every mapped path, once per file.
   const importers = new Map<string, Importer[]>();
@@ -823,7 +961,7 @@ export async function mapChangeImpact(
       changed.push(
         `${file.path}${template ? " (template)" : `: ${graph.qualifiedName(ref)} ${mapDeclarationLabel(object)}`}${file.status === "ADDED" ? " (new file)" : ""}`,
       );
-      starts.push(ref);
+      starts.push(tracer.startsAt(ref, file.lines));
     }
     // Registrations: route literals on changed lines, wherever they are.
     for (const relation of graph.relationsFrom(objects.map((object) => object.id)))
@@ -841,7 +979,10 @@ export async function mapChangeImpact(
     sameDirectoryTests(mappedPaths(), file.path, tracer);
     mirroredTests(mappedPaths(), file.path, tracer);
   }
-  await tracer.trace(starts);
+  await tracer.trace(
+    starts.flatMap((start) => start.refs),
+    starts.flatMap((start) => start.own),
+  );
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
@@ -1091,7 +1232,7 @@ export async function mapChangeImpact(
         topLevelChanged(file.path);
     }
     if (gone.length) {
-      await beforeTracer.trace(gone);
+      await beforeTracer.trace(gone, gone);
       for (const entry of beforeTracer.entries.values())
         if (!tracer.entries.has(entry.label)) tracer.entries.set(entry.label, entry);
       for (const [path, test] of beforeTracer.tests) {
@@ -1233,7 +1374,7 @@ async function untestedChanges(
   graph: MapViewGraph,
   tracer: Tracer,
   memberCalls: ReturnType<MapViewCache["memberCalls"]>,
-  starts: readonly string[],
+  starts: readonly ChangeStart[],
   changed: readonly string[],
   tests: readonly string[],
 ): Promise<MapUntestedChanges> {
@@ -1256,16 +1397,24 @@ async function untestedChanges(
         for (const ref of refs) handlers.add(ref);
       }
     }
-  const { how, truncated } = tracer.reach(starts, given, handlers);
+  const { how, truncated } = tracer.reach(
+    starts.flatMap((start) => start.refs),
+    given,
+    handlers,
+  );
   const unreached: number[] = [];
   const throughRoutes: string[] = [];
-  for (const [at, ref] of starts.entries()) {
-    const found = how.get(ref);
-    if (found === "route") throughRoutes.push(changed[at] ?? "");
-    else if (!found) unreached.push(at);
+  for (const [at, start] of starts.entries()) {
+    const found = start.refs.map((ref) => how.get(ref));
+    if (found.includes("call")) continue;
+    if (found.includes("route")) throughRoutes.push(changed[at] ?? "");
+    else unreached.push(at);
   }
   const above = new Tracer(graph, memberCalls, tracer.shapes);
-  await above.trace(unreached.map((at) => starts[at] ?? ""));
+  await above.trace(
+    unreached.flatMap((at) => starts[at]?.refs ?? []),
+    unreached.flatMap((at) => starts[at]?.own ?? []),
+  );
   return {
     changed: unreached.map((at) => changed[at] ?? ""),
     entries: [...above.entries.values()].sort(entryOrder),
