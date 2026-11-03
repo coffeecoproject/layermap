@@ -8,7 +8,11 @@ import { GitCommandStopUnconfirmedError } from "./git-runner";
 import { type MapParent, ProjectMapAnalyzer } from "./project-map-analyzer";
 import { ProjectMapStopUnconfirmedError } from "./project-map-process";
 import { ProjectMapReferenceQuery } from "./project-map-reference-query";
-import type { MapReferenceInput, MapUsesInput } from "./project-map-reference-types";
+import type {
+  MapDiagnosticsInput,
+  MapReferenceInput,
+  MapUsesInput,
+} from "./project-map-reference-types";
 import { ProjectMapSourceReader } from "./project-map-source";
 
 type Rebuild = Readonly<{
@@ -118,6 +122,7 @@ export class CodeIndex {
           const coverage = await this.analyzer.analyze(
             reader,
             result.entries,
+            { directory: source.directory.canonicalPath, digest: result.installedDigest },
             controller.signal,
             (unit, record) => this.store.appendMapStage(stage, unit, record),
             parent && { ...parent, link: (paths) => linked.push(...paths) },
@@ -130,6 +135,7 @@ export class CodeIndex {
           this.store.publish(
             result.version,
             result.entries,
+            result.installedDigest,
             stage,
             coverage,
             parent && linked.length
@@ -246,6 +252,20 @@ export class CodeIndex {
   findUses(input: MapUsesInput, signal: AbortSignal) {
     return this.read(signal, (signal) =>
       new ProjectMapReferenceQuery(this.store, this.analyzer).uses(input, signal),
+    );
+  }
+
+  /** The configurations of the compiler contexts a version's files are in. */
+  contextConfigurations(version: string, paths: readonly string[]) {
+    return new ProjectMapReferenceQuery(this.store, this.analyzer).contextConfigurations(
+      version,
+      paths,
+    );
+  }
+
+  findDiagnostics(input: MapDiagnosticsInput, signal: AbortSignal) {
+    return this.read(signal, (signal) =>
+      new ProjectMapReferenceQuery(this.store, this.analyzer).diagnostics(input, signal),
     );
   }
 

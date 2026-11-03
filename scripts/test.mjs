@@ -3,7 +3,7 @@
 //
 // usage: node scripts/test.mjs [test files]   (all of test/ by default)
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -15,7 +15,9 @@ const files = process.argv.slice(2).length
       .filter((name) => name.endsWith(".test.ts"))
       .sort()
       .map((name) => path.join(packageRoot, "test", name));
-const sandbox = await mkdtemp(path.join(os.tmpdir(), "layermap-test-"));
+// By its real path: on macOS the temporary directory is reached through a link, and the compiler
+// names its library files by where it really is.
+const sandbox = await realpath(await mkdtemp(path.join(os.tmpdir(), "layermap-test-")));
 // Windows children also need their system variables, and find the home directory by USERPROFILE.
 const windows = process.platform === "win32";
 const system = windows

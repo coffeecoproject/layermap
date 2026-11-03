@@ -8,6 +8,7 @@ import { digestValue } from "./digest";
 import {
   MAP_LANGUAGES,
   type MapAnalyzerObserver,
+  type MapInstalled,
   type MapLanguageAnalyzer,
   mapAnalyzerSuite,
 } from "./project-map-language";
@@ -138,9 +139,17 @@ export class ProjectMapAnalyzer {
       : { pages: references.map(() => null), requiredFiles: [] };
   }
 
+  // A context's compiler diagnostics, undefined for a language without a compiler to ask.
+  diagnostics(input: Omit<MapWorkerInput, "compilerPath">, path: string, signal: AbortSignal) {
+    return this.languages
+      .find((language) => language.claims(path))
+      ?.diagnostics?.(input, signal, this.observe);
+  }
+
   async analyze(
     reader: ProjectMapSourceReader,
     entries: readonly ProjectEvidenceRevisionFileEntryV1[],
+    installed: MapInstalled,
     signal: AbortSignal,
     consume: (unit: MapAnalysis, record: MapContextRecord) => void,
     parent?: MapParent,
@@ -280,6 +289,7 @@ export class ProjectMapAnalyzer {
       await language.analyze(
         {
           entries,
+          installed,
           readable: own,
           texts,
           read,

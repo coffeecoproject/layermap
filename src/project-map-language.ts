@@ -3,7 +3,11 @@ import { GO_MAP_LANGUAGE } from "./project-map-language-go";
 import { JAVA_MAP_LANGUAGE } from "./project-map-language-java";
 import { PYTHON_MAP_LANGUAGE } from "./project-map-language-python";
 import { TYPESCRIPT_MAP_LANGUAGE } from "./project-map-language-typescript";
-import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
+import type {
+  MapDiagnostics,
+  MapReferenceBatch,
+  MapReferenceRequest,
+} from "./project-map-reference-types";
 import type { MapParserTiming } from "./project-map-timing";
 import type { MapAnalysis, MapWorkerInput } from "./project-map-types";
 
@@ -19,10 +23,14 @@ export type MapAnalyzerEvent = Readonly<{
 }>;
 export type MapAnalyzerObserver = (event: MapAnalyzerEvent) => void;
 
+/** The project's directory, whose installed packages a compiler may read, and what they are. */
+export type MapInstalled = Readonly<{ directory: string; digest: string }>;
+
 /** One language's share of an analysis run. Accepted units are staged for the whole map. */
 export type MapLanguageSession = Readonly<{
   /** Every admitted entry of the revision, analyzed or not. */
   entries: readonly ProjectEvidenceRevisionFileEntryV1[];
+  installed: MapInstalled;
   /** The text entries this language claims or reads, in admission order. */
   readable: readonly ProjectEvidenceRevisionFileEntryV1[];
   texts: Readonly<Record<string, string>>;
@@ -78,6 +86,12 @@ export interface MapLanguageAnalyzer extends MapLanguageClaim {
     observe?: MapAnalyzerObserver,
     until?: number,
   ): Promise<MapReferenceBatch>;
+  /** What the language's compiler says is wrong in a context, for a language that has one. */
+  diagnostics?(
+    input: Omit<MapWorkerInput, "compilerPath">,
+    signal: AbortSignal,
+    observe?: MapAnalyzerObserver,
+  ): Promise<MapDiagnostics>;
 }
 
 export type MapLanguage = MapLanguageClaim & Readonly<{ create(): MapLanguageAnalyzer }>;

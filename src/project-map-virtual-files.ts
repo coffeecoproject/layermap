@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { FileSystem } from "typescript/unstable/fs";
+import { mapInNodeModules, mapInstalledPath } from "./project-map-installed";
 import type { MapWorkerInput } from "./project-map-types";
 
 export const MAP_WORKSPACE = "/layermap/";
@@ -22,6 +23,7 @@ export class MapVirtualFiles {
     { files: Set<string>; directories: Set<string> }
   >();
   private readonly aliases = new Map<string, string>();
+  private readonly hostPaths = new Map<string, string | undefined>();
 
   constructor(readonly input: MapWorkerInput) {
     for (const [relative, text] of Object.entries(input.files))
@@ -75,7 +77,28 @@ export class MapVirtualFiles {
     }
   }
 
-  // Every miss is explicit. The compiler cannot fall back to the host filesystem.
+  private get realRoot(): string | undefined {
+    const value =
+      this.input.dependencies === undefined
+        ? undefined
+        : realpathSync.native(this.input.dependencies);
+    Object.defineProperty(this, "realRoot", { value });
+    return value;
+  }
+
+  // Where an installed package's file or directory really is. A link out of the project is a miss.
+  private installed(file: string): string | undefined {
+    const relative = mapRelativePath(file);
+    const root = this.realRoot;
+    if (relative === undefined || root === undefined || !mapInNodeModules(relative))
+      return undefined;
+    if (!this.hostPaths.has(relative))
+      this.hostPaths.set(relative, mapInstalledPath(root, relative));
+    return this.hostPaths.get(relative);
+  }
+
+  // Every miss is explicit. The compiler falls back to the host filesystem for the packages the
+  // project has installed and for nothing else, and reads only what it needs to resolve types.
   readonly fs: FileSystem = {
     readFile: (file) => {
       file = this.canonical(file);
@@ -88,17 +111,50 @@ export class MapVirtualFiles {
         this.required.add(relative);
         return "";
       }
-      return null;
+      const host = this.installed(file);
+      return host && statSync(host, { throwIfNoEntry: false })?.isFile()
+        ? readFileSync(host, "utf8")
+        : null;
     },
     fileExists: (file) => {
       file = this.canonical(file);
-      return this.files.has(file) || this.inventory.has(file);
+      if (this.files.has(file) || this.inventory.has(file)) return true;
+      const host = this.installed(file);
+      return host !== undefined && statSync(host, { throwIfNoEntry: false })?.isFile() === true;
     },
-    directoryExists: (directory) => this.directories.has(this.canonical(directory)),
-    realpath: (file) => this.canonical(file),
+    directoryExists: (directory) => {
+      directory = this.canonical(directory);
+      if (this.directories.has(directory)) return true;
+      const host = this.installed(directory);
+      return (
+        host !== undefined && statSync(host, { throwIfNoEntry: false })?.isDirectory() === true
+      );
+    },
+    realpath: (file) => {
+      file = this.canonical(file);
+      const host = this.installed(file);
+      const root = this.realRoot;
+      if (!host || root === undefined) return file;
+      // A package manager links packages from a store under node_modules, whose siblings are the
+      // package's own dependencies. A link to elsewhere in the project stays where it was named.
+      const real = mapForwardSlashes(path.relative(root, host));
+      return mapInNodeModules(real) ? mapVirtualPath(real) : file;
+    },
     getAccessibleEntries: (directory) => {
-      const entry = this.directories.get(this.canonical(directory));
-      return { files: [...(entry?.files ?? [])], directories: [...(entry?.directories ?? [])] };
+      directory = this.canonical(directory);
+      const entry = this.directories.get(directory);
+      const files = new Set(entry?.files);
+      const directories = new Set(entry?.directories);
+      const host = this.installed(directory);
+      const stat = host ? statSync(host, { throwIfNoEntry: false }) : undefined;
+      if (host && stat?.isDirectory())
+        for (const name of readdirSync(host)) {
+          const inner = this.installed(`${directory}/${name}`);
+          const kind = inner ? statSync(inner, { throwIfNoEntry: false }) : undefined;
+          if (kind?.isDirectory()) directories.add(name);
+          else if (kind?.isFile()) files.add(name);
+        }
+      return { files: [...files], directories: [...directories] };
     },
   };
 }

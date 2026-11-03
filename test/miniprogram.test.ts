@@ -131,7 +131,7 @@ test("a method a template binds is called from the template, and reached from th
   // And called from where the component emits the event, by a name its type spells out.
   assert.match(
     handler.text,
-    /← called by miniprogram\/components\/booking-sheet\/booking-sheet\.ts: emit m15-17 @16\n/u,
+    /← called via closed event by miniprogram\/components\/booking-sheet\/booking-sheet\.ts: emit m15-17 @16/u,
   );
   // A component's event names a string does not spell out are a gap, not a missing event.
   const tag = await map.explore(
@@ -260,7 +260,7 @@ test("a removed method a template still binds, and a removed component a page st
   // Its methods went with the template that bound them.
   assert.match(
     removed.text,
-    /no code the diff left unchanged uses them\)\n(?: {2}[^\n]*\n)*? {2}[^\n]*booking-sheet\.ts: cancel /u,
+    /no reference found on a line the diff left unchanged\)\n(?: {2}[^\n]*\n)*? {2}[^\n]*booking-sheet\.ts: cancel /u,
   );
 
   // A component moved and registered under the same tag is still shown.
@@ -284,7 +284,7 @@ test("a removed method a template still binds, and a removed component a page st
   const moved = await map.checkChanges({}, signal());
   assert.match(
     moved.text,
-    /REMOVED OR RENAMED \(no code[^\n]*\n(?: {2}[^\n]*\n)*? {2}[^\n]*booking-sheet\.wxml \(template\)\n/u,
+    /REMOVED OR RENAMED \(no reference[^\n]*\n(?: {2}[^\n]*\n)*? {2}[^\n]*booking-sheet\.wxml \(template\)\n/u,
   );
   assert.doesNotMatch(moved.text, /STILL USED/u);
 
@@ -406,4 +406,96 @@ test("the templates and their configuration reach the analysis with the scripts,
   );
   assert.ok(builds.length > 0);
   assert.deepEqual(builds, [...new Set(builds)], "no context is analyzed again for a missing file");
+});
+
+// A button two pages use, and a sheet whose own template puts a part that emits to the sheet.
+const EVENTS = {
+  "miniprogram/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true } }),
+  "miniprogram/app.json": JSON.stringify({ pages: ["pages/a/a", "pages/b/b", "pages/c/c"] }),
+  "miniprogram/components/button/button.json": '{ "component": true }\n',
+  "miniprogram/components/button/button.ts":
+    'declare function Component(options: unknown): void;\nComponent({\n  methods: {\n    tap() {\n      this.triggerEvent("press");\n    },\n  },\n});\n',
+  "miniprogram/components/button/button.wxml": '<view bindtap="tap">press</view>\n',
+  "miniprogram/pages/a/a.json":
+    '{ "usingComponents": { "my-button": "../../components/button/button" } }\n',
+  "miniprogram/pages/a/a.ts":
+    "declare function Page(options: unknown): void;\nPage({\n  retryA() {\n    return 1;\n  },\n});\n",
+  "miniprogram/pages/a/a.wxml": '<my-button bind:press="retryA"></my-button>\n',
+  "miniprogram/pages/b/b.json":
+    '{ "usingComponents": { "my-button": "../../components/button/button" } }\n',
+  "miniprogram/pages/b/b.ts":
+    "declare function Page(options: unknown): void;\nPage({\n  retryB() {\n    return 2;\n  },\n});\n",
+  "miniprogram/pages/b/b.wxml": '<my-button bind:press="retryB"></my-button>\n',
+  "miniprogram/components/part/part.json": '{ "component": true }\n',
+  "miniprogram/components/part/part.ts":
+    'declare function Component(options: unknown): void;\nComponent({\n  methods: {\n    done() {\n      this.triggerEvent("finish");\n    },\n  },\n});\n',
+  "miniprogram/components/part/part.wxml": '<view bindtap="done">done</view>\n',
+  "miniprogram/components/sheet/sheet.json":
+    '{ "component": true, "usingComponents": { "my-part": "../part/part" } }\n',
+  "miniprogram/components/sheet/sheet.ts":
+    "declare function Component(options: unknown): void;\nComponent({\n  methods: {\n    onFinish() {\n      return 3;\n    },\n  },\n});\n",
+  "miniprogram/components/sheet/sheet.wxml": '<my-part bind:finish="onFinish"></my-part>\n',
+  "miniprogram/pages/c/c.json":
+    '{ "usingComponents": { "my-sheet": "../../components/sheet/sheet" } }\n',
+  "miniprogram/pages/c/c.ts": "declare function Page(options: unknown): void;\nPage({});\n",
+  "miniprogram/pages/c/c.wxml": "<my-sheet></my-sheet>\n",
+};
+const commitAll = async (root: string) => {
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+};
+
+test("a handler reached through an event runs where its template is, not wherever the emitter is", async (t) => {
+  const { root, write } = await project(EVENTS);
+  await commitAll(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  // A shared button does not fan out: page a's handler runs on page a, though b shows the button.
+  await write(
+    "miniprogram/pages/a/a.ts",
+    EVENTS["miniprogram/pages/a/a.ts"].replace("return 1", "return 10"),
+  );
+  const shared = (await map.checkChanges({}, signal())).text;
+  assert.match(shared, /miniprogram\/pages\/a\/a\.wxml/u);
+  assert.doesNotMatch(shared, /miniprogram\/pages\/b\/b\.wxml/u);
+  assert.doesNotMatch(shared, /button\.wxml/u);
+  await run("git", ["checkout", "--", "."], { cwd: root });
+
+  // A handler a component's own template binds reaches the page that puts that component.
+  await write(
+    "miniprogram/components/sheet/sheet.ts",
+    EVENTS["miniprogram/components/sheet/sheet.ts"].replace("return 3", "return 30"),
+  );
+  const nested = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    nested,
+    /miniprogram\/pages\/c\/c\.wxml → miniprogram\/components\/sheet\/sheet\.wxml/u,
+  );
+  assert.doesNotMatch(nested, /part\.wxml/u);
+  await run("git", ["checkout", "--", "."], { cwd: root });
+
+  // The map still shows the edge, for what it is, both ways.
+  const handler = await map.explore(
+    { path: "miniprogram/pages/a/a.ts", name: "retryA", direction: "INCOMING", depth: 1 },
+    signal(),
+  );
+  assert.match(handler.text, /← called by miniprogram\/pages\/a\/a\.wxml/u);
+  assert.match(
+    handler.text,
+    /← called via press event by miniprogram\/components\/button\/button\.ts: tap /u,
+  );
+  const emitter = await map.explore(
+    {
+      path: "miniprogram/components/button/button.ts",
+      name: "tap",
+      direction: "OUTGOING",
+      depth: 1,
+    },
+    signal(),
+  );
+  assert.match(emitter.text, /→ calls via press event miniprogram\/pages\/a\/a\.ts: retryA /u);
+  assert.match(emitter.text, /→ calls via press event miniprogram\/pages\/b\/b\.ts: retryB /u);
 });

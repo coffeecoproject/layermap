@@ -94,7 +94,7 @@ export const SOURCE_POLICY = Object.freeze({
 const extensions = new Set(sourceExtensions);
 const excluded = new Set(excludedSegments);
 
-/** Whether a path lies in a directory a map never reads, such as dependencies or an agent's own. */
+/** Whether a path lies in a directory a map never holds, such as dependencies or an agent's own. */
 export const inExcludedDirectory = (relativePath: string): boolean =>
   relativePath
     .toLowerCase()

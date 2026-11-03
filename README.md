@@ -230,7 +230,9 @@ npx layermap check test/billing.test.ts   # also: what of the change this test d
 
 **What can't it see?** Calls the compiler cannot resolve statically: dependency injection, unknown
 framework routing, reflection and computed names. The tools say where a trace stops, and a missing
-relationship does not prove absence.
+relationship does not prove absence. TypeScript and JavaScript types come from the packages installed
+in the project's `node_modules` (never mapped themselves); where they are not installed, as in a
+fresh worktree, values typed by them have no type to follow, and the tools name those packages.
 
 **Windows?** Experimental. LayerMap's tests pass on Windows, but it has not yet been tried with
 Claude Code or Codex on a real Windows machine, so please test it on your own projects first and

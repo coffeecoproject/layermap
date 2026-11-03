@@ -1,9 +1,11 @@
+import path from "node:path";
 import { stopProcessTree } from "./platform";
 import { withMapCompiler } from "./project-map-compiler";
 import { applyMapWorkspace, discoverMapConfiguration } from "./project-map-configuration";
 import { mapParsingContext } from "./project-map-context";
 import { extractProjectMap } from "./project-map-extract";
 import { type MapParserTrace, mapWorkerFailure } from "./project-map-failure";
+import { extractMapDiagnostics } from "./project-map-reference-diagnostics";
 import { extractMapReferences } from "./project-map-reference-extract";
 import type { MapReferenceRequest } from "./project-map-reference-types";
 import type { MapWorkerInput } from "./project-map-types";
@@ -18,7 +20,7 @@ process.once(
   "message",
   async (
     message: MapWorkerInput & {
-      operation: "BUILD" | "CONFIGURE" | "REFERENCES";
+      operation: "BUILD" | "CONFIGURE" | "REFERENCES" | "DIAGNOSTICS";
       references?: readonly MapReferenceRequest[];
       until?: number;
       collectTiming?: boolean;
@@ -71,6 +73,12 @@ process.once(
           await timing?.checkpoint(api, "OPEN_PROJECT");
           trace.phase = message.operation === "REFERENCES" ? "REFERENCES" : "SOURCE_FILES";
           const programFiles = await project.program.getSourceFileNames();
+          if (message.operation === "DIAGNOSTICS") {
+            const result = await extractMapDiagnostics(project, message, programFiles);
+            result.requiredFiles = [...files.required].sort();
+            await snapshot.dispose();
+            return result;
+          }
           const result =
             message.operation === "REFERENCES" && message.references
               ? await extractMapReferences(project, message, message.references, message.until)
@@ -84,13 +92,27 @@ process.once(
                     parsedFiles: [],
                     requiredFiles: [],
                   }
-                : await extractProjectMap(project, message, trace, (file) => {
-                    // A file the input lacks is required, and the analysis runs again with it.
-                    const text = files.fs.readFile?.(mapVirtualPath(file));
-                    return typeof text === "string" && Object.hasOwn(message.files, file)
-                      ? text
-                      : undefined;
-                  });
+                : await extractProjectMap(
+                    project,
+                    message,
+                    trace,
+                    (file) => {
+                      // A file the input lacks is required, and the analysis runs again with it.
+                      const text = files.fs.readFile?.(mapVirtualPath(file));
+                      return typeof text === "string" && Object.hasOwn(message.files, file)
+                        ? text
+                        : undefined;
+                    },
+                    (file, name) => {
+                      // Up from the importing file, as the compiler looks for a package.
+                      for (let at = path.posix.dirname(file); ; at = path.posix.dirname(at)) {
+                        const modules = at === "." ? "node_modules" : `${at}/node_modules`;
+                        if (files.fs.directoryExists?.(mapVirtualPath(`${modules}/${name}`)))
+                          return true;
+                        if (at === ".") return false;
+                      }
+                    },
+                  );
           result.requiredFiles = [...files.required].sort();
           if ("contexts" in result)
             for (const context of result.contexts) {

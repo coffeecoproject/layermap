@@ -25,6 +25,32 @@ export const MapReferenceSchema = z
   })
   .strict();
 export type MapReference = z.infer<typeof MapReferenceSchema>;
+export type MapDiagnosticsInput = Readonly<{
+  version: string;
+  source: CodeIndexSource;
+  /** The configurations of the contexts to compile. */
+  configurations: readonly string[];
+  until: number;
+}>;
+export const MapDiagnosticSchema = z
+  .object({
+    path: z.string(),
+    line: z.number().int().positive(),
+    code: z.number().int(),
+    text: z.string(),
+    span: z.string(),
+  })
+  .strict();
+export type MapDiagnostic = z.infer<typeof MapDiagnosticSchema>;
+export const MapDiagnosticsSchema = z
+  .object({
+    diagnostics: z.array(MapDiagnosticSchema),
+    /** Packages the compile could not find. */
+    missing: z.array(z.string()),
+    requiredFiles: z.array(z.string()),
+  })
+  .strict();
+export type MapDiagnostics = z.infer<typeof MapDiagnosticsSchema>;
 /** The most references a request may ask of one declaration at a time. */
 export const MAP_REFERENCES_MAX = 1000;
 export const MapReferencePageSchema = z

@@ -2,8 +2,15 @@
 
 LayerMap collects no personal data and makes no network requests.
 
-- **What it reads:** the files of the Git repository it runs in.
-- **What it stores:** a map of that code (paths, declarations and the calls between them) in your
+- **What it reads:** the files of the Git repository it runs in. When mapping TypeScript and
+  JavaScript, it also reads, on your machine, the packages installed under the project's
+  `node_modules` that the compiler asks for, only to resolve types: their files do not become
+  declarations or calls in the map. A link out of the project (`npm link`, a package store shared
+  between projects, a `node_modules` that is itself a link) is not followed, and such a package
+  counts as not installed, as do Yarn Plug'n'Play's archives. The tools say which packages they did
+  not find.
+- **What it stores:** a map of that code (paths, declarations and the calls between them), and a
+  digest of what is installed to know when the map is out of date, in your
   user cache: `~/Library/Caches/layermap` on macOS, `$XDG_CACHE_HOME/layermap` or
   `~/.cache/layermap` on Linux, `%LOCALAPPDATA%\layermap\Cache` on Windows, or `LAYERMAP_CACHE`. Nothing is written into the repository.
 - **How long:** each project keeps its three latest map versions, and a map unused for 30 days is

@@ -108,6 +108,9 @@ export const MapRelationSchema = z
     // The full route a decorator registers its declaration under, when it says more than the
     // argument: the HTTP methods, then the class's path joined with the member's.
     route: z.string().min(1).max(256).optional(),
+    // The event a component emits to the handler a template binds to it. The handler runs only
+    // where that template is, which the template's own relation to it says.
+    event: z.string().min(1).max(256).optional(),
     basis: z.enum(["TYPE_RESOLVED", "SYNTAX_DECLARED", "UNRESOLVED"]),
     unresolvedReason: z
       .enum([
@@ -152,6 +155,8 @@ export const MapGapSchema = z
     code: z.string().min(1).max(128),
     path: z.string().optional(),
     count: z.number().int().positive().optional(),
+    // The package a gap is about, such as one the code imports that is not installed.
+    package: z.string().min(1).max(256).optional(),
   })
   .strict();
 export type MapGap = z.infer<typeof MapGapSchema>;
@@ -233,6 +238,8 @@ export type MapWorkerInput = Readonly<{
   compilerPath: string;
   syntaxOnly: boolean;
   workspace?: MapWorkspacePlan;
+  /** The directory whose installed packages the compiler may read; they are never mapped. */
+  dependencies?: string;
 }>;
 
 export type MapSearchInput = Readonly<{

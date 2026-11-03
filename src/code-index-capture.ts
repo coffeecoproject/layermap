@@ -14,12 +14,15 @@ import { ProjectEvidenceError, type ProjectEvidenceRevisionFileEntryV1 } from ".
 import { digestValue } from "./digest";
 import { ProjectEvidenceFileUniverse, ProjectEvidenceFileUniverseError } from "./file-universe";
 import { GitCommandStopUnconfirmedError } from "./git-runner";
+import { mapInstalledDigest } from "./project-map-installed";
 import { InitialEvidenceScopeSchema, includesInitialEvidencePath } from "./source-scope";
 
 export type CodeIndexCaptureResult = Readonly<{
   version: CodeIndexVersion;
   entries: readonly ProjectEvidenceRevisionFileEntryV1[];
   universeDigest: string;
+  /** What the project has installed, which the types in its map resolve against. */
+  installedDigest: string;
 }>;
 
 export class CodeIndexCapture {
@@ -139,6 +142,10 @@ export class CodeIndexCapture {
         ),
     );
     const textEntries = entries.filter((entry) => entry.state === "TEXT");
+    const installedDigest = mapInstalledDigest(
+      session.root,
+      entries.map((entry) => entry.path),
+    );
     return {
       version: {
         version: digestValue({
@@ -146,6 +153,7 @@ export class CodeIndexCapture {
           pathPrefixes,
           entries,
           analyzer: this.analyzer,
+          installed: installedDigest,
         }),
         projectRef: source.projectRef,
         pathPrefixes,
@@ -155,6 +163,7 @@ export class CodeIndexCapture {
         analyzer: this.analyzer,
       },
       entries,
+      installedDigest,
       universeDigest: digestValue(
         [...(snapshot?.files ?? commit?.entries.map((entry) => entry.path) ?? [])].sort(),
       ),
