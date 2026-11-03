@@ -363,7 +363,7 @@ test("an error new to one context is reported, though another context's base had
   assert.match(errors[0] ?? "", /^shared\/use\.ts:1 TS7006 /u);
 
   // New to both, it is one error.
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write("a/tsconfig.json", config(false));
   await write("shared/lib.ts", breakTwo);
   const both = section((await map.checkChanges({}, signal())).text);
   assert.equal(both.length, 1, both.join());

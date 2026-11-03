@@ -462,7 +462,7 @@ test("a handler reached through an event runs where its template is, not whereve
   assert.match(shared, /miniprogram\/pages\/a\/a\.wxml/u);
   assert.doesNotMatch(shared, /miniprogram\/pages\/b\/b\.wxml/u);
   assert.doesNotMatch(shared, /button\.wxml/u);
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write("miniprogram/pages/a/a.ts", EVENTS["miniprogram/pages/a/a.ts"]);
 
   // A handler a component's own template binds reaches the page that puts that component.
   await write(
@@ -475,7 +475,10 @@ test("a handler reached through an event runs where its template is, not whereve
     /miniprogram\/pages\/c\/c\.wxml → miniprogram\/components\/sheet\/sheet\.wxml/u,
   );
   assert.doesNotMatch(nested, /part\.wxml/u);
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write(
+    "miniprogram/components/sheet/sheet.ts",
+    EVENTS["miniprogram/components/sheet/sheet.ts"],
+  );
 
   // The map still shows the edge, for what it is, both ways.
   const handler = await map.explore(
