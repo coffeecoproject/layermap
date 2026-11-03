@@ -955,7 +955,9 @@ test("a removed field or type code still uses is named as used; one that moved i
     gone,
     /^REMOVED OR RENAMED \(no reference[^\n]*\n {2}src\/shape\.ts: Shape\.side p4$/mu,
   );
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  const files = SHAPES("number", "string");
+  for (const name of ["src/shape.ts", "src/routes.ts", "test/shape.test.ts"] as const)
+    await write(name, files[name]);
 
   // Moved to another file with the imports following it: the code naming it still has it.
   await write("src/keys.ts", "export {};\n");
@@ -968,14 +970,16 @@ test("a removed field or type code still uses is named as used; one that moved i
 test("a field's reads count across languages, and who uses it is left to a person when it cannot be read", async (t) => {
   const many = (type: string) =>
     `export interface Many {\n  f0: ${type};\n}\nexport const sum = (m: Many) => [m.f0];\n`;
+  const row = (tag: string) =>
+    `package models\n\ntype Row struct {\n\tName string \`json:"${tag}"\`\n}\n\nfunc Title(r Row) string {\n\treturn r.Name\n}\n`;
+  const point = (value: number) =>
+    `class Point:\n    x: int = ${value}\n    y: int = ${value}\n\n\ndef norm(p: Point) -> int:\n    return p.x\n\n\ndef blind(p):\n    return p.y\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
     "go.mod": "module example.com/m\n\ngo 1.22\n",
-    "models/row.go":
-      'package models\n\ntype Row struct {\n\tName string `json:"name"`\n}\n\nfunc Title(r Row) string {\n\treturn r.Name\n}\n',
+    "models/row.go": row("name"),
     "app/__init__.py": "",
-    "app/point.py":
-      "class Point:\n    x: int = 1\n    y: int = 1\n\n\ndef norm(p: Point) -> int:\n    return p.x\n\n\ndef blind(p):\n    return p.y\n",
+    "app/point.py": point(1),
     "src/many.ts": many("number"),
   });
   await run("git", ["add", "-A"], { cwd: root });
@@ -983,14 +987,8 @@ test("a field's reads count across languages, and who uses it is left to a perso
   const map = await openMap(root);
   t.after(() => map.close());
 
-  await write(
-    "models/row.go",
-    'package models\n\ntype Row struct {\n\tName string `json:"title"`\n}\n\nfunc Title(r Row) string {\n\treturn r.Name\n}\n',
-  );
-  await write(
-    "app/point.py",
-    "class Point:\n    x: int = 2\n    y: int = 2\n\n\ndef norm(p: Point) -> int:\n    return p.x\n\n\ndef blind(p):\n    return p.y\n",
-  );
+  await write("models/row.go", row("title"));
+  await write("app/point.py", point(2));
   const known = (await map.checkChanges({}, signal())).text;
   assert.match(known, /^ {2}models\/row\.go: Title → Row\.Name/mu);
   assert.match(known, /^ {2}app\/point\.py: norm → Point\.x/mu);
@@ -1000,7 +998,8 @@ test("a field's reads count across languages, and who uses it is left to a perso
     /app\/point\.py: Point\.y has no callers in the map, and a search for references found no use/u,
   );
 
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write("models/row.go", row("name"));
+  await write("app/point.py", point(1));
   await write("src/many.ts", many("string"));
   usesRead(
     map,
@@ -1407,7 +1406,7 @@ test("a function held in a field is followed as a function, and importing a type
   await write("src/work.ts", "export function work() {\n  return 2;\n}\n");
   const called = (await map.checkChanges({}, signal())).text;
   assert.match(called, /^ {2}src\/job\.ts: Job\.run → work/mu);
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write("src/work.ts", "export function work() {\n  return 1;\n}\n");
 
   await write("src/keys.ts", "export type Lonely = number;\n");
   const named = (await map.checkChanges({}, signal())).text;
@@ -1467,11 +1466,10 @@ test("removing one key of a type generic code indexes is not a use of it; a clas
   const operations = (extra: string) =>
     `export interface Operations {\n${extra}  "GET /kept": {\n    readonly request: { id: string };\n  };\n}\n`;
   const fields = (extra: string) => `export class Account {\n  ${extra}id = "a";\n}\n`;
+  const gone = '  "POST /gone": {\n    readonly request: { name: string };\n  };\n';
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
-    "src/operations.ts": operations(
-      '  "POST /gone": {\n    readonly request: { name: string };\n  };\n',
-    ),
+    "src/operations.ts": operations(gone),
     "src/client.ts":
       'import type { Operations } from "./operations";\n\ntype Key = keyof Operations;\nexport type Input<K extends Key> = {\n  readonly body?: Operations[K]["request"];\n};\n',
     "src/account.ts": fields("gone = 1;\n  "),
@@ -1490,7 +1488,7 @@ test("removing one key of a type generic code indexes is not a use of it; a clas
     key,
     /^REMOVED OR RENAMED \(no reference[^\n]*\n {2}src\/operations\.ts: Operations\.POST \/gone p\d+/mu,
   );
-  await run("git", ["checkout", "--", "."], { cwd: root });
+  await write("src/operations.ts", operations(gone));
 
   await write("src/account.ts", "export {};\n");
   const whole = (await map.checkChanges({}, signal())).text;
