@@ -16,7 +16,8 @@ import { GoMapAnalyzer } from "../src/project-map-language-go";
 import { JavaMapAnalyzer } from "../src/project-map-language-java";
 import { PythonMapAnalyzer } from "../src/project-map-language-python";
 import { TypeScriptMapAnalyzer } from "../src/project-map-language-typescript";
-import { mapShapeUses } from "../src/project-map-shapes";
+import type { MapReferenceBatch, MapUses, MapUsesInput } from "../src/project-map-reference-types";
+import { MapShapeUses, mapShapeDeadline } from "../src/project-map-shapes";
 import { analyzers, openMap, project, sandbox, signal } from "./support";
 
 const run = promisify(execFile);
@@ -962,10 +963,8 @@ test("a removed field or type code still uses is named as used; one that moved i
 });
 
 test("a field's reads count across languages, and who uses it is left to a person when it cannot be read", async (t) => {
-  const fields = Array.from({ length: 61 }, (_, at) => `  f${at}: number;`).join("\n");
-  const reads = Array.from({ length: 61 }, (_, at) => `m.f${at}`).join(", ");
-  const many = (body: string) =>
-    `export interface Many {\n${body}\n}\nexport const sum = (m: Many) => [${reads}];\n`;
+  const many = (type: string) =>
+    `export interface Many {\n  f0: ${type};\n}\nexport const sum = (m: Many) => [m.f0];\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
     "go.mod": "module example.com/m\n\ngo 1.22\n",
@@ -974,7 +973,7 @@ test("a field's reads count across languages, and who uses it is left to a perso
     "app/__init__.py": "",
     "app/point.py":
       "class Point:\n    x: int = 1\n    y: int = 1\n\n\ndef norm(p: Point) -> int:\n    return p.x\n\n\ndef blind(p):\n    return p.y\n",
-    "src/many.ts": many(fields),
+    "src/many.ts": many("number"),
   });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
@@ -999,78 +998,254 @@ test("a field's reads count across languages, and who uses it is left to a perso
   );
 
   await run("git", ["checkout", "--", "."], { cwd: root });
-  await write("src/many.ts", many(fields.replaceAll("number", "string")));
-  // The limit of time may leave out more than the limit of declarations does.
+  await write("src/many.ts", many("string"));
+  usesRead(
+    map,
+    (found) => new Map([...found].map(([ref]) => [ref, { uses: [], complete: false }])),
+  );
   const limited = (await map.checkChanges({}, signal())).text;
   assert.match(
     limited,
-    /^ {2}who uses \d+ fields or types the change reaches was not read, so what they affect is not known \(Many\.f\d+.*\); project_find_references/mu,
+    /^ {2}who uses 1 fields or types the change reaches was not read, so what they affect is not known \(Many\.f0\); project_find_references/mu,
   );
   // Not reading a field's uses does not mean finding none.
-  assert.doesNotMatch(limited, /Many\.f\d+ has no callers/u);
+  assert.doesNotMatch(limited, /Many\.f0 has no callers/u);
 });
 
-test("who uses a field is read up to a limit of declarations and time, and what was not all read is named", async (t) => {
+test("what one check reads ends at one deadline across its versions, and what was not all read is named", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const graph = {
     object: (ref: string) => ({ kind: ref === "reader" ? "FUNCTION" : "PROPERTY" }),
     owner: (ref: string) => ref,
   } as never;
   const uses = [{ owner: "reader", anchor: {} as never, write: false }];
+  const rounds: string[][] = [];
+  const reader = async (refs: readonly string[]) => {
+    rounds.push([...refs]);
+    return new Map(
+      refs
+        .filter((ref) => ref !== "unfound")
+        .map((ref) => [ref, { uses, complete: ref !== "partial" }]),
+    );
+  };
 
-  const reached: string[] = [];
-  const timed = await mapShapeUses(graph, ["partial", "failed", "slow", "late"], async (ref) => {
-    reached.push(ref);
-    if (ref === "failed") return undefined;
-    if (ref === "slow") t.mock.timers.tick(20_001);
-    return { uses, complete: ref !== "partial" };
+  const until = mapShapeDeadline();
+  const working = new MapShapeUses(graph, reader, until);
+  await working.read(["partial", "unfound", "whole", "whole", "reader"]);
+  // Each once, and only what has no calls in the map.
+  await working.read(["partial", "unfound", "whole"]);
+  assert.deepEqual(rounds, [["partial", "unfound", "whole"]]);
+  assert.deepEqual([...working.unread], ["partial", "unfound"]);
+  assert.equal(working.uses.get("partial")?.length, 1);
+  assert.equal(working.uses.has("unfound"), false);
+  assert.equal(working.uses.get("whole")?.length, 1);
+
+  // However many there are, up to the deadline, which the check's other version shares.
+  const fields = Array.from({ length: 1000 }, (_, at) => `f${at}`);
+  await new MapShapeUses(graph, reader, until).read(fields);
+  assert.equal(rounds.at(-1)?.length, 1000);
+  const base = new MapShapeUses(graph, reader, until);
+  t.mock.timers.tick(20_001);
+  const before = rounds.length;
+  await base.read(["field"]);
+  assert.equal(rounds.length, before);
+  assert.deepEqual([...base.unread], ["field"]);
+});
+
+test("each language reads many declarations in one request, and a place naming none has no page", async (t) => {
+  const { typescript, go, python, java } = await analyzers();
+  const languages = [
+    {
+      language: new TypeScriptMapAnalyzer(typescript),
+      file: "row.ts",
+      text: "export interface Row {\n  name: string;\n  size: number;\n}\nexport const f = (r: Row) => [r.name, r.size, r.size];\n",
+      names: ["name", "size"],
+    },
+    {
+      language: new GoMapAnalyzer(go),
+      file: "row.go",
+      text: "package row\n\ntype Row struct {\n\tName string\n\tSize int\n}\n\nfunc F(r Row) []any {\n\treturn []any{r.Name, r.Size, r.Size}\n}\n",
+      names: ["Name", "Size"],
+    },
+    {
+      language: new PythonMapAnalyzer(python),
+      file: "row.py",
+      text: "class Row:\n    name: str\n    size: int\n\n\ndef f(r: Row):\n    return [r.name, r.size, r.size]\n",
+      names: ["name", "size"],
+    },
+    {
+      language: new JavaMapAnalyzer(java),
+      file: "Row.java",
+      text: "public class Row {\n  String name;\n  int size;\n\n  Object f() {\n    return new Object[] {name, size, size};\n  }\n}\n",
+      names: ["name", "size"],
+    },
+  ];
+  for (const { language, file, text, names } of languages)
+    await t.test(file, async () => {
+      const request = (symbolStart: number) => ({
+        targetPath: file,
+        symbolStart,
+        offset: 0,
+        maxResults: 100,
+      });
+      const { pages } = await language.references(
+        { contextRef: "context", files: { [file]: text }, inventory: [file], syntaxOnly: false },
+        [...names.map((name) => request(text.indexOf(name))), request(0)],
+        signal(),
+      );
+      assert.deepEqual(
+        pages.map((page) => (page ? page.references.length : null)),
+        [2, 3, null],
+      );
+    });
+});
+
+test("past the deadline a compile reads only its first declaration, and the check says what it left out", async () => {
+  const { typescript } = await analyzers();
+  const text = "export interface Row {\n  a: string;\n  b: number;\n}\n";
+  const request = (symbolStart: number) => ({
+    targetPath: "row.ts",
+    symbolStart,
+    offset: 0,
+    maxResults: 100,
   });
-  assert.deepEqual(reached, ["partial", "failed", "slow"]);
-  assert.deepEqual([...timed.unread], ["partial", "failed", "late"]);
-  assert.equal(timed.uses.get("partial")?.length, 1);
-  assert.deepEqual(timed.uses.get("failed"), []);
-  assert.equal(timed.uses.has("late"), false);
-
-  const fields = Array.from({ length: 61 }, (_, at) => `f${at}`);
-  const counted = await mapShapeUses(graph, fields, async () => ({ uses: [], complete: true }));
-  assert.equal(counted.uses.size, 60);
-  assert.deepEqual([...counted.unread], ["f60"]);
-});
-
-test("read without following, only the given declarations are read", async () => {
-  const graph = {
-    object: () => ({ kind: "PROPERTY" }),
-    owner: (ref: string) => ref,
-  } as never;
-  const reached: string[] = [];
-  await mapShapeUses(
-    graph,
-    ["field"],
-    async (ref) => {
-      reached.push(ref);
-      return { uses: [{ owner: "other", anchor: {} as never, write: false }], complete: true };
-    },
-    false,
+  const { pages } = await new TypeScriptMapAnalyzer(typescript).references(
+    { contextRef: "context", files: { "row.ts": text }, inventory: ["row.ts"], syntaxOnly: false },
+    [request(text.indexOf("a:")), request(text.indexOf("b:"))],
+    signal(),
+    undefined,
+    Date.now() - 1,
   );
-  assert.deepEqual(reached, ["field"]);
+  assert.equal(pages.length, 1);
 });
 
-// A read that fails, as the index would say it, on the reads the given test picks.
-const failReads = (map: unknown, code: string, fails: (read: number) => boolean) => {
-  const index = (map as { index: { findReferences: (...args: unknown[]) => unknown } }).index;
-  const findReferences = index.findReferences.bind(index);
-  let reads = 0;
-  const counted = {
-    get reads() {
-      return reads;
-    },
+// The declarations a check asks the index for in each read; change alters what the index answers.
+const usesRead = (map: unknown, change?: (found: MapUses, read: number) => MapUses) => {
+  const index = (
+    map as {
+      index: { findUses: (input: MapUsesInput, signal: AbortSignal) => Promise<MapUses> };
+    }
+  ).index;
+  const findUses = index.findUses.bind(index);
+  const rounds: number[] = [];
+  index.findUses = async (input, signal) => {
+    rounds.push(input.refs.length);
+    const found = await findUses(input, signal);
+    return change ? change(found, rounds.length) : found;
   };
-  index.findReferences = (...args: unknown[]) => {
-    if (fails(++reads)) throw new ProjectEvidenceError(code, false);
-    return findReferences(...args);
-  };
-  return counted;
+  return rounds;
 };
+
+// A compile that finds no declaration to follow, on the compiles the given test picks.
+const noTargets = (map: unknown, none: (compile: number) => boolean) => {
+  const { analyzer } = (
+    map as {
+      index: {
+        analyzer: { references: (...args: unknown[]) => Promise<MapReferenceBatch> };
+      };
+    }
+  ).index;
+  const references = analyzer.references.bind(analyzer);
+  let compiles = 0;
+  analyzer.references = async (...args) => {
+    const found = await references(...args);
+    return none(++compiles) ? { ...found, pages: found.pages.map(() => null) } : found;
+  };
+};
+
+test("a wide change reads its fields in one compile", async (t) => {
+  const fields = Array.from({ length: 20 }, (_, at) => `f${at}`);
+  const row = (type: string) =>
+    `export interface Row {\n${fields.map((f) => `  ${f}: ${type};`).join("\n")}\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts": row("number"),
+    "src/reader.ts": `import type { Row } from "./row";\n\nexport const reader = (r: Row) => [${fields.map((f) => `r.${f}`).join(", ")}];\n`,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/row.ts", row("string"));
+
+  const rounds = usesRead(map);
+  const { text } = await map.checkChanges({}, signal());
+  assert.deepEqual(rounds, [20]);
+  assert.match(text, /^ {2}src\/reader\.ts: reader → /mu);
+  assert.doesNotMatch(text, /was not read/u);
+});
+
+test("a value is followed to the code reading it, and stops at a type that describes it", async (t) => {
+  const work = (value: number) => `export function work() {\n  return ${value};\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/work.ts": work(1),
+    "src/runtime.ts":
+      'import { work } from "./work";\n\nexport function create() {\n  return work();\n}\nexport const services = { create };\nexport type Services = typeof services;\n',
+    "src/reads.ts":
+      'import { services } from "./runtime";\n\nexport function reads() {\n  return services.create();\n}\n',
+    "src/names.ts":
+      'import type { Services } from "./runtime";\n\nexport function names(s: Services) {\n  return s;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/work.ts", work(2));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /^ {2}src\/reads\.ts: reads → /mu);
+  assert.doesNotMatch(text, /names|Services/u);
+});
+
+test("a type a value reached first is still followed when a change reaches it through uses too", async (t) => {
+  const work = (value: number) => `export function work() {\n  return ${value};\n}\n`;
+  const inner = (type: string) => `export type Inner = ${type};\nexport type Outer = Inner;\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/work.ts": work(1),
+    "src/inner.ts": inner("number"),
+    "src/both.ts":
+      'import type { Outer } from "./inner";\nimport { work } from "./work";\n\nexport function create() {\n  return work();\n}\nexport const services = { create };\nexport type Both = (typeof services)["create"] & Outer;\n',
+    "src/names.ts":
+      'import type { Both } from "./both";\n\nexport function names(b: Both) {\n  return b;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/work.ts", work(2));
+  assert.doesNotMatch((await map.checkChanges({}, signal())).text, /names/u);
+  await write("src/inner.ts", inner("string"));
+  assert.match((await map.checkChanges({}, signal())).text, /^ {2}src\/names\.ts: names → /mu);
+});
+
+test("a field the trace reached and only code writing it is left of has lost its callers", async (t) => {
+  const make = (value: number) => `export function make() {\n  return () => ${value};\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/make.ts": make(1),
+    "src/holder.ts":
+      'import { make } from "./make";\n\nexport class Holder {\n  value = make();\n}\n',
+    "src/reader.ts":
+      'import type { Holder } from "./holder";\n\nexport function reader(h: Holder) {\n  h.value();\n}\n',
+    "src/setter.ts":
+      'import type { Holder } from "./holder";\n\nexport function setter(h: Holder) {\n  h.value = () => 2;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write("src/make.ts", make(2));
+  await write("src/reader.ts", "export const nothing = 1;\n");
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^LEFT WITHOUT CALLERS[^\n]*\n(?: {2}.*\n)*? {2}src\/holder\.ts: Holder\.value /mu,
+  );
+});
 
 test("a read that fails for a reason not of the declaration fails the check", async (t) => {
   const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
@@ -1085,37 +1260,35 @@ test("a read that fails for a reason not of the declaration fails the check", as
   t.after(() => map.close());
   await write("src/row.ts", row("string"));
 
-  failReads(map, "PROJECT_EVIDENCE_MAINTENANCE_BUSY", () => true);
+  usesRead(map, () => {
+    throw new ProjectEvidenceError("PROJECT_EVIDENCE_MAINTENANCE_BUSY", false);
+  });
   await assert.rejects(map.checkChanges({}, signal()), {
     code: "PROJECT_EVIDENCE_MAINTENANCE_BUSY",
   });
 });
 
-for (const code of [
-  "PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE",
-  "PROJECT_MAP_REFERENCE_CONTEXT_UNAVAILABLE",
-])
-  test(`${code} leaves one declaration unread, and what is unread is named as reached, not changed`, async (t) => {
-    const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
-    const { root, write } = await project({
-      "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
-      "src/row.ts": row("number"),
-      "src/idle.ts":
-        'import type { Row } from "./row";\n\nexport interface Idle {\n  key: Row["a"];\n}\n',
-    });
-    await run("git", ["add", "-A"], { cwd: root });
-    await commit(root);
-    const map = await openMap(root);
-    t.after(() => map.close());
-    await write("src/row.ts", row("string"));
-
-    failReads(map, code, (read) => read === 2);
-    const { text } = await map.checkChanges({}, signal());
-    assert.match(
-      text,
-      /^ {2}who uses 1 fields or types the change reaches was not read, so what they affect is not known \(Idle\.key\); project_find_references lists their uses$/mu,
-    );
+test("a declaration its compile finds no target for is left unread, and named as reached, not changed", async (t) => {
+  const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/row.ts": row("number"),
+    "src/idle.ts":
+      'import type { Row } from "./row";\n\nexport interface Idle {\n  key: Row["a"];\n}\n',
   });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/row.ts", row("string"));
+
+  noTargets(map, (compile) => compile === 2);
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^ {2}who uses 1 fields or types the change reaches was not read, so what they affect is not known \(Idle\.key\); project_find_references lists their uses$/mu,
+  );
+});
 
 test("a removed field whose uses could not be read says what to do, which is not to ask the working tree", async (t) => {
   const { root, write } = await project({
@@ -1128,7 +1301,7 @@ test("a removed field whose uses could not be read says what to do, which is not
   t.after(() => map.close());
   await write("src/row.ts", "export interface Row {\n  kept: string;\n}\n");
 
-  failReads(map, "PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", () => true);
+  noTargets(map, () => true);
   const { text } = await map.checkChanges({}, signal());
   assert.match(
     text,
@@ -1137,8 +1310,8 @@ test("a removed field whose uses could not be read says what to do, which is not
   assert.doesNotMatch(text, /on the base/u);
 });
 
-test("fields losing callers are read up to the limit, and those past it are named, not listed", async (t) => {
-  const fields = Array.from({ length: 61 }, (_, at) => `f${String(at).padStart(2, "0")}`);
+test("fields losing callers are read in one compile, and those not read to the end are named, not listed", async (t) => {
+  const fields = Array.from({ length: 401 }, (_, at) => `f${String(at).padStart(3, "0")}`);
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
     "src/deps.ts": `export interface Deps {\n${fields.map((f) => `  ${f}: () => void;`).join("\n")}\n}\n`,
@@ -1150,9 +1323,12 @@ test("fields losing callers are read up to the limit, and those past it are name
   t.after(() => map.close());
   await write("src/reader.ts", "export const nothing = 1;\n");
 
-  const counted = failReads(map, "unused", () => false);
+  const rounds = usesRead(
+    map,
+    (found) => new Map([...found].map(([ref, read], at) => [ref, { ...read, complete: at > 0 }])),
+  );
   const { text } = await map.checkChanges({}, signal());
-  assert.equal(counted.reads, 60);
+  assert.deepEqual(rounds, [401]);
   assert.match(
     text,
     /^ {2}1 fields lost callers the diff removed, and whether others use them was not read \(Deps\.f\d+\); project_find_references lists their uses$/mu,
@@ -1182,10 +1358,10 @@ test("a field losing callers is asked about alone, and a test's read does not ke
   t.after(() => map.close());
   await write("src/reader.ts", "export const nothing = 1;\n");
 
-  const counted = failReads(map, "unused", () => false);
+  const rounds = usesRead(map);
   const { text } = await map.checkChanges({}, signal());
   // Each field once: who uses Idle.key says nothing of whether Deps.held is still used.
-  assert.equal(counted.reads, 2);
+  assert.deepEqual(rounds, [2]);
   const left = /^LEFT WITHOUT CALLERS[^\n]*\n((?: {2}.*\n)+)/mu.exec(text)?.[1];
   assert.equal(left, "  src/deps.ts: Deps.tested p3\n");
 });

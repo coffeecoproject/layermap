@@ -282,23 +282,29 @@ final class Program {
   }
 
   /**
-   * For a references request, the files that may refer to the target: its own and those whose
-   * text has its name in any case (an accessor Lombok generates for a field changes the case).
+   * For a references request, the files that may refer to a target: its own and those whose text
+   * has its name in any case (an accessor Lombok generates for a field changes the case).
    */
   private static Set<String> focus(Map<String, Object> request, Map<String, String> texts) {
     if (!"REFERENCES".equals(request.get("operation"))) return null;
-    Map<String, Object> target = Requests.object(request.get("target"));
-    String path = Requests.string(target, "path");
-    int offset = Requests.integer(target, "offset", -1);
-    String text = texts.get(path);
-    if (text == null || offset < 0) return null;
-    int end = offset;
-    while (end < text.length() && Character.isJavaIdentifierPart(text.charAt(end))) end++;
-    if (end == offset) return null;
-    String name = text.substring(offset, end).toLowerCase(Locale.ROOT);
-    Set<String> focus = new HashSet<>(Set.of(path));
-    for (Map.Entry<String, String> entry : texts.entrySet())
-      if (entry.getValue().toLowerCase(Locale.ROOT).contains(name)) focus.add(entry.getKey());
+    Set<String> focus = new HashSet<>();
+    Set<String> names = new HashSet<>();
+    for (Object value : Requests.list(request, "targets")) {
+      Map<String, Object> target = Requests.object(value);
+      String path = Requests.string(target, "path");
+      int offset = Requests.integer(target, "offset", -1);
+      String text = texts.get(path);
+      if (text == null || offset < 0) continue;
+      int end = offset;
+      while (end < text.length() && Character.isJavaIdentifierPart(text.charAt(end))) end++;
+      if (end == offset) continue;
+      focus.add(path);
+      names.add(text.substring(offset, end).toLowerCase(Locale.ROOT));
+    }
+    for (Map.Entry<String, String> entry : texts.entrySet()) {
+      String text = entry.getValue().toLowerCase(Locale.ROOT);
+      if (names.stream().anyMatch(text::contains)) focus.add(entry.getKey());
+    }
     return focus;
   }
 

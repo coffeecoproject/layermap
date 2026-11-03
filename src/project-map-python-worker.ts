@@ -18,7 +18,7 @@ process.once(
     root: string;
     pythonVersion: { major: number; minor: number };
     tests: string[];
-    target?: { path: string; offset: number };
+    targets?: { path: string; offset: number }[];
   }) => {
     const trace: MapParserTrace = { phase: "OPEN_PROJECT" };
     try {
@@ -30,9 +30,9 @@ process.once(
       });
       try {
         if (message.operation === "REFERENCES") {
-          if (!message.target) throw new Error("PROJECT_MAP_PROTOCOL_INVALID");
+          if (!message.targets) throw new Error("PROJECT_MAP_PROTOCOL_INVALID");
           trace.phase = "REFERENCES";
-          process.send?.({ result: findPythonReferences(source, message.target) });
+          process.send?.({ result: findPythonReferences(source, message.targets) });
         } else {
           trace.phase = "TRAVERSAL";
           process.send?.({ result: extractPython(source, new Set(message.tests)) });

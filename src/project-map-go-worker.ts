@@ -15,7 +15,7 @@ process.once(
     operation: string;
     modFile?: string;
     files: Record<string, string>;
-    target?: { path: string; offset: number };
+    targets?: { path: string; offset: number }[];
   }) => {
     const trace: MapParserTrace = { phase: "SOURCE_FILES" };
     const report = (error: Error) => {
@@ -56,7 +56,7 @@ process.once(
         operation: message.operation,
         modFile: message.modFile ?? "",
         files: message.files,
-        ...(message.target ? { target: message.target } : {}),
+        ...(message.targets ? { targets: message.targets } : {}),
       }),
     );
   },

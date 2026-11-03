@@ -19,7 +19,7 @@ process.once(
     files: Record<string, string>;
     release: number;
     tests: string[];
-    target?: { path: string; offset: number };
+    targets?: { path: string; offset: number }[];
     incremental?: { changed: string[]; state: unknown };
   }) => {
     const trace: MapParserTrace = { phase: "SOURCE_FILES" };
@@ -34,7 +34,7 @@ process.once(
         // Large projects attribute every class in one compilation.
         "-XX:MaxRAMPercentage=40",
         "-XX:+UseParallelGC",
-        // A references request attributes only the files that may refer to its target, through
+        // A references request attributes only the files that may refer to its targets, through
         // javac's task implementation (Program.load).
         "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
         "-cp",
@@ -74,7 +74,7 @@ process.once(
         release: message.release,
         tests: message.tests,
         lombok: path.join(path.dirname(message.compilerPath), "lombok.jar"),
-        ...(message.target ? { target: message.target } : {}),
+        ...(message.targets ? { targets: message.targets } : {}),
         ...(message.incremental ? { incremental: message.incremental } : {}),
       }),
     );

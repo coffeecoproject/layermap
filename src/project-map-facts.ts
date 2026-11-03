@@ -4,6 +4,7 @@ import { digestValue } from "./digest";
 import { MapOutputCollector } from "./project-map-output";
 import { mapQueryPathMatches } from "./project-map-query-selection";
 import {
+  type MapReferenceBatch,
   MapReferenceKindSchema,
   type MapReferencePage,
   type MapReferenceRequest,
@@ -90,9 +91,17 @@ export const MapFactsSchema = z
   })
   .strict();
 export type MapFacts = z.infer<typeof MapFactsSchema>;
+// A program answers every target, null where it names no declaration.
 export const MapReferenceFactsSchema = z
   .object({
-    references: z.array(z.object({ ...span, kind: MapReferenceKindSchema }).strict()),
+    pages: z.array(
+      z
+        .object({
+          references: z.array(z.object({ ...span, kind: MapReferenceKindSchema }).strict()),
+        })
+        .strict()
+        .nullable(),
+    ),
   })
   .strict();
 export type MapReferenceFacts = z.infer<typeof MapReferenceFactsSchema>;
@@ -327,17 +336,33 @@ export function mapFactsAnalysis(
   return output;
 }
 
-/** One page of a program's references, filtered, de-duplicated and ordered by location. */
-export function mapReferencesPage(
+/** A page of a program's references for each request, filtered, de-duplicated and ordered. */
+export function mapReferencePages(
   facts: MapReferenceFacts,
   files: Readonly<Record<string, string>>,
-  reference: MapReferenceRequest,
+  requests: readonly MapReferenceRequest[],
   offsets: MapFactsOffsets,
-): MapReferencePage {
+): MapReferenceBatch {
+  if (facts.pages.length !== requests.length) invalid();
   const positions = new MapSourcePositions(files);
   const offset = offsetConverter(files, offsets);
+  return {
+    pages: facts.pages.map((found, at) => {
+      const request = requests[at] as MapReferenceRequest;
+      return found && referencePage(found, positions, offset, request);
+    }),
+    requiredFiles: [],
+  };
+}
+
+function referencePage(
+  found: NonNullable<MapReferenceFacts["pages"][number]>,
+  positions: MapSourcePositions,
+  offset: ReturnType<typeof offsetConverter>,
+  reference: MapReferenceRequest,
+): MapReferencePage {
   const references = new Map<string, MapReferencePage["references"][number]>();
-  for (const fact of facts.references) {
+  for (const fact of found.references) {
     if (!mapQueryPathMatches(fact.path, reference.path ?? ".")) continue;
     if (reference.kinds && !reference.kinds.includes(fact.kind)) continue;
     const anchor = positions.span(
@@ -360,6 +385,5 @@ export function mapReferencesPage(
   return {
     references: selected,
     ...(next < ordered.length ? { nextOffset: next } : {}),
-    requiredFiles: [],
   };
 }

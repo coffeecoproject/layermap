@@ -8,7 +8,7 @@ import { GitCommandStopUnconfirmedError } from "./git-runner";
 import { type MapParent, ProjectMapAnalyzer } from "./project-map-analyzer";
 import { ProjectMapStopUnconfirmedError } from "./project-map-process";
 import { ProjectMapReferenceQuery } from "./project-map-reference-query";
-import type { MapReferenceInput } from "./project-map-reference-types";
+import type { MapReferenceInput, MapUsesInput } from "./project-map-reference-types";
 import { ProjectMapSourceReader } from "./project-map-source";
 
 type Rebuild = Readonly<{
@@ -240,6 +240,12 @@ export class CodeIndex {
   findReferences(input: MapReferenceInput, signal: AbortSignal) {
     return this.read(signal, (signal) =>
       new ProjectMapReferenceQuery(this.store, this.analyzer).query(input, signal),
+    );
+  }
+
+  findUses(input: MapUsesInput, signal: AbortSignal) {
+    return this.read(signal, (signal) =>
+      new ProjectMapReferenceQuery(this.store, this.analyzer).uses(input, signal),
     );
   }
 

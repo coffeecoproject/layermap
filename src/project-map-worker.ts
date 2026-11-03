@@ -19,7 +19,8 @@ process.once(
   async (
     message: MapWorkerInput & {
       operation: "BUILD" | "CONFIGURE" | "REFERENCES";
-      reference?: MapReferenceRequest;
+      references?: readonly MapReferenceRequest[];
+      until?: number;
       collectTiming?: boolean;
     },
   ) => {
@@ -71,8 +72,8 @@ process.once(
           trace.phase = message.operation === "REFERENCES" ? "REFERENCES" : "SOURCE_FILES";
           const programFiles = await project.program.getSourceFileNames();
           const result =
-            message.operation === "REFERENCES" && message.reference
-              ? await extractMapReferences(project, message, message.reference)
+            message.operation === "REFERENCES" && message.references
+              ? await extractMapReferences(project, message, message.references, message.until)
               : files.required.size
                 ? {
                     contexts: [mapParsingContext(project, message)],

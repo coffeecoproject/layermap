@@ -16,13 +16,13 @@ import { type MapModuleDependency, newModuleDependencies } from "./project-map-d
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
+import { MAP_REFERENCES_MAX } from "./project-map-reference-types";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import {
-  MAP_NO_SHAPE_USES,
   type MapShapeReader,
-  type MapShapeUse,
+  MapShapeUses,
   mapIsShape,
-  mapShapeUses,
+  mapShapeDeadline,
 } from "./project-map-shapes";
 import { type MapAnchor, type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
@@ -303,7 +303,6 @@ const LIMITS = Object.freeze({
   changed: 200,
   chain: 3,
   byName: 40,
-  referencePages: 5,
 });
 const CALLER_KINDS = new Set<MapRelation["kind"]>(["CALLS", "REFERENCES"]);
 /** The relations whose source names their target, which removing the target breaks. */
@@ -319,12 +318,16 @@ const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
 
 // A declaration the trace reached, and the one below it on the way from the change; used: it was
-// reached by reading or naming a field or type, not by calling.
-type Reached = { ref: string; depth: number; certain: boolean; via?: string; used?: boolean };
-const NO_REFERENCE_TARGET = new Set([
-  "PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE",
-  "PROJECT_MAP_REFERENCE_CONTEXT_UNAVAILABLE",
-]);
+// reached by reading or naming a field or type, not by calling; shaped: it was reached from the
+// change through such uses alone, so what the change did to a type may have changed it too.
+type Reached = {
+  ref: string;
+  depth: number;
+  certain: boolean;
+  via?: string;
+  used?: boolean;
+  shaped?: boolean;
+};
 // uses: a declaration that reads or names a field or type, which is not known to depend on what
 // changed in it, rather than one that calls it.
 type Caller = {
@@ -361,12 +364,12 @@ class Tracer {
   readonly handlers = new Map<string, Set<string>>();
   /** Test support files that call the changed code; the tests beside and below them may use it. */
   readonly support = new Set<string>();
-  /** Who uses the fields and types traced; set before tracing them. */
-  shapes = MAP_NO_SHAPE_USES;
 
   constructor(
     private readonly graph: MapViewGraph,
     private readonly memberCalls: ReturnType<MapViewCache["memberCalls"]>,
+    /** Who uses the fields and types traced, read as the trace reaches them. */
+    readonly shapes: MapShapeUses,
   ) {}
 
   private name = (ref: string) => this.graph.qualifiedName(ref);
@@ -377,11 +380,11 @@ class Tracer {
   };
 
   /** Follows callers up from the given declarations, recording entry points and tests. */
-  trace(starts: readonly string[]) {
+  async trace(starts: readonly string[]) {
     let frontier: Reached[] = [];
     for (const ref of starts)
       if (!this.reached.has(ref)) {
-        const start = { ref, depth: 0, certain: true };
+        const start = { ref, depth: 0, certain: true, shaped: true };
         this.reached.set(ref, start);
         frontier.push(start);
       }
@@ -395,6 +398,16 @@ class Tracer {
           .splice(0)
           .flatMap(({ current, caller }) => this.step(current, caller, false));
       const next: Reached[] = [];
+      // A field's value flows to the code reading it. A type exists only for the compiler: who names
+      // it depends on the change only when the change altered it, not when a value it describes did.
+      await this.shapes.read(
+        frontier
+          .filter(({ ref, shaped }) => {
+            const object = this.graph.object(ref);
+            return !testCode(object.anchor.path) && (shaped || object.kind === "PROPERTY");
+          })
+          .map(({ ref }) => ref),
+      );
       for (const current of frontier) {
         const object = this.graph.object(current.ref);
         if (testCode(object.anchor.path)) continue;
@@ -462,9 +475,9 @@ class Tracer {
               ? `${this.where(reached.ref)} has no callers in the map, and a search for references found no use: it may be read through reflection, serialization or a value of unknown type, or be unused`
               : `${this.where(reached.ref)} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
         );
-        // A type or field that only uses one is no entry point: nothing runs from it. A field that
-        // holds a function others call by key is one.
-      } else if (!reached.used || !mapIsShape(object))
+        // Nothing runs from a type, or from a field that only uses another field or type. A field
+        // that holds a function others call by key is an entry point.
+      } else if (!mapIsShape(object) || (!reached.used && object.kind === "PROPERTY"))
         this.entry(this.where(reached.ref), false, reached, undefined, reached.certain, true);
     }
   }
@@ -474,7 +487,11 @@ class Tracer {
     if (known) {
       // Whichever came first, what a call also reaches does more than use the change.
       if (!caller.uses) known.used = false;
-      return [];
+      // What a value reached first and uses alone reach too goes on, now with its own uses.
+      if (!caller.uses || !current.shaped || known.shaped) return [];
+      known.shaped = true;
+      this.known.delete(caller.ref);
+      return [known];
     }
     if (current.depth + 1 > LIMITS.depth || this.reached.size >= LIMITS.declarations) {
       this.truncated = true;
@@ -485,7 +502,7 @@ class Tracer {
       depth: current.depth + 1,
       certain,
       via: current.ref,
-      ...(caller.uses ? { used: true } : {}),
+      ...(caller.uses ? { used: true, ...(current.shaped ? { shaped: true } : {}) } : {}),
     };
     this.reached.set(caller.ref, reached);
     return [reached];
@@ -721,7 +738,8 @@ export async function mapChangeImpact(
   const graph = new MapViewGraph(store, working);
   const cache = new MapViewCache();
   const memberCalls = cache.memberCalls(store, working);
-  const tracer = new Tracer(graph, memberCalls);
+  const until = mapShapeDeadline();
+  const tracer = new Tracer(graph, memberCalls, new MapShapeUses(graph, shapes.working, until));
   const changed: string[] = [];
   const unclear: string[] = [];
   const removed: { declaration: string; usedBy: Set<string> }[] = [];
@@ -818,8 +836,7 @@ export async function mapChangeImpact(
     sameDirectoryTests(mappedPaths(), file.path, tracer);
     mirroredTests(mappedPaths(), file.path, tracer);
   }
-  tracer.shapes = await mapShapeUses(graph, starts, shapes.working);
-  tracer.trace(starts);
+  await tracer.trace(starts);
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
@@ -831,7 +848,7 @@ export async function mapChangeImpact(
         )}${unread.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
     );
   const untested =
-    tests && untestedChanges(project, graph, tracer, memberCalls, starts, changed, tests);
+    tests && (await untestedChanges(project, graph, tracer, memberCalls, starts, changed, tests));
   if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
   supportTests(store, working, tracer);
 
@@ -854,7 +871,11 @@ export async function mapChangeImpact(
         const names = existingTestsChanged(before, graph, file, project);
         if (names.length) rewrittenTests.push({ path: file.path, names });
       }
-    const beforeTracer = new Tracer(before, cache.memberCalls(store, base));
+    const beforeTracer = new Tracer(
+      before,
+      cache.memberCalls(store, base),
+      new MapShapeUses(before, shapes.base, until),
+    );
     const changedIn = new Map(
       changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
     );
@@ -958,11 +979,7 @@ export async function mapChangeImpact(
     }
     // The code that reads or names the fields and types the diff removed, on lines it left alone;
     // one still declared under its name was moved, and a compiler follows it.
-    beforeTracer.shapes = await mapShapeUses(
-      before,
-      goneShapes.flatMap((item) => item.shapes),
-      shapes.base,
-    );
+    await beforeTracer.shapes.read(goneShapes.flatMap((item) => item.shapes));
     const nowDeclared = new Set(
       changes.files.flatMap((file) =>
         file.status === "DELETED"
@@ -1069,7 +1086,7 @@ export async function mapChangeImpact(
         topLevelChanged(file.path);
     }
     if (gone.length) {
-      beforeTracer.trace(gone);
+      await beforeTracer.trace(gone);
       for (const entry of beforeTracer.entries.values())
         if (!tracer.entries.has(entry.label)) tracer.entries.set(entry.label, entry);
       for (const [path, test] of beforeTracer.tests) {
@@ -1114,7 +1131,7 @@ export async function mapChangeImpact(
     }
     const outsideTests = (callers: { ref: string }[], g: MapViewGraph) =>
       callers.filter((caller) => !testCode(g.object(caller.ref).anchor.path));
-    const candidates: { path: string; name: string; now: MapObject }[] = [];
+    const candidates: { path: string; name: string; now: MapObject; tested: boolean }[] = [];
     for (const ref of called) {
       const object = before.object(ref);
       if (mapIsModule(object) || testCode(object.anchor.path) || gone.includes(ref)) continue;
@@ -1126,31 +1143,23 @@ export async function mapChangeImpact(
       const now = declarations(graph, path).find(
         (candidate) => candidate.kind === object.kind && graph.qualifiedName(candidate.id) === name,
       );
-      if (
-        !now ||
-        outsideTests(tracer.callers(now.id), graph).length ||
-        tracer.usesWithoutCalls(now.id).length
-      )
-        continue;
+      if (!now) continue;
+      // What the trace read of a field's uses is weighed below, with those of the fields it did not.
+      const calls = tracer.callers(now.id).filter((caller) => !caller.uses);
+      if (outsideTests(calls, graph).length || tracer.usesWithoutCalls(now.id).length) continue;
       if (!outsideTests(beforeTracer.callers(ref), before).length) continue;
-      candidates.push({ path, name, now });
+      candidates.push({ path, name, now, tested: calls.length > 0 });
     }
     // A field's other reads are not all in the map; it counts only if a search finds none.
-    const fields = await mapShapeUses(
-      graph,
-      candidates.map(({ now }) => now.id),
-      shapes.working,
-      false,
-    );
+    await tracer.shapes.read(candidates.map(({ now }) => now.id));
     const unknown: string[] = [];
-    for (const { path, name, now } of candidates) {
-      if (fields.unread.has(now.id)) unknown.push(name);
+    for (const { path, name, now, tested } of candidates) {
+      if (tracer.shapes.unread.has(now.id)) unknown.push(name);
       else if (
-        !fields.uses
+        !tracer.shapes.uses
           .get(now.id)
           ?.some(({ owner, write }) => !write && !testCode(graph.object(owner).anchor.path))
       ) {
-        const tested = tracer.callers(now.id).length > 0;
         uncalled.push(
           `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
         );
@@ -1214,7 +1223,7 @@ const entryOrder = (left: MapChangeEntry, right: MapChangeEntry) =>
 // The changed declarations the given test files do not run as far as the map follows: none of
 // their code calls them, and they name the path of no route above them. The entry points above
 // those are traced apart, so they are found exactly as the affected entry points are.
-function untestedChanges(
+async function untestedChanges(
   project: string | undefined,
   graph: MapViewGraph,
   tracer: Tracer,
@@ -1222,7 +1231,7 @@ function untestedChanges(
   starts: readonly string[],
   changed: readonly string[],
   tests: readonly string[],
-): MapUntestedChanges {
+): Promise<MapUntestedChanges> {
   const given = new Set(tests);
   // A test that requests a route spells out its path, as the related tests are found by it.
   const routes = new Set<string>();
@@ -1250,9 +1259,8 @@ function untestedChanges(
     if (found === "route") throughRoutes.push(changed[at] ?? "");
     else if (!found) unreached.push(at);
   }
-  const above = new Tracer(graph, memberCalls);
-  above.shapes = tracer.shapes;
-  above.trace(unreached.map((at) => starts[at] ?? ""));
+  const above = new Tracer(graph, memberCalls, tracer.shapes);
+  await above.trace(unreached.map((at) => starts[at] ?? ""));
   return {
     changed: unreached.map((at) => changed[at] ?? ""),
     entries: [...above.entries.values()].sort(entryOrder),
@@ -1541,33 +1549,28 @@ export async function checkMapChanges(
   )
     ? await input.baseVersion(changes.commit, signal)
     : undefined;
-  // The uses of a field or type in one version, a page of references at a time; what a repository
-  // uses too widely to read says little about this change.
+  // The uses of fields and types in one version; what a repository uses too widely to read says
+  // little about this change.
   const usesIn =
     (version: string, source: CodeIndexSource): MapShapeReader =>
-    async (ref) => {
-      const uses: MapShapeUse[] = [];
-      let cursor: string | undefined;
-      try {
-        for (let page = 0; page < LIMITS.referencePages; page++) {
-          const found = await index.findReferences(
-            { version, source, entityRef: ref, maxResults: 200, ...(cursor ? { cursor } : {}) },
-            signal,
-          );
-          for (const { kind, owner, anchor } of found.references)
-            if (owner && kind !== "IMPORT_EXPORT")
-              uses.push({ owner: owner.id, anchor, write: kind === "WRITE" });
-          cursor = found.nextCursor;
-          if (!cursor) break;
-        }
-      } catch (error) {
-        // Some declarations have no reference target, as in a file read only for its syntax. Any
-        // other failure says nothing of the declaration, and the check fails with it.
-        if (!(error instanceof ProjectEvidenceError) || !NO_REFERENCE_TARGET.has(error.code))
-          throw error;
-        return undefined;
-      }
-      return { uses, complete: !cursor };
+    async (refs, until) => {
+      const found = await index.findUses(
+        { version, source, refs, until, maxResults: MAP_REFERENCES_MAX },
+        signal,
+      );
+      return new Map(
+        [...found].map(([ref, { uses, complete }]) => [
+          ref,
+          {
+            complete,
+            uses: uses.flatMap(({ kind, owner, anchor }) =>
+              owner && kind !== "IMPORT_EXPORT"
+                ? [{ owner: owner.id, anchor, write: kind === "WRITE" }]
+                : [],
+            ),
+          },
+        ]),
+      );
     };
   const impact = await mapChangeImpact(
     index.store,

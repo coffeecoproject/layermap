@@ -3,12 +3,13 @@ import type { MapViewGraph } from "./project-map-view-graph";
 
 // The map keeps calls and each declaration's reads of module state, not who reads a field or names
 // a type: a repository would hold tens of thousands of those rows, so they are found on demand. A
-// change check cannot read that absence as "nothing uses it", so it asks for the declarations whose
-// uses the map leaves out, and follows the code using them as it follows callers.
+// change check cannot read that absence as "nothing uses it", so it reads them as its trace reaches
+// each field or type, and follows the code using them as it follows callers.
 
 const KINDS = new Set<MapObject["kind"]>(["PROPERTY", "TYPE", "INTERFACE", "ENUM"]);
-// Each read compiles the context the declaration is in, which on a large repository takes seconds.
-const LIMIT = Object.freeze({ shapes: 60, milliseconds: 20_000 });
+// A guard, not a working limit: real changes take a few compiles of a few seconds. The trace's own
+// limits keep how many declarations it reaches.
+const READ_MS = 20_000;
 
 /** A field or type: other code uses it without a relation the map keeps. A callable has its calls. */
 export const mapIsShape = (object: Pick<MapObject, "kind" | "execution">) =>
@@ -16,58 +17,47 @@ export const mapIsShape = (object: Pick<MapObject, "kind" | "execution">) =>
 
 export type MapShapeUse = Readonly<{ owner: string; anchor: MapAnchor; write: boolean }>;
 
-/** One declaration's uses, by the object around each; complete is false when more were left out. */
+/** Each declaration's uses, by the object around each; complete is false when some were left out. */
 export type MapShapeReader = (
-  ref: string,
-) => Promise<Readonly<{ uses: readonly MapShapeUse[]; complete: boolean }> | undefined>;
+  refs: readonly string[],
+  until: number,
+) => Promise<ReadonlyMap<string, Readonly<{ uses: readonly MapShapeUse[]; complete: boolean }>>>;
 
-export type MapShapeUses = Readonly<{
+/** When one check stops reading, across the versions it reads. */
+export const mapShapeDeadline = () => Date.now() + READ_MS;
+
+/** The uses read so far in one version, each field or type read once. */
+export class MapShapeUses {
   /** Each field or type read, with each of its uses in the declarations outside it. */
-  uses: ReadonlyMap<string, readonly MapShapeUse[]>;
-  /** Those whose uses could not all be read, or that the limit left out. */
-  unread: ReadonlySet<string>;
-}>;
+  readonly uses = new Map<string, readonly MapShapeUse[]>();
+  /** Those whose uses could not all be read, or that the deadline left out. */
+  readonly unread = new Set<string>();
 
-export const MAP_NO_SHAPE_USES: MapShapeUses = Object.freeze({
-  uses: new Map<string, readonly MapShapeUse[]>(),
-  unread: new Set<string>(),
-});
+  constructor(
+    private readonly graph: MapViewGraph,
+    private readonly reader: MapShapeReader,
+    private readonly until: number,
+  ) {}
 
-/**
- * The uses of the fields and types among the given declarations and, as a type's use may be a field
- * of another type, of the fields and types that use them, up to a limit of declarations and time.
- * Without following, of the given declarations alone.
- */
-export async function mapShapeUses(
-  graph: MapViewGraph,
-  starts: readonly string[],
-  read: MapShapeReader,
-  follow = true,
-): Promise<MapShapeUses> {
-  const uses = new Map<string, MapShapeUse[]>();
-  const unread = new Set<string>();
-  const pending = starts.filter((ref) => mapIsShape(graph.object(ref)));
-  const seen = new Set(pending);
-  let budget = LIMIT.shapes;
-  const deadline = Date.now() + LIMIT.milliseconds;
-  for (let ref = pending.shift(); ref !== undefined; ref = pending.shift()) {
-    if (budget-- <= 0 || Date.now() > deadline) {
-      unread.add(ref);
-      continue;
-    }
-    const found = await read(ref);
-    if (!found?.complete) unread.add(ref);
-    const outside: MapShapeUse[] = [];
-    for (const use of found?.uses ?? []) {
-      const owner = graph.owner(use.owner);
-      if (owner === ref) continue;
-      outside.push({ ...use, owner });
-      if (follow && mapIsShape(graph.object(owner)) && !seen.has(owner)) {
-        seen.add(owner);
-        pending.push(owner);
+  async read(refs: readonly string[]) {
+    const wanted = [...new Set(refs)].filter(
+      (ref) => mapIsShape(this.graph.object(ref)) && !this.uses.has(ref) && !this.unread.has(ref),
+    );
+    if (!wanted.length) return;
+    const found =
+      Date.now() > this.until
+        ? new Map<string, undefined>()
+        : await this.reader(wanted, this.until);
+    for (const ref of wanted) {
+      const read = found.get(ref);
+      if (!read?.complete) this.unread.add(ref);
+      if (!read) continue;
+      const outside: MapShapeUse[] = [];
+      for (const use of read.uses) {
+        const owner = this.graph.owner(use.owner);
+        if (owner !== ref) outside.push({ ...use, owner });
       }
+      this.uses.set(ref, outside);
     }
-    uses.set(ref, outside);
   }
-  return { uses, unread };
 }

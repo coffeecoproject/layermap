@@ -3,7 +3,7 @@ import { GO_MAP_LANGUAGE } from "./project-map-language-go";
 import { JAVA_MAP_LANGUAGE } from "./project-map-language-java";
 import { PYTHON_MAP_LANGUAGE } from "./project-map-language-python";
 import { TYPESCRIPT_MAP_LANGUAGE } from "./project-map-language-typescript";
-import type { MapReferencePage, MapReferenceRequest } from "./project-map-reference-types";
+import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
 import type { MapParserTiming } from "./project-map-timing";
 import type { MapAnalysis, MapWorkerInput } from "./project-map-types";
 
@@ -70,12 +70,14 @@ export type MapLanguageClaim = Readonly<{
 
 export interface MapLanguageAnalyzer extends MapLanguageClaim {
   analyze(session: MapLanguageSession, signal: AbortSignal): Promise<void>;
+  /** Reads every request in one compile of the context, or as many as the deadline leaves. */
   references?(
     input: Omit<MapWorkerInput, "compilerPath">,
-    reference: MapReferenceRequest,
+    references: readonly MapReferenceRequest[],
     signal: AbortSignal,
     observe?: MapAnalyzerObserver,
-  ): Promise<MapReferencePage>;
+    until?: number,
+  ): Promise<MapReferenceBatch>;
 }
 
 export type MapLanguage = MapLanguageClaim & Readonly<{ create(): MapLanguageAnalyzer }>;

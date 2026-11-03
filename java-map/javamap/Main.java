@@ -55,7 +55,7 @@ public final class Main {
               time("extract");
               yield facts;
             }
-            case "REFERENCES" -> new References(program).find(Requests.object(request.get("target")));
+            case "REFERENCES" -> new References(program).find(Requests.list(request, "targets"));
             default -> throw new Failure("PROJECT_MAP_PROTOCOL_INVALID", "unknown operation");
           };
       Writer out =

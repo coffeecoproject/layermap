@@ -9,7 +9,7 @@ import {
   MapReferenceFactsSchema,
   mapFactsAnalysis,
   mapFactsOffset,
-  mapReferencesPage,
+  mapReferencePages,
 } from "./project-map-facts";
 import type {
   MapAnalyzerObserver,
@@ -22,7 +22,7 @@ import {
   type MapParserResources,
   runMapOperation,
 } from "./project-map-process";
-import type { MapReferencePage, MapReferenceRequest } from "./project-map-reference-types";
+import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
 import type { MapAnalysis, MapWorkerInput } from "./project-map-types";
 
 const goModule = /(?:^|\/)go\.mod$/u;
@@ -170,13 +170,12 @@ export class GoMapAnalyzer implements MapLanguageAnalyzer {
 
   async references(
     input: GoInput,
-    reference: MapReferenceRequest,
+    references: readonly MapReferenceRequest[],
     signal: AbortSignal,
     observe?: MapAnalyzerObserver,
-  ): Promise<MapReferencePage> {
-    const text = input.files[reference.targetPath];
-    if (text === undefined || !existsSync(this.resources.compilerPath))
-      throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", false);
+  ): Promise<MapReferenceBatch> {
+    if (!existsSync(this.resources.compilerPath))
+      return { pages: references.map(() => null), requiredFiles: [] };
     const files: Record<string, string> = Object.create(null);
     for (const [path, value] of Object.entries(input.files))
       if (this.claims(path) || goModule.test(path)) files[path] = value;
@@ -186,15 +185,15 @@ export class GoMapAnalyzer implements MapLanguageAnalyzer {
         files,
         operation: "REFERENCES",
         modFile: input.configPath ?? "",
-        target: {
-          path: reference.targetPath,
-          offset: mapFactsOffset(text, reference.symbolStart, "UTF8_BYTES"),
-        },
+        targets: references.map(({ targetPath, symbolStart }) => ({
+          path: targetPath,
+          offset: mapFactsOffset(input.files[targetPath] ?? "", symbolStart, "UTF8_BYTES"),
+        })),
       },
       MapReferenceFactsSchema,
       signal,
       observe,
     );
-    return mapReferencesPage(facts, files, reference, "UTF8_BYTES");
+    return mapReferencePages(facts, files, references, "UTF8_BYTES");
   }
 }

@@ -19,7 +19,7 @@ import {
   type MapParserResources,
   runMapOperation,
 } from "./project-map-process";
-import { MapReferencePageSchema, type MapReferenceRequest } from "./project-map-reference-types";
+import { MapReferenceBatchSchema, type MapReferenceRequest } from "./project-map-reference-types";
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
@@ -71,13 +71,14 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
 
   references(
     input: Omit<MapWorkerInput, "compilerPath">,
-    reference: MapReferenceRequest,
+    references: readonly MapReferenceRequest[],
     signal: AbortSignal,
     observe?: MapAnalyzerObserver,
+    until?: number,
   ) {
     return this.operation(
-      { ...input, operation: "REFERENCES", reference },
-      MapReferencePageSchema,
+      { ...input, operation: "REFERENCES", references, ...(until === undefined ? {} : { until }) },
+      MapReferenceBatchSchema,
       signal,
       observe,
     );

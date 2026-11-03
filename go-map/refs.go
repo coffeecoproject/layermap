@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -14,38 +13,48 @@ type referenceFact struct {
 	Kind  string `json:"kind"`
 }
 
-type referencesOutput struct {
+type referencePage struct {
 	References []referenceFact `json:"references"`
 }
 
-// findReferences lists every use of the declaration whose name starts at the target offset.
-func findReferences(p *program, t target) (referencesOutput, error) {
-	file := p.byPath[t.Path]
-	if file == nil || file.ast == nil {
-		return referencesOutput{}, fmt.Errorf("target file not analyzed")
+type referencesOutput struct {
+	Pages []*referencePage `json:"pages"`
+}
+
+// findReferences lists every use of the declarations whose names start at the target offsets, in
+// one walk of the program. A target that names no declaration has a null page.
+func findReferences(p *program, targets []target) referencesOutput {
+	output := referencesOutput{Pages: make([]*referencePage, len(targets))}
+	wanted := map[token.Position]*referencePage{}
+	at := map[target][]int{}
+	for i, t := range targets {
+		at[t] = append(at[t], i)
 	}
-	var targetObject types.Object
 	for _, u := range p.units {
 		if u.info == nil {
 			continue
 		}
 		for ident, obj := range u.info.Defs {
-			if obj != nil && p.fset.Position(ident.Pos()).Filename == t.Path && p.fset.Position(ident.Pos()).Offset == t.Offset {
-				targetObject = obj
-				break
+			if obj == nil {
+				continue
+			}
+			position := p.fset.Position(ident.Pos())
+			for _, i := range at[target{Path: position.Filename, Offset: position.Offset}] {
+				if output.Pages[i] != nil {
+					continue
+				}
+				key := originKey(p, obj)
+				page := wanted[key]
+				if page == nil {
+					page = &referencePage{References: []referenceFact{}}
+					wanted[key] = page
+				}
+				output.Pages[i] = page
 			}
 		}
-		if targetObject != nil {
-			break
-		}
 	}
-	if targetObject == nil {
-		return referencesOutput{}, fmt.Errorf("no declaration at target")
-	}
-	key := originKey(p, targetObject)
-	output := referencesOutput{References: []referenceFact{}}
 	seen := map[[2]int]bool{}
-	for _, f := range p.files {
+	for index, f := range p.files {
 		if f.ast == nil {
 			continue
 		}
@@ -82,31 +91,26 @@ func findReferences(p *program, t target) (referencesOutput, error) {
 				obj = u.info.Defs[ident]
 				declaration = obj != nil
 			}
-			if obj == nil || originKey(p, obj) != key {
+			if obj == nil {
+				return true
+			}
+			page := wanted[originKey(p, obj)]
+			if page == nil {
 				return true
 			}
 			start := p.fset.Position(ident.Pos()).Offset
-			span := [2]int{fileIndex(p, f), start}
+			span := [2]int{index, start}
 			if seen[span] {
 				return true
 			}
 			seen[span] = true
-			output.References = append(output.References, referenceFact{
+			page.References = append(page.References, referenceFact{
 				Path: f.path, Start: start, End: start + len(ident.Name), Kind: referenceKind(stack, declaration),
 			})
 			return true
 		})
 	}
-	return output, nil
-}
-
-func fileIndex(p *program, f *sourceFile) int {
-	for i, candidate := range p.files {
-		if candidate == f {
-			return i
-		}
-	}
-	return -1
+	return output
 }
 
 // originKey identifies a declaration across package variants by the position of its name.

@@ -5,6 +5,7 @@ import {
   MapAnchorSchema,
   type MapExploreInput,
   MapGapSchema,
+  type MapObject,
   MapObjectSchema,
   type MapSymbolSelector,
 } from "./project-map-types";
@@ -23,14 +24,27 @@ export const MapReferenceSchema = z
     kind: MapReferenceKindSchema,
   })
   .strict();
+export type MapReference = z.infer<typeof MapReferenceSchema>;
+/** The most references a request may ask of one declaration at a time. */
+export const MAP_REFERENCES_MAX = 1000;
 export const MapReferencePageSchema = z
   .object({
-    references: z.array(MapReferenceSchema).max(200),
+    references: z.array(MapReferenceSchema).max(MAP_REFERENCES_MAX),
     nextOffset: z.number().int().nonnegative().optional(),
-    requiredFiles: z.array(z.string()),
   })
   .strict();
 export type MapReferencePage = z.infer<typeof MapReferencePageSchema>;
+/**
+ * What one compile of a context found: a page for each request in order, null where the request
+ * names no declaration to follow. It stops short of the last requests when a deadline passed.
+ */
+export const MapReferenceBatchSchema = z
+  .object({
+    pages: z.array(MapReferencePageSchema.nullable()),
+    requiredFiles: z.array(z.string()),
+  })
+  .strict();
+export type MapReferenceBatch = z.infer<typeof MapReferenceBatchSchema>;
 export type MapReferenceRequest = Readonly<{
   targetPath: string;
   symbolStart: number;
@@ -52,6 +66,23 @@ export type MapReferenceInput = Readonly<{
   kinds?: readonly z.infer<typeof MapReferenceKindSchema>[];
   outputBudget?: MapQueryOutputBudget;
 }>;
+/** The uses of many declarations of one version, read by the context each is in. */
+export type MapUsesInput = Readonly<{
+  version: string;
+  source: CodeIndexSource;
+  refs: readonly string[];
+  /** When to stop reading more; a compile under way finishes its first declaration. */
+  until: number;
+  maxResults: number;
+}>;
+/** What was found of each declaration; complete is false when any of its uses went unread. */
+export type MapUses = ReadonlyMap<
+  string,
+  Readonly<{
+    uses: readonly (MapReference & Readonly<{ owner?: MapObject }>)[];
+    complete: boolean;
+  }>
+>;
 export const MapReferenceResultSchema = z
   .object({
     evidenceUse: z.literal("NAVIGATION_ONLY"),

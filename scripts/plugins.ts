@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
 import { AGENT_MAP_NOTE } from "../src/agent/notes";
-import { launcherScript } from "../src/agent/setup";
+import { CODEX_TOOL_TIMEOUT_SEC, launcherScript } from "../src/agent/setup";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const REPOSITORY = "https://github.com/coffeecoproject/layermap";
@@ -119,6 +119,7 @@ export function generatedFiles(version: string, dev?: ServerLaunch): Record<stri
     command: "node",
     args: ["--input-type=module", "-e", launcher(version)],
     startup_timeout_sec: 120,
+    tool_timeout_sec: CODEX_TOOL_TIMEOUT_SEC,
   };
   const author = { name: "The LayerMap Authors", url: REPOSITORY };
   return {
