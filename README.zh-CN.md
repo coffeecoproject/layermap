@@ -9,7 +9,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/layermap)](https://www.npmjs.com/package/layermap)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/coffeecoproject/layermap/blob/main/LICENSE)
 
-**LayerMap 一次调用就告诉编程 agent：谁调用了这个函数、改它会影响什么，一直追到 HTTP 路由。** 每次最多 15 次请求时，用 LayerMap 的 agent 找到 **97.9%** 的受影响接口，不用只有 58.8%；不限次数时，Claude Code 花费**降低 33%**（0.1.5 复测，[基准测试](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)）。
+**LayerMap 一次调用就告诉编程 agent：谁调用了这个函数、改它会影响什么，一直追到 HTTP 路由。** 每次最多 15 次请求时，Opus 5.5 上的 Claude Code 用 LayerMap 找到 **99.9%** 的受影响接口，不用只有 76.0%；不限次数时，两者找到的差不多，花费**降低 48%**，去掉收益最大的一道题后降低 27%（[基准测试](https://github.com/coffeecoproject/layermap/blob/main/docs/benchmark.zh-CN.md)）。
 
 **由每种语言自己的编译器或类型检查器解析，而不是 tree-sitter 按名字猜：** 经由接口、基类、模板和装饰器的调用，都按编译器的方式关联，支持 TypeScript、JavaScript、Go、Python 和 Java。
 
@@ -60,23 +60,29 @@ DECLARATION internal/storage/entry.go: Storage.MarkFeedAsRead m656-680 exported
 
 | | 用 LayerMap | 不用 |
 |---|---|---|
+| 找到的接口，每次最多 15 次请求（Opus 5.5 上的 Claude Code，6 道题各 3 次） | **99.9%** | 76.0% |
+| 这个上限下的花费 / 用时（Opus 5.5） | +12% / +4% | |
+| 找到的接口，不限次数（Opus 5.5，6 道题各 2 次） | 100% | 99.7% |
+| 花费 / 用时，不限次数（Opus 5.5，地图预先建好） | **−48% / −33%**；去掉收益最大的一道题为 −27% / −21% | |
+| 波及任务：没有碰坏别的功能测试的运行（Opus 5.5，4 道题各 3 次） | 12 次中 12 次 | 12 次中 12 次 |
 | 找到的接口，每次最多 15 次请求（`gpt-5.5`，6 道题各 3 次） | **97.9%** | 58.8% |
 | Claude Code / Codex 主动使用（装了插件，两轮） | **12 次中 12 次 / 12 次中 12 次** | — |
 | 找到的接口，不限次数（Claude Code / Codex，0.1.5） | 100% / 100% | 99.0% / 100% |
 | Claude Code 花费，不限次数（0.1.5 复测；第一轮 −32%） | **−33%** | |
 | Codex 输入 token，不限次数（当前默认设置） | +14% | |
-| 用时，不限次数（Claude Code / Codex） | +25% / +20% | |
+| 用时，不限次数（`claude-opus-5` 上的 Claude Code / Codex，0.1.5） | +25% / +20% | |
 | 改完自检列出的失败测试（Go / Python，让函数失败） | **100% / 94–98%** | — |
 | 波及任务：没有碰坏别的功能测试的运行（Codex / Claude Code，4 道题，用地图各 6 次、不用各 3 次） | **24 次中 23 次** / 24 次中 11 次 | 12 次中 3 次 / 12 次中 4 次 |
 | 日常任务（不需要影响分析）：做对次数 / 用时（Claude Code 和 Codex，8 道题各 2 次） | 32 次中 32 次 / +12–31% | 32 次中 32 次 |
 
 **怎么理解这些结果：**
 
-- 预算紧时，用地图能找到多得多的受影响代码，代价是多用约 24% 的 token。
-- 不限次数时，两个 agent 有没有地图最终都能找全。Claude Code 用地图花费少三分之一。
+- 预算紧时，用地图能找到多得多的受影响代码，代价是多花 12–24% 的费用或 token。
+- 不限次数时，两个 agent 有没有地图最终都能找全。Claude Code 用地图花费少三分之一到一半。
+- Opus 5.5 上的 Claude Code 用地图还快了三分之一，但这个差距有不少来自一道题，地图也是预先建好的；`claude-opus-5` 上则慢四分之一。
 - Codex 现在的默认设置本来就查得很省，地图不再帮它省 token；第一轮用最高推理强度时，它省了 55%。
-- 有地图时 agent 会查得更广，所以用时更长。
-- 在最省事的改法会改坏别的功能的需求上，改完自检帮 Codex 守住了需求范围；Claude Code 看到了自己改了别的功能的测试，但常常有意保留范围更大的改法，所以没有明显差别。
+- Codex 有地图时会查得更广，所以用时更长。
+- 在最省事的改法会改坏别的功能的需求上，改完自检帮 Codex 守住了需求范围；Claude Code 看到了自己改了别的功能的测试，但常常有意保留范围更大的改法，所以没有明显差别；Opus 5.5 用不用地图都没有碰坏，自检多花 17%。
 - 在局部小改动上，地图没有改变结果，但用时和花费多出约五分之一。
 
 样本量小，题目也由 LayerMap 作者编写。实验条件、公开的题目和局限说明见
