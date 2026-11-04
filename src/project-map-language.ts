@@ -54,8 +54,9 @@ export type MapLanguageSession = Readonly<{
   /**
    * Before a context is analyzed: the previous map's analysis of it when the request (everything
    * the analysis reads besides file texts) and the texts of the given files are the same, and so
-   * are the texts of every file it and the contexts sharing its files read. The caller accepts
-   * the returned analysis instead of analyzing; otherwise it analyzes and accepts the result.
+   * are the texts of every file it and the contexts holding code in common with it read. The caller
+   * accepts the returned analysis instead of analyzing; otherwise it analyzes and accepts the
+   * result.
    */
   reuse(contextRef: string, request: unknown, files: readonly string[]): MapAnalysis | undefined;
   /** Marks a readable file as configuration input rather than an unanalyzed file. */
