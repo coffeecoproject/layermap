@@ -52,37 +52,52 @@ const contextFiles = (context: MapContext) => [
   ...(context.workspace?.configurationFiles ?? []),
 ];
 
+// The code a context takes in and the files it parsed. Configuration several contexts read gives
+// them no facts in common.
+const codeFiles = (
+  context: MapContext,
+  parsedFiles: readonly string[],
+  claims: (path: string) => boolean,
+) => [...context.inputFiles.filter(claims), ...parsedFiles];
+
 /**
- * The parent's contexts whose files all have the same texts, among contexts that share no file
- * with a context that changed: those are replayed or analyzed together, so the objects that
- * several of them stage are deduplicated as a full analysis would.
+ * The parent's contexts whose files all have the same texts, among contexts that hold no fact file
+ * in common, directly or through others, with a context that changed: those are replayed or
+ * analyzed together, so the objects that several of them stage are deduplicated as a full analysis
+ * would. A fact file is code a context takes in, or a file it parsed or has facts in.
  */
-function replayableContexts(parent: MapParent, digests: ReadonlyMap<string, string>) {
+function replayableContexts(
+  parent: MapParent,
+  digests: ReadonlyMap<string, string>,
+  claims: (path: string) => boolean,
+) {
+  const factFiles = new Map<string, ReadonlySet<string>>();
   const sharing = new Map<string, Set<string>>();
-  for (const [ref, { context }] of parent.contexts)
-    for (const path of contextFiles(context)) {
+  const analyzed = new Set<string>();
+  for (const [ref, { context }] of parent.contexts) {
+    const { analysis, paths } = parent.shell(ref);
+    const files = new Set([...codeFiles(context, analysis.parsedFiles, claims), ...(paths ?? [])]);
+    factFiles.set(ref, files);
+    for (const path of files) {
       const refs = sharing.get(path) ?? new Set<string>();
       refs.add(ref);
       sharing.set(path, refs);
     }
-  const unchanged = new Set<string>();
-  for (const [ref, { context }] of parent.contexts)
+    // A context stored before its files were recorded is analyzed again.
     if (
-      contextFiles(context).every(
+      !paths ||
+      !contextFiles(context).every(
         (path) => digests.get(path) !== undefined && digests.get(path) === parent.entries.get(path),
       )
     )
-      unchanged.add(ref);
-  const replayable = new Set<string>();
-  for (const [ref, { context }] of parent.contexts)
-    if (
-      unchanged.has(ref) &&
-      contextFiles(context).every((path) =>
-        [...(sharing.get(path) ?? [])].every((other) => unchanged.has(other)),
-      )
-    )
-      replayable.add(ref);
-  return { replayable, sharing };
+      analyzed.add(ref);
+  }
+  // The set grows as it is walked, so this reaches contexts through others.
+  for (const ref of analyzed)
+    for (const path of factFiles.get(ref) ?? [])
+      for (const other of sharing.get(path) ?? []) analyzed.add(other);
+  const replayable = new Set([...parent.contexts.keys()].filter((ref) => !analyzed.has(ref)));
+  return { replayable, sharing, factFiles };
 }
 
 const invalidParent = (): never => {
@@ -179,9 +194,14 @@ export class ProjectMapAnalyzer {
     const digests = new Map<string, string>();
     for (const entry of entries)
       if (entry.contentDigest) digests.set(entry.path, entry.contentDigest);
-    const { replayable, sharing } = parent
-      ? replayableContexts(parent, digests)
-      : { replayable: new Set<string>(), sharing: new Map<string, Set<string>>() };
+    const claims = (path: string) => this.claims(path);
+    const { replayable, sharing, factFiles } = parent
+      ? replayableContexts(parent, digests, claims)
+      : {
+          replayable: new Set<string>(),
+          sharing: new Map<string, Set<string>>(),
+          factFiles: new Map<string, ReadonlySet<string>>(),
+        };
     const requests = new Map<string, string>();
     const states = new Map<string, unknown>();
     // The files each replayed context has facts in, and those a context analyzed in part links.
@@ -200,8 +220,7 @@ export class ProjectMapAnalyzer {
       if (!parent || !replayable.has(contextRef)) return undefined;
       if (parent.contexts.get(contextRef)?.requestDigest !== digest) return undefined;
       const { analysis, state, paths } = parent.shell(contextRef);
-      // A context stored before its files were recorded is analyzed again.
-      if (!paths) return undefined;
+      if (!paths) return invalidParent();
       if (state !== undefined) states.set(contextRef, state);
       replayed.set(contextRef, paths);
       this.observe?.({
@@ -270,7 +289,9 @@ export class ProjectMapAnalyzer {
       for (const context of analysis.contexts) {
         for (const file of context.configurationFiles) configurationInputs.add(file);
         if (!replayed.has(context.ref))
-          for (const file of options?.linked?.length ? staged : contextFiles(context))
+          for (const file of options?.linked?.length
+            ? staged
+            : codeFiles(context, analysis.parsedFiles, claims))
             analyzedFiles.add(file);
       }
       for (const gap of analysis.gaps) result.gaps.push(gap);
@@ -348,7 +369,7 @@ export class ProjectMapAnalyzer {
 
     if (parent && (replayed.size || linked.size)) {
       for (const ref of replayed.keys())
-        for (const path of contextFiles(parent.contexts.get(ref)?.context ?? invalidParent()))
+        for (const path of factFiles.get(ref) ?? invalidParent())
           if (
             analyzedFiles.has(path) ||
             [...(sharing.get(path) ?? [])].some((other) => !replayed.has(other))

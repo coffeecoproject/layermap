@@ -154,3 +154,63 @@ test("a copy whose replay conflicts with the original's map is built from nothin
   assert.equal(typescriptRuns.count, 2, "the conflict repeated the build without a parent");
   assert.deepEqual(units(store, version), await fresh(t, target));
 });
+
+// Two projects that share a base configuration and no code.
+const SIDES = {
+  "tsconfig.base.json": JSON.stringify({ compilerOptions: { strict: true } }),
+  "a/tsconfig.json": JSON.stringify({ extends: "../tsconfig.base.json", include: ["src"] }),
+  "a/src/a.ts": "export function a() {\n  return 1;\n}\n",
+  "b/tsconfig.json": JSON.stringify({ extends: "../tsconfig.base.json", include: ["src"] }),
+  "b/src/b.ts": "export function b() {\n  return 2;\n}\n",
+};
+
+test("a context is replayed though a context that changed reads the same configuration", async (t) => {
+  const { root } = await project(SIDES);
+  const edited = await copy(root, { "a/src/a.ts": "export function a() {\n  return 3;\n}\n" });
+  const { index, store, reused, typescriptRuns } = await host(t);
+  await index.prepare(await source(root, "original"), signal());
+  typescriptRuns.count = 0;
+  const { version } = await index.prepare(await source(edited, "copy"), signal(), {
+    startFromProjectRef: "original",
+  });
+  assert.equal(reused.length, 1, "the other side is replayed");
+  assert.equal(typescriptRuns.count, 1, "nothing conflicted");
+  assert.deepEqual(units(store, version), await fresh(t, edited));
+});
+
+test("a context that comes to read a replayed context's code is built from nothing", async (t) => {
+  const { root } = await project(SIDES);
+  const edited = await copy(root, {
+    "a/src/a.ts": 'import { b } from "../../b/src/b";\n\nexport function a() {\n  return b();\n}\n',
+  });
+  const { index, store, reused, typescriptRuns } = await host(t);
+  await index.prepare(await source(root, "original"), signal());
+  typescriptRuns.count = 0;
+  const { version } = await index.prepare(await source(edited, "copy"), signal(), {
+    startFromProjectRef: "original",
+  });
+  assert.ok(reused.length > 0, "the build first replayed the other side");
+  assert.equal(typescriptRuns.count, 2, "the conflict repeated the build without a parent");
+  assert.deepEqual(units(store, version), await fresh(t, edited));
+});
+
+test("a context is replayed when a file discovery gave it, but it does not read, changed", async (t) => {
+  // Discovery resolves this import under the inferred project's options; the analysis, in a package
+  // of ES modules, does not.
+  const { root } = await project({
+    "package.json": JSON.stringify({ type: "module" }),
+    "a/tsconfig.json": JSON.stringify({ include: ["src"] }),
+    "a/src/lib.ts": "export function lib() {\n  return 1;\n}\n",
+    "scripts/run.ts": 'import { lib } from "../a/src/lib";\n\nexport const run = lib;\n',
+  });
+  const edited = await copy(root, { "a/src/lib.ts": "export function lib() {\n  return 2;\n}\n" });
+  const { index, store, reused, typescriptRuns } = await host(t);
+  await index.prepare(await source(root, "original"), signal());
+  typescriptRuns.count = 0;
+  const { version } = await index.prepare(await source(edited, "copy"), signal(), {
+    startFromProjectRef: "original",
+  });
+  assert.equal(reused.length, 1, "the inferred context is replayed");
+  assert.equal(typescriptRuns.count, 1, "nothing conflicted");
+  assert.deepEqual(units(store, version), await fresh(t, edited));
+});

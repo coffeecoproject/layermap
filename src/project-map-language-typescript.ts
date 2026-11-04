@@ -154,8 +154,9 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
         configPath: configPath ?? null,
         rootFiles: rootFiles ?? null,
       });
-      // The files read on request below are among the previous analysis's input files, which
-      // replaying requires to be unchanged as well.
+      // What the context is. What it read is the previous analysis's input files, which replaying
+      // requires to be unchanged; the files given to it may be more than it reads, since discovery
+      // opens the inferred project under options other than its own.
       const reused = session.reuse(
         contextRef,
         {
@@ -165,7 +166,11 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           workspace: workspace ?? null,
           installed: installed.digest,
         },
-        Object.keys(texts),
+        [
+          ...(workspace?.configurationFiles ?? []),
+          ...(configPath ? [configPath] : []),
+          ...(rootFiles ?? inventory),
+        ],
       );
       if (reused) {
         accept(reused);
