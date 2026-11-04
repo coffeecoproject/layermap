@@ -2,7 +2,7 @@
 
 [English](benchmark.md) · [中文](benchmark.zh-CN.md)
 
-Does a code map help a coding agent answer "what does changing this affect?" Five experiments:
+Does a code map help a coding agent answer "what does changing this affect?" Six experiments:
 
 1. **Budget-limited comparison.** One model, at most 15 requests per answer, with and without
    LayerMap. With the map it found **97.9%** of the affected HTTP endpoints across six public tasks;
@@ -27,6 +27,9 @@ Does a code map help a coding agent answer "what does changing this affect?" Fiv
    With 0.1.7's check the map made no difference.
 5. **Everyday tasks.** Small local requests that need no impact analysis. Both agents did all of
    them right either way, and the map cost them about **a fifth more** time and money.
+6. **Claude Code on Opus 5.5.** With at most 15 requests, **99.9%** with the map and **76.0%** without.
+   With no limit, accuracy was the same (100% and 99.7%), and the map cost **48% less** and took 33%
+   less time, or 27% and 21% without the task that gained most. On ripple tasks, 12 of 12 either way.
 
 Samples are small and LayerMap's authors wrote the tasks; see [Limitations](#limitations). The
 questions, truth sets and scoring rules are in [`benchmark/tasks`](benchmark/tasks).
@@ -336,8 +339,79 @@ Code 31% more time and 20% more money, and Codex 12% more time and 17% more toke
 the task right. What remains is the check at the end and, for Codex, looking up a function's
 callers before changing it, which is what kept it from breaking other features in Experiment 4.
 
+## Experiment 6: Claude Code on Opus 5.5
+
+Experiments 1, 2 and 4 again on a newer model, on 2026-11-04: does the map still help when the model
+is better at searching? With at most 15 requests, yes. With no limit, it saves money and time but not
+accuracy. On ripple tasks this round could not tell.
+
+**Setup:**
+
+- **Agent:** Claude Code 2.1.310, `claude-opus-5-5`, default reasoning effort, on macOS.
+- **Build:** commit `8cbd68f`, 0.1.33 with changes not yet released, packed and started by the real
+  launcher.
+- **With the map:** the plugin. **Without:** no plugin, otherwise the same.
+- **Isolation:** no global instructions, other plugins or auto memory, and no web tools.
+- **Pairing:** both arms of a run started together, at most two pairs at once.
+- **Impact questions:** the six public tasks, read-only, maps built ahead.
+- **Budget rule:** 14 requests with tools, then one without, and no subagents, which would get around
+  the limit. The agent decided for itself whether to use the map; all 18 runs with it did.
+- **Grading:** as above, blind, with tool names masked in the answers.
+
+| Task | Endpoints | With LayerMap, at most 15 requests | Without | No limit: cost with / without | Time (s) with / without |
+|---|---|---|---|---|---|
+| METER_FILTER (Python) | 20 | 20 / 20 / 20, **100%** | 8 / 9.5 / 4.5, 36.7% | $2.05 / $8.32 | 302 / 739 |
+| TAX_SERVICE (Python) | 21 | 21 / 21 / 21, **100%** | 10 / 7 / 11, 44.4% | $2.04 / $3.26 | 316 / 463 |
+| SECRET_REF (Java) | 22 | 22 / 22 / 21.5, **99.2%** | 18.5 / 14.5 / 10.5, 65.9% | $2.38 / $3.05 | 353 / 386 |
+| RETRY_DELAY_CAP (Java) | 20 | 20 / 20 / 20, **100%** | 17 / 13 / 19, 81.7% | $2.39 / $2.63 | 314 / 319 |
+| SRCSET_PARSE (Go) | 29 | 29 / 29 / 29, 100% | 29 / 29 / 29, 100% | $0.63 / $1.03 | 128 / 211 |
+| ENTRY_QUERY (Go) | 36 | 36 / 36 / 36, 100% | 36 / 36 / 36, 100% | $0.57 / $1.04 | 117 / 169 |
+| **Total** | 444 | **443.5, 99.9%** | 337.5, 76.0% | **$10.07 / $19.33** | **1,530 / 2,287** |
+
+**At most 15 requests** (3 runs per task and arm):
+
+- The map scored higher in 12 of 18 pairs, the same in 6, and lower in none.
+- It cost 12% more ($24.97 / $22.29) and took 4% longer (2,199 s / 2,107 s).
+- Each arm had one false positive, the Miniflux share page from Experiment 1.
+- Answers without the map got partial credit on 71 endpoints, for being unsure or having an incomplete
+  chain; with the map, on 1.
+- Compared with Experiment 1's 97.9% and 58.8%, the direction is the same, but that run used another
+  model and required a first map call.
+
+**No request limit** (2 runs per task and arm, the cost and time columns above):
+
+- Scores were 296 of 296 with the map and 295 of 296 without. The map had one false positive, the same
+  share page; the other arm missed one endpoint.
+- The map was cheaper in all 12 pairs and faster in 11.
+- METER_FILTER accounts for about two thirds of the saving. Without it, cost is 27% lower and time 21%
+  lower.
+- The time result reverses Experiment 2's +25%. That experiment ran its arms at different times on an
+  older model, and this round did not separate the causes.
+
+**Ripple tasks** (the 4 counted tasks of Experiment 4, 3 runs per task and arm):
+
+- Every run passed the acceptance test and left other features' tests passing, 12 of 12 in each arm.
+- Each run with the map called the change check once, and none looked up callers before editing.
+- The check cost 17% more ($3.95 / $3.38); time was 4% lower (859 s / 899 s).
+- These tasks no longer separate the arms on this model. Earlier rounds also carried the author's global
+  instructions and this one did not, so the change may come from either.
+
+**Checks on the results:**
+
+- To test the blind grading, a script looked for each endpoint's path or handler name in the
+  budget-limited answers: 98.9% with the map, 81.8% without. Same direction, smaller gap, since naming
+  an endpoint is not the same as confirming it. The 25 cases where script and grader disagree were not
+  reviewed one by one.
+- To test the ripple scoring, known bad changes on 3 of the 4 tasks were scored. All were caught.
+- Permission rules wasted 19 requests in the budget-limited runs without the map and 2 with it, while
+  loading the map's tools took a `ToolSearch` call in each of the 18 runs with it. These roughly offset,
+  but no rerun tested that.
+
 ## Limitations
 
+- **Experiment 6.** Two or three runs per task, maps built ahead for the impact questions, costs are
+  Claude Code's estimates at API prices, and its harness is not published. It does not cover Codex,
+  TypeScript or the check's tracing of fields and types.
 - **Small samples.** Experiment 1 has two tasks per language and three runs each. Experiment 2 has
   one run per cell, run at different times, mostly with the map first. Single runs of one task
   vary widely: in the rerun, one Claude Code answer took 665 s against 359 s in the first round.
