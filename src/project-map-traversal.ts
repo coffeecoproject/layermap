@@ -2,7 +2,11 @@ import { setImmediate } from "node:timers/promises";
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError } from "./core";
 import { canonicalJson } from "./digest";
-import { type MapQuerySelection, mapQueryPathSql } from "./project-map-query-selection";
+import {
+  MAP_RELATION_TARGET_JOIN,
+  type MapQuerySelection,
+  mapQueryPathSql,
+} from "./project-map-query-selection";
 import {
   MAP_RELATION_PRIORITY,
   type MapExploreInput,
@@ -46,27 +50,20 @@ export async function mapExploreTraversal(
     assertActive();
   };
   await checkpoint();
-  // Filter every endpoint before building adjacency. Hidden declarations cannot
+  // Filter every endpoint of every relation read. Hidden declarations cannot
   // bridge otherwise visible components, including in an unrestricted traversal.
-  const statement = store.database.prepare(`
+  const relations = (seeded: string, order: string) =>
+    store.database.prepare(`
     SELECT r.relation_ref, r.from_ref, r.to_ref, json_extract(r.relation_json, '$.kind') AS kind
     FROM project_map_relations r
     JOIN project_map_objects f ON f.version_ref = r.version_ref AND f.entity_ref = r.from_ref
-    LEFT JOIN project_map_objects t ON t.version_ref = r.version_ref AND t.entity_ref = r.to_ref
+    ${MAP_RELATION_TARGET_JOIN}
     WHERE r.version_ref = ? AND ${allowed("r.path")} AND ${allowed("f.path")}
       AND (r.to_ref IS NULL OR ${allowed("t.path")})
       AND ${mapQueryPathSql("r.path")}
       AND json_extract(r.relation_json, '$.kind') IN (SELECT value FROM json_each(?))
-    ${input.scope === "PROJECT" ? `ORDER BY ${relationOrder}` : ""}`);
-  const relationRefs: string[] = [];
-  const adjacency = new Map<string, RelationLink[]>();
-  const connect = (ref: string, edge: RelationLink) => {
-    const existing = adjacency.get(ref);
-    if (existing) existing.push(edge);
-    else adjacency.set(ref, [edge]);
-  };
-  let inspected = 0;
-  for (const row of statement.iterate(
+    ${seeded} ${order}`);
+  const filters = [
     input.version,
     input.authorizationScope,
     input.authorizationScope,
@@ -76,29 +73,23 @@ export async function mapExploreTraversal(
     input.selection.path,
     input.selection.path,
     canonicalJson(input.selection.kinds),
-  )) {
-    if (++inspected % 256 === 0) await checkpoint();
-    const relation: RelationLink = {
-      id: String(row.relation_ref),
-      from: String(row.from_ref),
-      ...(row.to_ref === null ? {} : { to: String(row.to_ref) }),
-      kind: row.kind as MapRelation["kind"],
-    };
-    if (input.scope === "PROJECT") {
-      relationRefs.push(relation.id);
-      continue;
-    }
-    if (input.direction !== "INCOMING") connect(relation.from, relation);
-    if (input.direction !== "OUTGOING" && relation.to && relation.to !== relation.from)
-      connect(relation.to, relation);
-    else if (input.direction === "INCOMING" && relation.to === relation.from)
-      connect(relation.to, relation);
-  }
+  ];
+  const relationRefs: string[] = [];
+  let inspected = 0;
   if (input.scope === "PROJECT") {
+    for (const row of relations("", `ORDER BY ${relationOrder}`).iterate(...filters)) {
+      if (++inspected % 256 === 0) await checkpoint();
+      relationRefs.push(String(row.relation_ref));
+    }
     assertActive();
     return { relationRefs, frontier: [] };
   }
   if (!input.entityRef) throw new ProjectEvidenceError("PROJECT_READ_INPUT_INVALID", false);
+  // The relations leaving and entering each depth's declarations, read through their indexes.
+  const ends = [
+    ...(input.direction === "INCOMING" ? [] : ["r.from_ref"]),
+    ...(input.direction === "OUTGOING" ? [] : ["r.to_ref"]),
+  ].map((end) => relations(`AND ${end} IN (SELECT value FROM json_each(?))`, ""));
   const known = new Set([input.entityRef]);
   const seenRelations = new Set<string>();
   const frontier: Frontier[] = [];
@@ -108,10 +99,18 @@ export async function mapExploreTraversal(
     await checkpoint();
     depth++;
     const candidates = new Map<string, RelationLink>();
-    for (const ref of seeds) {
-      for (const edge of adjacency.get(ref) ?? []) {
+    const seedRefs = canonicalJson(seeds);
+    for (const end of ends) {
+      for (const row of end.iterate(...filters, seedRefs)) {
         if (++inspected % 256 === 0) await checkpoint();
-        if (!seenRelations.has(edge.id)) candidates.set(edge.id, edge);
+        const id = String(row.relation_ref);
+        if (seenRelations.has(id)) continue;
+        candidates.set(id, {
+          id,
+          from: String(row.from_ref),
+          ...(row.to_ref === null ? {} : { to: String(row.to_ref) }),
+          kind: row.kind as MapRelation["kind"],
+        });
       }
     }
     const next: string[] = [];

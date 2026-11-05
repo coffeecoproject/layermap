@@ -1,7 +1,11 @@
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError } from "./core";
 import { canonicalJson } from "./digest";
-import { mapQueryPathSql, mapQuerySelection } from "./project-map-query-selection";
+import {
+  MAP_RELATION_TARGET_JOIN,
+  mapQueryPathSql,
+  mapQuerySelection,
+} from "./project-map-query-selection";
 import {
   assertMapSearchActive,
   type MapSearchFocus,
@@ -222,7 +226,7 @@ export function mapSearchRows(
     )
     SELECT object.object_json,
       (SELECT count(*) FROM project_map_relations r
-       LEFT JOIN project_map_objects t ON t.version_ref = r.version_ref AND t.entity_ref = r.to_ref
+       ${MAP_RELATION_TARGET_JOIN}
        WHERE r.version_ref = object.version_ref AND r.from_ref = object.entity_ref
          AND ${mapSearchAllowedSql("r.path")}
          AND (r.to_ref IS NULL OR ${mapSearchAllowedSql("t.path")})) +

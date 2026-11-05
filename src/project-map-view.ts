@@ -11,6 +11,7 @@ import {
 import { JAVA_MAP_LANGUAGE } from "./project-map-language-java";
 import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { type MapQueryOutputBudget, mapQueryPage } from "./project-map-query-page";
+import { MAP_RELATION_TARGET_JOIN } from "./project-map-query-selection";
 import {
   type MapGap,
   type MapObject,
@@ -293,7 +294,7 @@ function loadImports(store: CodeIndexStore, version: string): MapImports {
     .prepare(`SELECT r.path AS source, t.path AS target,
         json_extract(r.relation_json, '$.target') AS specifier, count(*) AS count
       FROM project_map_relations r NOT INDEXED
-      LEFT JOIN project_map_objects t ON t.version_ref = r.version_ref AND t.entity_ref = r.to_ref
+      ${MAP_RELATION_TARGET_JOIN}
       WHERE r.version_ref = ? AND json_extract(r.relation_json, '$.kind') IN ('IMPORTS', 'TEST_IMPORTS')
       GROUP BY source, target, specifier`)
     .all(version)
