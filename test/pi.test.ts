@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
+import { setTimeout as delay, setImmediate } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { generatedFiles } from "../scripts/plugins";
@@ -138,6 +139,169 @@ test("the Pi extension serves LayerMap's tools from its server and asks once to 
   await writeFile(path.join(repo, "a.ts"), "export const a = 5;\n");
   await handlers.get("tool_result")?.(again, ctx);
   assert.equal((await ask())?.continue, true);
+});
+
+// The extension as Pi loads it. It picks its runtime as it loads, so a test sets the host up first.
+async function loaded(pkg: string, cwd: string) {
+  const handlers = new Map<string, Handler>();
+  const tools: Tool[] = [];
+  const notes: string[] = [];
+  const { default: extension } = await import(
+    pathToFileURL(path.join(pkg, "pi", "layermap.mjs")).href
+  );
+  extension({
+    on: (name: string, h: Handler) => handlers.set(name, h),
+    registerTool: (tool: Tool) => tools.push(tool),
+  });
+  const ctx = { cwd, ui: { notify: (note: string) => notes.push(note) } };
+  return {
+    tools,
+    notes,
+    start: () => handlers.get("session_start")?.({}, ctx),
+    stop: () => handlers.get("session_shutdown")?.({}, ctx),
+  };
+}
+
+// A host compiled with Bun: process.execPath is that program, which here starts nothing at all.
+function compiledWithBun(t: TestContext, directory: string) {
+  const { execPath } = process;
+  const versions = Object.getOwnPropertyDescriptor(process, "versions") as PropertyDescriptor;
+  process.execPath = path.join(directory, "pi");
+  Object.defineProperty(process, "versions", {
+    ...versions,
+    value: { ...process.versions, bun: "1.4.3" },
+  });
+  t.after(() => {
+    process.execPath = execPath;
+    Object.defineProperty(process, "versions", versions);
+  });
+}
+
+function withoutPath(t: TestContext) {
+  const { PATH } = process.env;
+  process.env.PATH = "";
+  t.after(() => {
+    process.env.PATH = PATH;
+  });
+}
+
+test("a Pi compiled with Bun runs the server on the Node on PATH, not on itself", async (t) => {
+  const pkg = await installed();
+  const repo = await sandbox();
+  compiledWithBun(t, repo);
+  const { tools, start, stop } = await loaded(pkg, repo);
+  await start();
+  t.after(stop);
+
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    ["project_check_changes"],
+  );
+});
+
+test("a Pi compiled with Bun says so when no Node is on PATH", async (t) => {
+  const pkg = await installed();
+  const repo = await sandbox();
+  compiledWithBun(t, repo);
+  withoutPath(t);
+  const { tools, notes, start } = await loaded(pkg, repo);
+  await start();
+
+  assert.deepEqual(notes, [
+    "LayerMap could not start: The server runs on Node, and none is on PATH.",
+  ]);
+  assert.deepEqual(tools, []);
+});
+
+test("a Pi on Node runs the server on that Node, whatever is on PATH", async (t) => {
+  const pkg = await installed();
+  const repo = await sandbox();
+  withoutPath(t);
+  const { tools, notes, start, stop } = await loaded(pkg, repo);
+  await start();
+  t.after(stop);
+
+  assert.deepEqual(notes, []);
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    ["project_check_changes"],
+  );
+});
+
+test("the Pi extension keeps a server that answered initialize, however long the rest takes", async (t) => {
+  const pkg = await installed();
+  const repo = await sandbox();
+  const ready = path.join(pkg, "ready");
+  const release = path.join(pkg, "release");
+  await writeFile(
+    path.join(pkg, "dist", "cli.mjs"),
+    `import { existsSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\\n");
+const tools = [{ name: "project_check_changes", title: "Check", description: "d", inputSchema: { type: "object" } }];
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const { id, method } = JSON.parse(line);
+  if (method === "initialize") send({ id, result: {} });
+  if (method === "notifications/initialized") writeFileSync(${JSON.stringify(ready)}, "");
+  if (method === "tools/list") {
+    const answer = () => existsSync(${JSON.stringify(release)}) ? send({ id, result: { tools } }) : setTimeout(answer, 10);
+    answer();
+  }
+  if (method === "tools/call") send({ id, result: { content: [{ type: "text", text: "called" }], isError: false } });
+});
+`,
+  );
+  const { tools, notes, start, stop } = await loaded(pkg, repo);
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const started = start();
+  while (!existsSync(ready)) await setImmediate();
+  t.mock.timers.tick(30_000);
+  await writeFile(release, "");
+  await started;
+  t.mock.timers.reset();
+  t.after(stop);
+
+  assert.deepEqual(notes, []);
+  const result = await tools[0]?.execute("1", {}, undefined);
+  assert.equal(result?.content[0]?.text, "called");
+});
+
+test("the Pi extension stops a server that never answers and lets the session start", async (t) => {
+  const pkg = await installed();
+  const repo = await sandbox();
+  const pidFile = path.join(pkg, "server.pid");
+  await writeFile(
+    path.join(pkg, "dist", "cli.mjs"),
+    `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+process.stdin.resume();
+`,
+  );
+  const { tools, notes, start } = await loaded(pkg, repo);
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const started = start();
+  while (!existsSync(pidFile) || !(await readFile(pidFile, "utf8"))) await setImmediate();
+  const pid = Number(await readFile(pidFile, "utf8"));
+  t.mock.timers.tick(30_000);
+  await started;
+  t.mock.timers.reset();
+
+  assert.deepEqual(tools, []);
+  assert.deepEqual(notes, [
+    "LayerMap could not start: The server did not answer within 30 seconds.",
+  ]);
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let waited = 0; alive() && waited < 100; waited++) await delay(50);
+  assert.equal(alive(), false, "the server was stopped");
 });
 
 test("the generated Pi extension carries the notes and this version", () => {

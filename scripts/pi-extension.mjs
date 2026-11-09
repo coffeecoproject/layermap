@@ -2,9 +2,9 @@
 // plugin's hooks into plugins/pi/layermap.mjs, which the npm package ships as its Pi extension
 // (`pi install npm:layermap`).
 //
-// The map runs in LayerMap's own MCP server, started with Pi's Node in the session's directory; its
-// tools become Pi tools of the same names. Like the Claude Code plugin's stop hook, the extension
-// asks the agent once, before it settles, to check the code its tool calls changed.
+// The map runs in LayerMap's own MCP server, started on Node in the session's directory; its tools
+// become Pi tools of the same names. Like the Claude Code plugin's stop hook, the extension asks
+// the agent once, before it settles, to check the code its tool calls changed.
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -20,6 +20,7 @@ import {
   fileStates,
   repositoryAt,
 } from "../src/agent/session-changes";
+import { findExecutable } from "../src/platform";
 
 const CHECK_TOOL = "project_check_changes";
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.mjs");
@@ -31,13 +32,21 @@ const WRITES = new Set(["edit", "write"]);
 // each file it adds, updates, deletes or moves one to, relative to the session's directory.
 const PATCH = "apply_patch";
 const PATCH_FILES = /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm;
+// LayerMap runs on Node. Under Bun process.execPath is not Node, and in a Bun-compiled Pi (the
+// release binary, Pi-Bolt) it is that Pi, so there the server runs on the Node on PATH, by its full
+// path: the server starts in the session's repository, whose own programs must not run.
+const NODE = process.versions.bun ? findExecutable("node") : process.execPath;
+// The server answers initialize before it opens any map; a program that is not the server never
+// does, and the session waits for that answer.
+const START_TIMEOUT_MS = 30_000;
 
 // LayerMap's MCP server over stdio: one JSON-RPC message per line.
 class MapServer {
   constructor(cwd) {
+    if (!NODE) throw new Error("The server runs on Node, and none is on PATH.");
     this.pending = new Map();
     this.next = 1;
-    this.child = spawn(process.execPath, [CLI, "mcp"], {
+    this.child = spawn(NODE, [CLI, "mcp"], {
       cwd,
       stdio: ["pipe", "pipe", "ignore"],
       windowsHide: true,
@@ -85,11 +94,19 @@ class MapServer {
     });
   }
   async start(version) {
-    await this.request("initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "layermap-pi", version },
-    });
+    const timer = setTimeout(() => {
+      this.fail(new Error(`The server did not answer within ${START_TIMEOUT_MS / 1000} seconds.`));
+      this.child.kill();
+    }, START_TIMEOUT_MS);
+    try {
+      await this.request("initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "layermap-pi", version },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     // The server starts building the map as soon as it is told the client is ready.
     this.send({ method: "notifications/initialized" });
     return (await this.request("tools/list", {})).tools;
