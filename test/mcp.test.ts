@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { projectDirectory } from "../src/agent/environment";
 import { serveMcp } from "../src/agent/mcp";
 import type { SessionStart } from "../src/agent/projects";
 import type { LayerMap } from "../src/layermap";
@@ -391,4 +392,17 @@ test("a session works where its client's roots say, not where the client started
   } finally {
     await client.close();
   }
+});
+
+test("a session's project is found by LayerMap's Git, whatever Git the caller's environment names", async (t) => {
+  const { root } = await project({ "src/a.ts": "export const a = 1;\n" });
+  const outside = await sandbox();
+  const directory = await gitRoot(root);
+  process.env.GIT_DIR = path.join(root, "missing");
+  t.after(() => {
+    delete process.env.GIT_DIR;
+  });
+
+  assert.deepEqual(await projectDirectory(path.join(root, "src")), { directory, git: true });
+  assert.deepEqual(await projectDirectory(outside), { directory: outside, git: false });
 });

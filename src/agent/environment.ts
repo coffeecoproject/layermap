@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
@@ -6,6 +5,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GitRunner } from "../git-runner";
 import { type LayerMapAnalyzers, mapDatabasePath } from "../layermap";
 import { executableName } from "../platform";
 import { discoverJavaRuntime } from "../project-map-process";
@@ -41,22 +41,19 @@ export const cacheDirectory = (env: NodeJS.ProcessEnv = process.env): string => 
  * The project an agent works in: the Git work tree around the directory. Maps are built from
  * what Git lists, so a directory outside any work tree has none.
  */
-export const projectDirectory = (
+export const projectDirectory = async (
   directory: string,
-): Promise<Readonly<{ directory: string; git: boolean }>> =>
-  new Promise((resolve) =>
-    execFile(
-      "git",
-      ["rev-parse", "--show-toplevel"],
-      { cwd: directory, timeout: 10_000 },
-      (error, stdout) =>
-        resolve(
-          error
-            ? { directory: path.resolve(directory), git: false }
-            : { directory: stdout.trim(), git: true },
-        ),
-    ),
-  );
+): Promise<Readonly<{ directory: string; git: boolean }>> => {
+  try {
+    const { stdout } = await new GitRunner().run(["rev-parse", "--show-toplevel"], {
+      cwd: directory,
+      timeoutMs: 10_000,
+    });
+    return { directory: stdout.toString().trim(), git: true };
+  } catch {
+    return { directory: path.resolve(directory), git: false };
+  }
+};
 
 type StoredAnalyzers = { [K in keyof LayerMapAnalyzers]: Record<string, unknown> };
 const relativeTo = (directory: string, value: StoredAnalyzers): StoredAnalyzers =>
