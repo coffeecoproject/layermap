@@ -35,6 +35,12 @@ export class CodeIndex {
     readonly store: CodeIndexStore,
     private readonly clock: () => string = () => new Date().toISOString(),
     private readonly analyzer: ProjectMapAnalyzer = new ProjectMapAnalyzer(),
+    /**
+     * Holds the store's map builds to one at a time across the processes that share it, until the
+     * returned release; a store only this index writes needs none.
+     */
+    private readonly lockBuilds: (signal: AbortSignal) => Promise<() => void> = async () =>
+      () => {},
   ) {
     this.query = new CodeIndexQuery(store, analyzer.id, (signal, read) => this.read(signal, read));
     this.capture = new CodeIndexCapture(analyzer.id);
@@ -150,7 +156,16 @@ export class CodeIndex {
         this.store.discardMapStage(stage);
       }
     };
-    const completion = run(this.mapParent(result, startFromProjectRef)).finally(() => {
+    // A build that waited for another process's finds the version built there, or builds from what
+    // that one built.
+    const completion = (async () => {
+      const release = await this.lockBuilds(controller.signal);
+      try {
+        if (!this.store.getVersion(ref)) await run(this.mapParent(result, startFromProjectRef));
+      } finally {
+        release();
+      }
+    })().finally(() => {
       if (this.mapBuilds.get(ref)?.completion === completion) this.mapBuilds.delete(ref);
     });
     const build = { controller, completion, waiters: new Set<symbol>() };
