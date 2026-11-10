@@ -38,6 +38,8 @@ import { inExcludedDirectory } from "./source-scope";
 
 /** Inclusive 1-based line ranges. */
 type Lines = readonly (readonly [number, number])[];
+/** A diff hunk: where it starts and how many lines it spans in the base and in the working tree. */
+type Hunk = Readonly<{ baseStart: number; baseCount: number; start: number; count: number }>;
 
 export type MapChangedFile = Readonly<{
   /** Path in the working tree; for a deleted file, its path in the base. */
@@ -53,6 +55,8 @@ export type MapChangedFile = Readonly<{
   lines: Lines;
   /** Lines removed or changed in the base. */
   baseLines: Lines;
+  /** The diff's hunks in order, which place each line it left unchanged in the working tree. */
+  hunks: readonly Hunk[];
   binary: boolean;
   /** A changed test file's text in the base, to tell which of its existing tests changed. */
   baseText?: string;
@@ -145,7 +149,14 @@ export async function readMapChanges(
     .split("\0")
     .filter((path) => path && !inExcludedDirectory(path));
   for (const path of untracked)
-    files.push({ path, status: "ADDED", lines: [EVERYTHING], baseLines: [], binary: false });
+    files.push({
+      path,
+      status: "ADDED",
+      lines: [EVERYTHING],
+      baseLines: [],
+      hunks: [],
+      binary: false,
+    });
   const stranded = await strandedNames(
     project,
     diff,
@@ -166,6 +177,7 @@ export function parseMapDiff(text: string): MapChangedFile[] {
     status: MapChangedFile["status"];
     lines: [number, number][];
     baseLines: [number, number][];
+    hunks: Hunk[];
     binary: boolean;
   };
   let current: Draft | undefined;
@@ -185,6 +197,7 @@ export function parseMapDiff(text: string): MapChangedFile[] {
         status: "MODIFIED",
         lines: [],
         baseLines: [],
+        hunks: [],
         binary: false,
       };
       continue;
@@ -210,6 +223,12 @@ export function parseMapDiff(text: string): MapChangedFile[] {
         Number(hunk[3]),
         hunk[4] === undefined ? 1 : Number(hunk[4]),
       ];
+      current.hunks.push({
+        baseStart: oldStart,
+        baseCount: oldCount,
+        start: newStart,
+        count: newCount,
+      });
       if (oldCount > 0) current.baseLines.push([oldStart, oldStart + oldCount - 1]);
       current.lines.push(
         newCount > 0 ? [newStart, newStart + newCount - 1] : [newStart + 1, newStart],
@@ -225,6 +244,16 @@ const testCode = (file: string) => mapTestPath(file) || /(?:^|\/)testFixtures\//
 
 const overlaps = (lines: Lines, start: number, end: number) =>
   lines.some(([from, to]) => from <= end && start <= to);
+/** Where a base line the diff left unchanged is in the working tree; a file outside it keeps it. */
+const workingLine = (file: MapChangedFile | undefined, line: number) => {
+  let shift = 0;
+  for (const hunk of file?.hunks ?? []) {
+    // A hunk adding lines alone comes after the base line it starts at.
+    if ((hunk.baseCount ? hunk.baseStart : hunk.baseStart + 1) > line) break;
+    shift += hunk.count - hunk.baseCount;
+  }
+  return line + shift;
+};
 
 // Files whose effects a code map cannot follow: configuration, dependencies, builds, schemas,
 // templates. A change to one widens what to check, as test impact tools run more when it happens.
@@ -251,6 +280,8 @@ export type MapChangeEntry = Readonly<{
   chain: readonly string[];
   site?: string;
   certain: boolean;
+  /** A route the diff removes: what the base's code reached through it, at the base's site. */
+  removed?: boolean;
 }>;
 
 export type MapChangeImpact = Readonly<{
@@ -1025,35 +1056,56 @@ export async function mapChangeImpact(
     const changedIn = new Map(
       changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
     );
-    const same = (g: MapViewGraph, ref: string) =>
-      `${g.object(ref).kind}\u0000${g.qualifiedName(ref)}`;
-    // A use in the base that still names what the diff removed, on a line the diff did not touch,
-    // and that does not reach a declaration of the same name in the working tree, as it does when
-    // the diff moved the declaration to another file.
-    const stillUses = (relation: MapRelation, user: string) => {
-      const file = changedIn.get(relation.anchor.path);
+    // Where a use in the base is in the working tree, when the diff left its lines alone.
+    const nowAt = (anchor: MapAnchor) => {
+      const file = changedIn.get(anchor.path);
       if (
         file &&
-        (file.status === "DELETED" ||
-          overlaps(file.baseLines, relation.anchor.startLine, relation.anchor.endLine))
+        (file.status === "DELETED" || overlaps(file.baseLines, anchor.startLine, anchor.endLine))
       )
-        return false;
-      const name = same(before, user);
-      const now = graph
-        .objectsAt(file?.path ?? relation.anchor.path)
-        .find((object) => same(graph, object.id) === name);
-      if (!now || relation.to === undefined) return true;
-      const used = same(before, relation.to);
+        return undefined;
+      return {
+        path: file?.path ?? anchor.path,
+        startLine: workingLine(file, anchor.startLine),
+        endLine: workingLine(file, anchor.endLine),
+      };
+    };
+    const samePlace = (
+      anchor: MapAnchor,
+      place: { path: string; startLine: number; endLine: number },
+    ) =>
+      anchor.path === place.path &&
+      anchor.startLine === place.startLine &&
+      anchor.endLine === place.endLine;
+    // What took a removed declaration's place: one of its kind and name, as the method of a renamed
+    // class or a moved function is. The code the diff left alone uses it where it used the old one.
+    const replaces = (now: MapObject, removed: MapObject) =>
+      now.kind === removed.kind && now.name === removed.name;
+    const relationsNow = new Map<string, MapRelation[]>();
+    const relationsIn = (path: string) => {
+      let found = relationsNow.get(path);
+      if (!found) {
+        found = graph.relationsFrom(graph.objectsAt(path).map((object) => object.id));
+        relationsNow.set(path, found);
+      }
+      return found;
+    };
+    // A use in the base that names what the diff removed, on lines the diff did not touch, which in
+    // the working tree names nothing that took its place.
+    const stillUses = (relation: MapRelation) => {
+      const place = nowAt(relation.anchor);
+      if (!place) return false;
+      if (relation.to === undefined) return true;
+      const used = before.object(relation.to);
       // A template is named by the tag that shows it, which a moved component keeps.
-      const tag = mapIsModule(before.object(relation.to));
-      return !graph
-        .relationsFrom(graph.scope(now.id).refs)
-        .some(
-          (use) =>
-            NAMING_KINDS.has(use.kind) &&
-            use.to !== undefined &&
-            (tag ? use.target === relation.target : same(graph, use.to) === used),
-        );
+      const tag = mapIsModule(used);
+      return !relationsIn(place.path).some(
+        (use) =>
+          NAMING_KINDS.has(use.kind) &&
+          use.to !== undefined &&
+          samePlace(use.anchor, place) &&
+          (tag ? use.target === relation.target : replaces(graph.object(use.to), used)),
+      );
     };
     const gone: string[] = [];
     // The fields and types each removed declaration takes away, whose uses are read once all are
@@ -1096,8 +1148,7 @@ export async function mapChangeImpact(
             .map((member) => member.id),
         )) {
           const owner = before.owner(relation.from);
-          if (!NAMING_KINDS.has(relation.kind) || inside(owner) || !stillUses(relation, owner))
-            continue;
+          if (!NAMING_KINDS.has(relation.kind) || inside(owner) || !stillUses(relation)) continue;
           const user = before.object(owner);
           usedBy.add(
             mapIsModule(user)
@@ -1123,32 +1174,49 @@ export async function mapChangeImpact(
         });
       }
     }
-    // The code that reads or names the fields and types the diff removed, on lines it left alone;
-    // one still declared under its name was moved, and a compiler follows it.
+    // The code that reads or names the fields and types the diff removed, on lines it left alone,
+    // unless the working tree reads there what took their place: a renamed type's fields, a moved
+    // type. A field or type taking a place is declared in a changed file.
     await beforeTracer.shapes.read(goneShapes.flatMap((item) => item.shapes));
-    const nowDeclared = new Set(
-      changes.files.flatMap((file) =>
-        file.status === "DELETED"
-          ? []
-          : graph.objectsAt(file.path).map((object) => same(graph, object.id)),
+    const declared = new Map<string, MapObject[]>();
+    for (const file of changes.files)
+      if (file.status !== "DELETED")
+        for (const object of graph.objectsAt(file.path))
+          if (mapIsShape(object)) {
+            const key = `${object.kind}\u0000${object.name}`;
+            declared.set(key, [...(declared.get(key) ?? []), object]);
+          }
+    const successors = (shape: string) => {
+      const removed = before.object(shape);
+      return declared.get(`${removed.kind}\u0000${removed.name}`) ?? [];
+    };
+    await tracer.shapes.read(
+      goneShapes.flatMap((item) =>
+        item.shapes.flatMap((shape) => successors(shape).map((object) => object.id)),
       ),
     );
+    const unfollowed = new Set<string>();
     for (const { shapes: inRemoved, inside, usedBy } of goneShapes)
       for (const shape of inRemoved) {
-        if (nowDeclared.has(same(before, shape))) continue;
         if (beforeTracer.shapes.unread.has(shape))
           unclear.push(
             `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; search the code for its name`,
           );
+        const now = successors(shape);
         for (const { owner, anchor } of beforeTracer.shapes.uses.get(shape) ?? []) {
-          const file = changedIn.get(anchor.path);
+          const place = nowAt(anchor);
           if (
             inside(owner) ||
-            (file &&
-              (file.status === "DELETED" ||
-                overlaps(file.baseLines, anchor.startLine, anchor.endLine)))
+            !place ||
+            now.some((object) =>
+              tracer.shapes.uses.get(object.id)?.some((use) => samePlace(use.anchor, place)),
+            )
           )
             continue;
+          if (now.some((object) => tracer.shapes.unread.has(object.id))) {
+            unfollowed.add(`${before.object(shape).anchor.path}: ${before.qualifiedName(shape)}`);
+            continue;
+          }
           const user = before.object(owner);
           usedBy.add(
             mapIsModule(user)
@@ -1157,6 +1225,17 @@ export async function mapChangeImpact(
           );
         }
       }
+    if (unfollowed.size)
+      unclear.push(
+        `${unfollowed.size} removed fields or types are used on lines the diff left alone, and whether that code now uses what took their place was not read (${[
+          ...unfollowed,
+        ]
+          .sort()
+          .slice(0, LIST.names)
+          .join(
+            ", ",
+          )}${unfollowed.size > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
+      );
     // Template links the diff broke: a template's binding or tag that reached a method, a component
     // or an event in the base and reaches nothing now, as when a component stops emitting an event
     // a page binds, or app.json registers a component where there is none. No compiler checks a
@@ -1234,7 +1313,13 @@ export async function mapChangeImpact(
     if (gone.length) {
       await beforeTracer.trace(gone, gone);
       for (const entry of beforeTracer.entries.values())
-        if (!tracer.entries.has(entry.label)) tracer.entries.set(entry.label, entry);
+        if (!tracer.entries.has(entry.label))
+          tracer.entries.set(
+            entry.label,
+            entry.route && removedRoutes.includes(entry.label)
+              ? { ...entry, removed: true }
+              : entry,
+          );
       for (const [path, test] of beforeTracer.tests) {
         const known = tracer.tests.get(path);
         if (known) for (const name of test.names) known.names.add(name);
@@ -2056,7 +2141,13 @@ export function mapChangesText(
     );
   }
   const entry = (item: MapChangeEntry) =>
-    `${item.route ? JSON.stringify(item.label) : item.label}${item.chain.length ? ` → ${item.chain.join(" → ")}` : ""}${item.site ? ` (registered at ${item.site})` : ""}`;
+    `${item.route ? JSON.stringify(item.label) : item.label}${item.chain.length ? ` → ${item.chain.join(" → ")}` : ""}${
+      item.removed
+        ? ` (the diff removes it${item.site ? `; registered at ${item.site} before` : ""})`
+        : item.site
+          ? ` (registered at ${item.site})`
+          : ""
+    }`;
   list(
     "AFFECTED ENTRY POINTS (through resolved calls)",
     impact.entries.filter((e) => e.certain).map(entry),

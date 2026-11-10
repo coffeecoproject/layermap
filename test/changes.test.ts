@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
@@ -79,6 +79,10 @@ test("git diff hunks become changed line ranges on both sides", () => {
         [3, 4],
         [10, 10],
       ],
+      hunks: [
+        { baseStart: 3, baseCount: 2, start: 3, count: 3 },
+        { baseStart: 10, baseCount: 1, start: 11, count: 0 },
+      ],
       binary: false,
     },
     {
@@ -87,6 +91,7 @@ test("git diff hunks become changed line ranges on both sides", () => {
       status: "RENAMED",
       lines: [[1, 1]],
       baseLines: [[1, 1]],
+      hunks: [{ baseStart: 1, baseCount: 1, start: 1, count: 1 }],
       binary: false,
     },
     {
@@ -95,6 +100,7 @@ test("git diff hunks become changed line ranges on both sides", () => {
       status: "DELETED",
       lines: [[1, 0]],
       baseLines: [[1, 4]],
+      hunks: [{ baseStart: 1, baseCount: 4, start: 0, count: 0 }],
       binary: false,
     },
   ]);
@@ -160,6 +166,112 @@ test("a rename that updates its callers removes the old name without saying code
     /^REMOVED OR RENAMED \(no reference found on a line the diff left unchanged\)\n {2}src\/store\.ts: legacy f5-7\n/mu,
   );
   assert.doesNotMatch(text, /STILL USED/u);
+});
+
+test("renaming a type, a class or a component leaves the code using their members, unchanged, following them", async (t) => {
+  const MODEL = `export type Talent = { id: number; name: string };
+
+export class Agent {
+  save() {
+    return 1;
+  }
+}
+
+export function loadTalents(): Talent[] {
+  return [{ id: 1, name: "a" }];
+}
+
+export function makeAgent() {
+  return new Agent();
+}
+`;
+  const ROUTES = `import { loadTalents, makeAgent } from "./model";
+
+export function list() {
+  const rows = loadTalents();
+  return rows.map((row) => row.name);
+}
+
+export function store() {
+  const agent = makeAgent();
+  return agent.save();
+}
+`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true, jsx: "preserve" },
+      include: ["src"],
+    }),
+    "src/jsx.d.ts":
+      "declare namespace JSX {\n  type Element = unknown;\n  interface IntrinsicElements {\n    div: unknown;\n  }\n}\n",
+    "src/model.ts": MODEL,
+    "src/routes.ts": ROUTES,
+    "src/table.tsx": `export function TalentTable({ list }: { list: number[] }) {
+  return <div>{list.length}</div>;
+}
+
+export function TalentLayer() {
+  return (
+    <TalentTable
+      list={[1]}
+    />
+  );
+}
+`,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const renamed = (code: string) =>
+    code
+      .replaceAll("Talent", "Account")
+      .replaceAll("Agent", "Keeper")
+      .replace('"./model"', '"./accounts"');
+  // The model moves to another file too, and lines added above the code using it move that code.
+  await run("git", ["mv", "src/model.ts", "src/accounts.ts"], { cwd: root });
+  await write("src/accounts.ts", renamed(MODEL));
+  await write("src/routes.ts", `// Accounts and keepers.\n\n${renamed(ROUTES)}`);
+  await write("src/table.tsx", renamed(await readFile(path.join(root, "src/table.tsx"), "utf8")));
+  await run("git", ["add", "-A"], { cwd: root });
+  const { text } = await map.checkChanges({}, signal());
+  assert.doesNotMatch(text, /STILL USED/u);
+  assert.match(
+    text,
+    /^REMOVED OR RENAMED \(no reference[^\n]*\n(?: {2}[^\n]+\n)*? {2}src\/model\.ts: Talent t1\n/mu,
+  );
+  assert.match(text, /src\/table\.tsx: TalentTable f1-3\n/u);
+
+  // Code still naming what the rename took away does not follow it.
+  await write("src/routes.ts", ROUTES);
+  const stale = (await map.checkChanges({}, signal())).text;
+  assert.match(
+    stale,
+    /^REMOVED OR RENAMED, STILL USED[^\n]*\n(?: {2}[^\n]+\n)*? {2}src\/model\.ts: loadTalents f9-11 ← src\/routes\.ts: list\n/mu,
+  );
+  assert.match(stale, /src\/model\.ts: Talent\.name p1 ← src\/routes\.ts: list\n/u);
+});
+
+test("a route the diff removes is named as removed, where the base registered it", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write(
+    "src/store.ts",
+    "export function markRead(id: number) {\n  return id;\n}\n\nexport function current() {\n  return 1;\n}\n",
+  );
+  await write(
+    "src/routes.ts",
+    FILES["src/routes.ts"].replaceAll("legacy", "current").replace('"/old"', '"/older"'),
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /"GET \/old" → oldHandler → legacy \(the diff removes it; registered at src\/routes\.ts:7 before\)/u,
+  );
+  assert.match(text, /"GET \/older" → oldHandler \(registered at src\/routes\.ts:7\)/u);
 });
 
 test("a removed class that unchanged code still extends is still used", async (t) => {
@@ -1154,6 +1266,32 @@ const noTargets = (map: unknown, none: (compile: number) => boolean) => {
     return none(++compiles) ? { ...found, pages: found.pages.map(() => null) } : found;
   };
 };
+
+test("a renamed type's field whose uses in the working tree could not be read is not called still used", async (t) => {
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/model.ts": "export type Talent = { name: string };\n",
+    "src/use.ts":
+      'import type { Talent } from "./model";\n\nexport function label(row: Talent) {\n  return row.name;\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/model.ts", "export type Account = { name: string };\n");
+  await write(
+    "src/use.ts",
+    'import type { Account } from "./model";\n\nexport function label(row: Account) {\n  return row.name;\n}\n',
+  );
+  // The working tree's compile, the first, finds nothing: whether row.name reads Account.name is not known.
+  noTargets(map, (compile) => compile === 1);
+  const { text } = await map.checkChanges({}, signal());
+  assert.doesNotMatch(text, /STILL USED/u);
+  assert.match(
+    text,
+    /1 removed fields or types are used on lines the diff left alone, and whether that code now uses what took their place was not read \(src\/model\.ts: Talent\.name\)/u,
+  );
+});
 
 test("a wide change reads its fields in one compile", async (t) => {
   const fields = Array.from({ length: 20 }, (_, at) => `f${at}`);
