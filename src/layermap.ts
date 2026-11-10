@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync, type DatabaseSyncInstance } from "@photostructure/sqlite";
 import { CodeIndex } from "./code-index";
 import {
@@ -57,6 +58,10 @@ const BUSY_TIMEOUT = "PRAGMA busy_timeout = 30000;";
 const JOURNAL_LIMIT = 32 * 1024 * 1024;
 /** Captures of a directory whose files keep changing while they are read, before giving up. */
 const CAPTURE_ATTEMPTS = 3;
+/** How often a build waiting for another process's checks whether that one has finished. */
+const BUILD_WAIT_MS = 500;
+/** SQLite's code for a database another connection has locked. */
+const SQLITE_BUSY = 5;
 // What a capture meets when files change while it reads or analyzes them, or when another
 // process's cleanup removed the version it found before it held it.
 const CAPTURE_AGAIN = new Set([
@@ -135,6 +140,33 @@ export function openMapDatabase(file: string): DatabaseSyncInstance {
   }
 }
 
+/**
+ * Holds a project's map builds to one at a time across processes, until the returned release: the
+ * lock is an exclusive transaction on a file beside the map, which the system releases when its
+ * process stops, however it stops.
+ */
+async function lockMapBuilds(file: string, signal: AbortSignal): Promise<() => void> {
+  const lock = new DatabaseSync(file);
+  try {
+    lock.exec("PRAGMA busy_timeout = 0;");
+    for (;;) {
+      try {
+        lock.exec("BEGIN EXCLUSIVE");
+        // Closing ends the transaction.
+        return () => lock.close();
+      } catch (error) {
+        if ((error as { errcode?: number }).errcode !== SQLITE_BUSY) throw error;
+      }
+      await delay(BUILD_WAIT_MS, undefined, { signal }).catch(() => {
+        throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
+      });
+    }
+  } catch (error) {
+    lock.close();
+    throw error;
+  }
+}
+
 /** Where a project's map lives: one database per canonical project directory. */
 export const mapDatabasePath = (cacheDirectory: string, canonicalProject: string) =>
   path.join(
@@ -202,7 +234,9 @@ export class LayerMap {
       project,
       source,
       store,
-      new CodeIndex(store, undefined, analyzer),
+      new CodeIndex(store, undefined, analyzer, (signal) =>
+        lockMapBuilds(path.join(path.dirname(file), "build.lock"), signal),
+      ),
       analyzer.id,
       { maxBytes: options.maxOutputBytes ?? 96 * 1024, envelopeBytes: 0 },
       `${file}-wal`,
