@@ -1,5 +1,6 @@
 // Generated from scripts/launcher.mjs.
-// Starts one LayerMap version's MCP server in this process. The version is installed once into
+// Runs one LayerMap version in this process: its MCP server, or, for the layermap command of the
+// Claude Code plugin, its command line with the arguments given. The version is installed once into
 // LayerMap's cache, from where every later start runs without npm or a network. The agent starts
 // this in the project, which stays the working directory the server maps; npm runs in the cache,
 // so the project's own npm settings and packages play no part in what gets installed.
@@ -18,6 +19,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const VERSION = "0.1.39";
+const ARGUMENTS = ["mcp"];
 
 // The same directory as cacheDirectory in src/agent/environment.ts.
 const env = process.env;
@@ -96,7 +98,7 @@ try {
   // LayerMap removes a version from its cache once nothing has started it for a week.
   writeFileSync(path.join(home, "last-used"), "");
   const entry = path.join(installed, JSON.parse(readFileSync(manifest, "utf8")).bin.layermap);
-  process.argv = [process.argv[0], entry, "mcp"];
+  process.argv = [process.argv[0], entry, ...ARGUMENTS];
   await import(pathToFileURL(entry).href);
 } catch (error) {
   process.stderr.write(

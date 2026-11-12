@@ -23,6 +23,8 @@ Start a session in a Git repository and ask as usual, for example:
 - LayerMap itself makes no network requests. Maps stay in your user cache, never in the repository.
   Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
+- The plugin puts a `layermap` command on the PATH of Claude's shell commands, the same version
+  and cache as the server, for programs run there, such as `layermap check --json` to choose tests.
 - When Claude is about to finish after editing code in a repository it has not checked since, a stop hook asks it
   once to run `project_check_changes` for each such repository and check what the changes affect. Edits made by shell
   commands count too, for the code files a command names: a hook notes which of them it changed. It only asks git whether

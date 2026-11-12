@@ -32,9 +32,14 @@ const PLUGIN_RULE = `mcp__plugin_${SERVER}_${SERVER}`;
 const BEGIN = "<!-- layermap:begin -->";
 const END = "<!-- layermap:end -->";
 
-/** scripts/launcher.mjs for one version: it starts that version's server, installed in the cache. */
-export const launcherScript = (template: string, version: string): string =>
-  `// Generated from scripts/launcher.mjs.\n${template.replace("__VERSION__", JSON.stringify(version))}`;
+/**
+ * scripts/launcher.mjs for one version: it starts that version's server, installed in the cache, or
+ * given the code of other arguments, runs its command line with them.
+ */
+export const launcherScript = (template: string, version: string, args = '["mcp"]'): string =>
+  `// Generated from scripts/launcher.mjs.\n${template
+    .replace("__VERSION__", JSON.stringify(version))
+    .replace("__ARGUMENTS__", args)}`;
 
 /** The launcher a published package ships; a checkout has none. */
 const PUBLISHED_LAUNCHER = path.join(packageRoot, "dist", "launcher.mjs");

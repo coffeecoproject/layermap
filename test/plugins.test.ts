@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { generatedFiles, MCP_NAME, PLUGIN_ASSETS } from "../scripts/plugins";
+import { EXECUTABLES, generatedFiles, MCP_NAME, PLUGIN_ASSETS } from "../scripts/plugins";
 import { sandbox } from "./support";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -17,6 +17,9 @@ test("the committed plugins, marketplaces and registry entry match the generator
   const files = generatedFiles(version);
   for (const [file, content] of Object.entries(files))
     assert.equal(await readFile(path.join(root, file), "utf8"), content, file);
+  for (const file of EXECUTABLES)
+    if (process.platform !== "win32")
+      assert.ok((await stat(path.join(root, file))).mode & 0o100, `${file} is executable`);
   // Both plugins start this version with the one launcher: Claude Code's from a file of its plugin,
   // Codex's as code, as Codex names no file of a plugin.
   const launcher = files["plugins/claude/server.mjs"] ?? "";
@@ -41,10 +44,7 @@ test("the committed plugins, marketplaces and registry entry match the generator
 // Claude Code starts the plugin's server with node, and the launcher runs the version it finds
 // installed in the cache in the same process. A stand-in package echoes its arguments and input
 // and exits with its own code.
-test("the Claude Code plugin's server script runs the installed version in its own process", async () => {
-  const directory = await sandbox();
-  const server = path.join(directory, "server.mjs");
-  await writeFile(server, generatedFiles("1.2.3")["plugins/claude/server.mjs"] ?? "");
+async function standIn(directory: string) {
   const installed = path.join(directory, "cache", "versions", "1.2.3", "node_modules", "layermap");
   await mkdir(path.join(installed, "dist"), { recursive: true });
   await writeFile(
@@ -61,6 +61,13 @@ process.stdin.on("end", () => {
 });
 `,
   );
+}
+
+test("the Claude Code plugin's server script runs the installed version in its own process", async () => {
+  const directory = await sandbox();
+  const server = path.join(directory, "server.mjs");
+  await writeFile(server, generatedFiles("1.2.3")["plugins/claude/server.mjs"] ?? "");
+  await standIn(directory);
   const started = spawn(process.execPath, [server], {
     env: { ...process.env, LAYERMAP_CACHE: path.join(directory, "cache") },
   });
@@ -69,5 +76,29 @@ process.stdin.on("end", () => {
   started.stdin.end("ping\n");
   const status = await new Promise((resolve) => started.on("exit", resolve));
   assert.equal(stdout, `mcp in ${started.pid}: ping\n`);
+  assert.equal(status, 3);
+});
+
+// Claude Code puts the plugin's bin directory on the PATH of its shell commands, where a program
+// run there, choosing tests say, runs the plugin's version with the arguments it gives.
+test("the Claude Code plugin's layermap command runs the installed version's command line", {
+  skip: process.platform === "win32" && "a script runs by its #! line only in a POSIX shell",
+}, async () => {
+  const directory = await sandbox();
+  const files = generatedFiles("1.2.3");
+  const command = path.join(directory, "plugin", "bin", "layermap");
+  await mkdir(path.dirname(command), { recursive: true });
+  await writeFile(command, files["plugins/claude/bin/layermap"] ?? "");
+  await chmod(command, 0o755);
+  await writeFile(path.join(directory, "plugin", "cli.mjs"), files["plugins/claude/cli.mjs"] ?? "");
+  await standIn(directory);
+  const started = spawn(command, ["check", "--json", "--base", "HEAD~1"], {
+    env: { ...process.env, LAYERMAP_CACHE: path.join(directory, "cache") },
+  });
+  let stdout = "";
+  started.stdout.on("data", (chunk) => (stdout += chunk));
+  started.stdin.end("ping\n");
+  const status = await new Promise((resolve) => started.on("exit", resolve));
+  assert.equal(stdout, `check --json --base HEAD~1 in ${started.pid}: ping\n`);
   assert.equal(status, 3);
 });
