@@ -144,17 +144,18 @@ const directoryOf = (path: string) => path.slice(0, Math.max(path.lastIndexOf("/
 const directoryLabel = (directory: string) => (directory ? `${directory}/` : "./");
 
 /**
- * What one copy would import to use the other. The new code uses the existing code with nothing
- * more when its directory already imports the other's (or they share one). Failing that, the
- * existing code uses the new code when its directory already imports the new one's, or when only
- * its package may import the new code's. Otherwise the new code uses the existing code through an
- * import between two directories of one package, which may close a cycle, or into another package
- * its own already imports.
+ * What one copy would import to use the other. Where one file already imports the other, that one
+ * uses the code it imports. Otherwise the new code uses the existing code with nothing more when
+ * its directory already imports the other's (or they share one). Failing that, the existing code
+ * uses the new code when its directory already imports the new one's, or when only its package
+ * may import the new code's. Otherwise the new code uses the existing code through an import
+ * between two directories of one package, which may close a cycle, or into another package its
+ * own already imports. Code in a file no other file uses, as a script, is no code to use.
  */
 export type MapReuseImport = Readonly<{
   /** Which copy would use the other. */
   user: "NEW" | "EXISTING";
-  /** The user's directory and the directory of the code it would use. */
+  /** The user's directory and the directory of the code it would use; their files, when the one already imports the other. */
   from: string;
   to: string;
   imported: boolean;
@@ -183,8 +184,11 @@ export function mapReuseImports(
     roots.find((root) => !root || path.startsWith(`${root}/`)) ?? "";
   const directories: Edges = new Map();
   const packages = new Map<string, Set<string>>();
+  const files = new Set<string>();
   for (const { source, target } of cache.imports(store, working)) {
-    if (target === null || mapTestPath(source)) continue;
+    if (target === null) continue;
+    files.add(`${source}\u0000${target}`);
+    if (mapTestPath(source)) continue;
     const from = directoryOf(source);
     const to = directoryOf(target);
     if (from !== to) {
@@ -214,13 +218,31 @@ export function mapReuseImports(
         : { packages: [directoryLabel(fromPackage), directoryLabel(toPackage)] as const }),
     };
   };
+  // Whether code outside a file uses any of it: in Go and Java code of one package uses another
+  // file's without importing it, so the relations tell, not the imports.
+  const graph = new MapViewGraph(store, working);
+  const usedFrom = new Map<string, boolean>();
+  const used = (path: string) => {
+    let found = usedFrom.get(path);
+    if (found === undefined) {
+      found = graph
+        .relationsTo(graph.objectsAt(path).map((object) => object.id))
+        .some((relation) => graph.object(relation.from).anchor.path !== path);
+      usedFrom.set(path, found);
+    }
+    return found;
+  };
   return (path, existing) => {
     const added = [directoryOf(path), packageOf(path)] as const;
     const old = [directoryOf(existing), packageOf(existing)] as const;
     const ahead = use("NEW", added, old);
-    if (ahead.imported) return ahead;
+    if (files.has(`${path}\u0000${existing}`)) return ahead;
+    if (files.has(`${existing}\u0000${path}`))
+      return { ...use("EXISTING", old, added), from: existing, to: path };
+    const usable = used(existing);
+    if (usable && ahead.imported) return ahead;
     if (directories.get(old[0])?.has(added[0])) return use("EXISTING", old, added);
-    if (added[1] === old[1] || packages.get(added[1])?.has(old[1])) return ahead;
+    if (usable && (added[1] === old[1] || packages.get(added[1])?.has(old[1]))) return ahead;
     return packages.get(old[1])?.has(added[1]) ? use("EXISTING", old, added) : undefined;
   };
 }

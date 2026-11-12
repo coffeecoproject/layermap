@@ -1,6 +1,6 @@
 import type { CodeIndexStore } from "./code-index-store";
 import { mapCodePath } from "./project-map-language";
-import { type MapObject, mapTestPath } from "./project-map-types";
+import { MAP_MIGRATION_PATH, type MapObject, mapTestPath } from "./project-map-types";
 import { MapViewGraph, mapDeclarationLabel } from "./project-map-view-graph";
 
 // Agents write a helper the project already has more often than they look for it: they do not
@@ -154,7 +154,8 @@ export async function similarCode(
   files: readonly ChangedFile[],
   read: (path: string) => Promise<string | undefined>,
 ): Promise<MapSimilarCode[]> {
-  const code = (path: string) => mapCodePath(path) !== undefined && !mapTestPath(path);
+  const code = (path: string) =>
+    mapCodePath(path) && !mapTestPath(path) && !MAP_MIGRATION_PATH.test(path);
   const changed = files.filter((file) => file.status !== "DELETED" && code(file.path));
   if (!changed.length) return [];
   const names = (version: string, path: string) =>

@@ -325,4 +325,7 @@ export const mapTestPath = (path: string) =>
     path,
   );
 
+/** Database migrations and schemas: written once and kept as they ran, whatever they repeat. */
+export const MAP_MIGRATION_PATH = /(?:^|\/)migrations?\/|\.sql$/iu;
+
 export type ProjectMapSource = CodeIndexSource;

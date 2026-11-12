@@ -649,6 +649,8 @@ test("a short declaration counts as a copy only when it repeats one of its name 
     "src/d.ts": `${convention("logger")}export { logger };\n`,
     // Calls the new declaration of its name, in the same words: it uses it rather than repeats it.
     "src/linked.ts": 'import { go as helper } from "./new";\nexport const go = () => helper();\n',
+    // Code in files nothing uses is no code to use; this file uses the others.
+    "src/main.ts": `${["paths", "other", "a", "b", "c", "d"].map((name) => `import * as ${name} from "./${name}";\n`).join("")}export const all = [paths, other, a, b, c, d];\n`,
   });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
@@ -768,6 +770,16 @@ test("each copy names which copy could use the other and what that would import,
     [`${web}/i/base.ts`]: "export const base = 1;\n",
     [`${web}/k/link.ts`]: 'import { base } from "../i/base";\nexport const link = base;\n',
     [`${web}/j/item.ts`]: `import { link } from "../k/link";\nexport const item = link;\n${body("jItem", "juniper")}`,
+    [`${web}/z/main.ts`]: 'import { jItem } from "../j/item";\nexport const main = jItem;\n',
+    // n/old.ts imports n/lib.ts, to which the diff adds a copy of its code.
+    [`${web}/n/lib.ts`]: "export const lib = 1;\n",
+    [`${web}/n/old.ts`]: `import { lib } from "./lib";\nexport const old = lib;\n${body("nOld", "nut")}`,
+    // A script nothing uses, and a migration.
+    [`${web}/p/script.ts`]: body("pScript", "pear"),
+    [`${web}/migrations/001.ts`]: body("migrateOne", "plum"),
+    // A migration is left out even where code uses it, as a runner listing them does.
+    [`${web}/migrate.ts`]:
+      'import { migrateOne } from "./migrations/001";\nexport const run = [migrateOne];\n',
     "packages/shared/src/util.ts": body("sUtil", "shell"),
     // What four files already repeat is how the project writes it.
     ...Object.fromEntries(
@@ -789,6 +801,9 @@ test("each copy names which copy could use the other and what that would import,
   await write("packages/shared/src/m/mango.ts", body("sMango", "mango"));
   await write("packages/server/src/copy.ts", body("webOnly", "walnut"));
   await write(`${web}/f/step5.ts`, body("cherryStep", "cherry"));
+  await write(`${web}/n/lib.ts`, `export const lib = 1;\n${body("nLib", "nut")}`);
+  await write(`${web}/p/fresh.ts`, body("pFresh", "pear"));
+  await write(`${web}/migrations/002.ts`, body("migrateTwo", "plum"));
   const { text } = await map.checkChanges({}, signal());
   const line = (from: string, to: string) =>
     text.split("\n").find((item) => item.startsWith(`  ${from}`) && item.includes(` ~ ${to}`));
@@ -825,12 +840,24 @@ test("each copy names which copy could use the other and what that would import,
     line("packages/shared/src/m/mango.ts", `${web}/m/mango.ts`) ?? "",
     /\(the existing code using the new imports packages\/shared\/src\/m\/ from packages\/web\/src\/m\/ for the first time, in packages\/shared\/, which packages\/web\/ already imports\)$/u,
   );
-  // Packages that do not import each other, and the project's convention: not listed.
+  // One file already imports the other, in one directory: that one uses the code it imports.
+  assert.match(
+    line(`${web}/n/lib.ts`, `${web}/n/old.ts`) ?? "",
+    /\(the existing code can use the new with no new import: packages\/web\/src\/n\/old\.ts already imports packages\/web\/src\/n\/lib\.ts\)$/u,
+  );
+  // Packages that do not import each other, the project's convention, a file nothing uses and
+  // migrations: not listed.
   const section = text.slice(
     text.indexOf("EXISTING CODE LIKE THE NEW CODE"),
     text.indexOf("Where it needs no new import"),
   );
-  assert.doesNotMatch(section, /packages\/server\/|step5/u);
+  assert.match(section, /a\/near\.ts/u);
+  assert.doesNotMatch(section, /packages\/server\/|step5|p\/fresh|migrations\//u);
+  // Existing code outside the task is the user's to change.
+  assert.match(
+    text,
+    /Change existing code only where it is part of the task; tell the user of the rest/u,
+  );
 });
 
 test("a change names the code it left without callers, as when new code replaces old", async (t) => {

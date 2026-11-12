@@ -30,7 +30,13 @@ import {
   mapIsShape,
   mapShapeDeadline,
 } from "./project-map-shapes";
-import { type MapAnchor, type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
+import {
+  MAP_MIGRATION_PATH,
+  type MapAnchor,
+  type MapObject,
+  type MapRelation,
+  mapTestPath,
+} from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
 import { inExcludedDirectory } from "./source-scope";
@@ -271,7 +277,7 @@ const NON_CODE: readonly (readonly [RegExp, string])[] = [
     /(?:^|\/)(?:package\.json|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|pyproject\.toml|setup\.py|setup\.cfg|requirements[^/]*\.txt|Makefile|Dockerfile|tsconfig[^/]*\.json)$/u,
     "build or dependency file",
   ],
-  [/(?:^|\/)migrations?\/|\.sql$/iu, "database migration or schema"],
+  [MAP_MIGRATION_PATH, "database migration or schema"],
   [/(?:^|\/)\.env[^/]*$|\.(?:ya?ml|toml|ini|properties|conf|cfg)$/iu, "configuration"],
   [/\.(?:html?|jinja2?|j2|hbs|ejs|tmpl|tpl|gohtml|vue|svelte|wxml)$/iu, "template"],
 ];
@@ -2173,7 +2179,7 @@ export function mapChangesText(
       LIST.similar,
     );
     lines.push(
-      "Where it needs no new import, use the existing code rather than a copy, or, if the new code replaces it, remove the old; where the existing code is the one that can use the other, have it use the new code in place of its own; keep both only when they are meant to differ. Where either way imports another directory for the first time, whether that import runs the way the project's layers do is the project's call: if it does not, keep both, or, when the two must stay the same, move what both need where both may import it. Code that does the same in other words, and copies in packages neither of which imports the other's, are not listed.",
+      "Where it needs no new import, use the existing code rather than a copy, or, if the new code replaces it, remove the old; where the existing code is the one that can use the other, have it use the new code in place of its own. Where either way imports another directory for the first time, whether that import runs the way the project's layers do is the project's call: if it does not, keep both, or, when the two must stay the same, move what both need where both may import it. Keep both when they are meant to differ: code written alike for another feature, layer or table often is, so share only what must stay the same, once both are known to do the same thing. Change existing code only where it is part of the task; tell the user of the rest rather than change it. Code that does the same in other words, copies in packages neither of which imports the other's, copies in files no other file uses and copies in database migrations are not listed.",
     );
   }
   const entry = (item: MapChangeEntry) =>
