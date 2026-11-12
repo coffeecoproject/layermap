@@ -9,6 +9,7 @@ import {
   isPropertyAccessExpression,
   isPropertyAssignment,
   isSatisfiesExpression,
+  isShorthandPropertyAssignment,
   isStringLiteral,
   isTemplateExpression,
   isVariableDeclaration,
@@ -31,8 +32,12 @@ const MAX = 256;
 // Callees whose first argument is a path: routers registering routes, clients requesting them.
 const ROUTER = new Set(["route", "all"]);
 const CLIENT = new Set(["request", "fetch", "inject", "visit", "goto"]);
-// Object properties holding a path a request is sent to.
+// Object properties holding a path a request is sent to; all but path name nothing else.
 const REQUEST_PROPERTY = new Set(["url", "path", "uri", "endpoint"]);
+const URL_PROPERTY = new Set(["url", "uri", "endpoint"]);
+// Receivers whose get, post and the like send requests: request(app).get(path), client.post(path),
+// rather than look up a key, as map.get(key) does.
+const HTTP_RECEIVER = /request|agent|client|api|http|server|app|axios|fetch/iu;
 
 const unwrap = (node: Node): Node =>
   isParenthesizedExpression(node) || isAsExpression(node) || isSatisfiesExpression(node)
@@ -48,6 +53,16 @@ const computed = (node: Node) => {
     (isBinaryExpression(inner) && inner.operatorToken.kind === SyntaxKind.PlusToken)
   );
 };
+const httpReceiver = (callee: Node) => {
+  if (!isPropertyAccessExpression(callee)) return false;
+  const receiver = unwrap(callee.expression);
+  const name = isPropertyAccessExpression(receiver)
+    ? receiver.name.text
+    : isIdentifier(receiver)
+      ? receiver.text
+      : undefined;
+  return isCallExpression(receiver) || (name !== undefined && HTTP_RECEIVER.test(name));
+};
 const calleeName = (call: Node & { expression: Node }) =>
   isPropertyAccessExpression(call.expression)
     ? call.expression.name.text
@@ -59,7 +74,10 @@ const calleeName = (call: Node & { expression: Node }) =>
 export type MapFilePaths = Readonly<{
   /** Registration path arguments, by node: what the route is registered under. */
   registered: ReadonlyMap<Node, string>;
-  /** Paths tests request, by the expression giving them; unknown parts are MAP_PATH_PARAMETER. */
+  /**
+   * Paths tests request, by the expression giving them; unknown parts are MAP_PATH_PARAMETER, and
+   * a request whose path is not worked out at all, as path(id) gives it, is that alone.
+   */
   requested: ReadonlyMap<Node, string>;
 }>;
 
@@ -75,7 +93,9 @@ export class MapPathFolder {
     const registered = new Map<Node, string>();
     const requested = new Map<Node, string>();
     const registrations: Node[] = [];
-    const requests: Node[] = [];
+    // Expressions that may give a requested path, and whether they surely do: a request sent
+    // through a client, or to an object's url.
+    const requests: { node: Node; sure: boolean }[] = [];
     const visit = (node: Node) => {
       if (isCallExpression(node)) {
         const name = calleeName(node);
@@ -91,16 +111,25 @@ export class MapPathFolder {
             computed(first)
           )
             registrations.push(first);
-          if (test && (httpMethod(name) || CLIENT.has(name))) requests.push(first);
+          if (test && (httpMethod(name) || CLIENT.has(name)))
+            requests.push({
+              node: first,
+              sure:
+                !isObjectLiteralExpression(unwrap(first)) &&
+                (CLIENT.has(name) || httpReceiver(node.expression)),
+            });
         }
       } else if (
         test &&
-        isPropertyAssignment(node) &&
+        (isPropertyAssignment(node) || isShorthandPropertyAssignment(node)) &&
         isObjectLiteralExpression(node.parent) &&
         (isIdentifier(node.name) || isStringLiteral(node.name)) &&
         REQUEST_PROPERTY.has(node.name.text)
       )
-        requests.push(node.initializer);
+        requests.push({
+          node: isPropertyAssignment(node) ? node.initializer : node.name,
+          sure: URL_PROPERTY.has(node.name.text) && isCallExpression(node.parent.parent),
+        });
       node.forEachChild((child) => {
         visit(child);
       });
@@ -111,10 +140,13 @@ export class MapPathFolder {
       const value = await this.fold(node, false, 0);
       if (value !== undefined) registered.set(node, value);
     }
-    for (const node of requests) {
+    for (const { node, sure } of requests) {
       const value = await this.fold(node, true, 0);
       const path = value && requestPath(value);
       if (path) requested.set(node, path);
+      // A string that is no path is not a request; one the map cannot work out may be any.
+      else if (sure && (value === undefined || value.includes(MAP_PATH_PARAMETER)))
+        requested.set(node, MAP_PATH_PARAMETER);
     }
     return { registered, requested };
   }

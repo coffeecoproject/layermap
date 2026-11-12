@@ -116,13 +116,18 @@ export function startsTheApp() {
 `,
 };
 
-async function changed(file: string, from: string, to: string) {
-  const { root, write } = await project(FILES);
+async function changed(
+  file: string,
+  from: string,
+  to: string,
+  files: Record<string, string> = FILES,
+) {
+  const { root, write } = await project(files);
   await run("git", ["add", "-A"], { cwd: root });
   await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
     cwd: root,
   });
-  await write(file, (FILES as Record<string, string>)[file]?.replace(from, to) ?? "");
+  await write(file, files[file]?.replace(from, to) ?? "");
   return root;
 }
 
@@ -244,4 +249,53 @@ test("constants referring to each other through imports leave the path unknown",
   } finally {
     map.close();
   }
+});
+
+test("a test requesting a path the map cannot work out is kept for a route other tests request", async () => {
+  const data = await check(
+    await changed("src/service.ts", "return 1;", "return 10;", {
+      ...FILES,
+      // The path comes from a function: it may be any route of the app.
+      "test/item-path.test.ts": `import { buildApp } from "../src/build";
+import { ITEMS_PATH } from "../src/paths";
+
+const itemPath = (id: string) => ITEMS_PATH + "/" + id;
+
+export function readsAnItemByPath() {
+  return buildApp().inject({ method: "GET", url: itemPath("1") });
+}
+`,
+      // A shorthand url the map works out requests its route.
+      "test/shorthand.test.ts": `import { buildApp } from "../src/build";
+import { ITEMS_PATH } from "../src/paths";
+
+export function readsAnItemByShorthand() {
+  const url = \`${$}{ITEMS_PATH}/1\`;
+  return buildApp().inject({ method: "GET", url });
+}
+`,
+      // A lookup by a key is no request.
+      "test/cache.test.ts": `import { buildApp } from "../src/build";
+
+const cache = new Map<string, string>();
+
+export function readsTheCache(key: string) {
+  buildApp();
+  return cache.get(key);
+}
+`,
+    }),
+  );
+  const selected = tests(data);
+  assert.deepEqual(
+    Object.keys(selected).sort(),
+    ["test/item-path.test.ts", "test/items.test.ts", "test/shorthand.test.ts"],
+    JSON.stringify(data.tests),
+  );
+  assert.equal(
+    selected["test/item-path.test.ts"]?.why,
+    'may request "GET /api/v1/items/:itemId": the path a request of it is sent to is not worked out',
+  );
+  assert.deepEqual(selected["test/item-path.test.ts"]?.names, ["readsAnItemByPath"]);
+  assert.equal(selected["test/shorthand.test.ts"]?.why, 'requests "GET /api/v1/items/:itemId"');
 });

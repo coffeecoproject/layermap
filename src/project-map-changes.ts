@@ -25,6 +25,7 @@ import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-minipr
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { MAP_REFERENCES_MAX, type MapDiagnostic } from "./project-map-reference-types";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
+import { MAP_PATH_PARAMETER } from "./project-map-route-paths";
 import {
   type MapShapeReader,
   MapShapeUses,
@@ -1130,6 +1131,7 @@ export async function mapChangeImpact(
     if (!unrequested.length) break;
     await tracer.release(unrequested);
   }
+  await unworkedRequests(store, working, graph, memberCalls, tracer);
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
@@ -1830,6 +1832,45 @@ function wholePath(text: string, path: string): boolean {
   for (let at = text.indexOf(path); at >= 0; at = text.indexOf(path, at + 1))
     if (!/[\w./-]/u.test(text[at + path.length] ?? "")) return true;
   return false;
+}
+
+// Tests sending a request whose path the map cannot work out, as path(id) gives it, may request
+// a route other tests are found to request. Of the tests the code registering such a route
+// reaches, as the trace climbing on would find them, those are kept: the map not reading a
+// request selects more tests rather than fewer.
+async function unworkedRequests(
+  store: CodeIndexStore,
+  version: string,
+  graph: MapViewGraph,
+  memberCalls: ReturnType<MapViewCache["memberCalls"]>,
+  tracer: Tracer,
+) {
+  if (!tracer.held.size) return;
+  const unworked = new Map<string, Set<string | undefined>>();
+  for (const row of store.database
+    .prepare(
+      "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST' AND json_extract(note_json, '$.text') = ?",
+    )
+    .all(version, MAP_PATH_PARAMETER)) {
+    const note = JSON.parse(String(row.note_json)) as { anchor: { path: string } };
+    if (!testCode(note.anchor.path)) continue;
+    for (const [file, name] of requesters(graph, graph.owner(String(row.entity_ref))))
+      unworked.set(file, (unworked.get(file) ?? new Set()).add(name));
+  }
+  if (!unworked.size) return;
+  for (const [route, steps] of tracer.held) {
+    const above = new Tracer(graph, memberCalls, tracer.shapes);
+    await above.trace([...new Set(steps.map(({ caller }) => caller.ref))]);
+    supportTests(store, version, above);
+    for (const file of above.tests.keys())
+      for (const name of unworked.get(file) ?? [])
+        tracer.test(
+          file,
+          name,
+          `may request ${JSON.stringify(route)}: the path a request of it is sent to is not worked out`,
+          3,
+        );
+  }
 }
 
 // The runnable tests making a request in a declaration of test code: the test itself, or the tests
