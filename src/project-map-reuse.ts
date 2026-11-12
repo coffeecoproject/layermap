@@ -9,7 +9,8 @@ import { MapViewGraph, mapDeclarationLabel } from "./project-map-view-graph";
 // renamed or lightly edited still matches while code that only shares the project's common words
 // does not. Code that does the same with other words is not found; whether to reuse, replace or
 // keep both is the agent's call. A declaration too short for its words to tell it apart counts only
-// when it repeats one of the same name word for word.
+// when it repeats one of the same name word for word. Code that more existing copies repeat is how
+// the project writes such code, which a new copy follows.
 
 /** A declaration the diff adds whose code reads almost the same as an existing declaration's. */
 export type MapSimilarCode = Readonly<{
@@ -49,9 +50,9 @@ const MEMBER_CONTAINERS = new Set<MapObject["kind"]>(["CLASS", "INTERFACE", "TYP
 const KINDS = new Set<MapObject["kind"]>(["FUNCTION", "METHOD", "CLASS", "VARIABLE"]);
 // Shorter declarations are constants and one-line wrappers, alike by nature.
 const MIN_LINES = 3;
-// A short copy more files than this already hold is the project's convention: a logger, a
-// framework's export.
-const SHORT_COPIES = 3;
+// Code that more existing declarations than this repeat is the project's convention: a logger, a
+// framework's export, a migration's down step, a page's lifecycle.
+const CONVENTION = 3;
 const ALIKE = 0.8;
 // Members of one class or object follow one pattern on purpose; only a near copy counts there.
 const SIBLINGS_ALIKE = 0.95;
@@ -200,29 +201,34 @@ export async function similarCode(
   }
   const all: Code[] = [];
   const shortCopies = new Map<string, Declaration[]>();
-  await Promise.all(
-    [...byPath].map(async ([path, inFile]) => {
-      const found = declarations(inFile).filter(
-        (item) =>
-          KINDS.has(item.kind) && (long(item) ? longAdded : shortNames.has(item.qualifiedName)),
-      );
-      if (!found.length) return;
-      const text = await read(path);
-      if (text === undefined) return;
-      const lines = text.split("\n").map(lineWords);
-      for (const declaration of found) {
-        if (!long(declaration)) {
-          const key = `${declaration.qualifiedName}\u0000${copyText(text.slice(declaration.start, declaration.end))}`;
-          shortCopies.set(key, [...(shortCopies.get(key) ?? []), declaration]);
-          continue;
-        }
-        const words = new Map<string, number>();
-        for (const line of lines.slice(declaration.startLine - 1, declaration.endLine))
-          for (const word of line) words.set(word, (words.get(word) ?? 0) + 1);
-        all.push({ declaration, words });
-      }
-    }),
+  // The files are read at once but taken in path order: which of two equally alike copies is named
+  // must not depend on which read finished first, or on the order the index keeps its rows in.
+  const texts = await Promise.all(
+    [...byPath]
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(async ([path, inFile]) => {
+        const found = declarations(inFile).filter(
+          (item) =>
+            KINDS.has(item.kind) && (long(item) ? longAdded : shortNames.has(item.qualifiedName)),
+        );
+        return { found, text: found.length ? await read(path) : undefined };
+      }),
   );
+  for (const { found, text } of texts) {
+    if (text === undefined) continue;
+    const lines = text.split("\n").map(lineWords);
+    for (const declaration of found) {
+      if (!long(declaration)) {
+        const key = `${declaration.qualifiedName}\u0000${copyText(text.slice(declaration.start, declaration.end))}`;
+        shortCopies.set(key, [...(shortCopies.get(key) ?? []), declaration]);
+        continue;
+      }
+      const words = new Map<string, number>();
+      for (const line of lines.slice(declaration.startLine - 1, declaration.endLine))
+        for (const word of line) words.set(word, (words.get(word) ?? 0) + 1);
+      all.push({ declaration, words });
+    }
+  }
   const frequency = new Map<string, number>();
   for (const { words } of all)
     for (const word of words.keys()) frequency.set(word, (frequency.get(word) ?? 0) + 1);
@@ -297,7 +303,7 @@ export async function similarCode(
         return score >= (siblings ? SIBLINGS_ALIKE : ALIKE);
       })
       .sort(([, left], [, right]) => right - left);
-    if (!alike.length) continue;
+    if (!alike.length || alike.length > CONVENTION) continue;
     const linked = linkedTo(declaration);
     const unlinked = alike.filter(([other]) => !linked.has(other.declaration.id));
     const best = unlinked[0];
@@ -307,7 +313,7 @@ export async function similarCode(
     const existing = copies
       .filter((copy) => !added.has(copy.id))
       .sort((left, right) => (left.path < right.path ? -1 : 1));
-    if (!existing.length || existing.length > SHORT_COPIES) continue;
+    if (!existing.length || existing.length > CONVENTION) continue;
     for (const declaration of copies) {
       if (!added.has(declaration.id)) continue;
       const linked = linkedTo(declaration);

@@ -17,6 +17,7 @@ import { JavaMapAnalyzer } from "../src/project-map-language-java";
 import { PythonMapAnalyzer } from "../src/project-map-language-python";
 import { TypeScriptMapAnalyzer } from "../src/project-map-language-typescript";
 import type { MapReferenceBatch, MapUses, MapUsesInput } from "../src/project-map-reference-types";
+import { similarCode } from "../src/project-map-reuse";
 import { MapShapeUses, mapShapeDeadline } from "../src/project-map-shapes";
 import { analyzers, openMap, project, sandbox, signal } from "./support";
 
@@ -596,7 +597,7 @@ test("a change names the code it adds that reads almost the same as code the pro
     const at = text.indexOf("EXISTING CODE LIKE THE NEW CODE");
     return at < 0
       ? ""
-      : text.slice(at, text.indexOf("\n", text.indexOf("Use the existing code", at)));
+      : text.slice(at, text.indexOf("\n", text.indexOf("Where it needs no new import", at)));
   };
 
   // A copy under another name, in a new file; a test's copy is not the project's code.
@@ -605,7 +606,7 @@ test("a change names the code it adds that reads almost the same as code the pro
   const text = await similar();
   assert.match(
     text,
-    /^ {2}src\/checkout\/price\.ts: priceLabel f1-5 ~ src\/util\/money\.ts: formatMoney f1-5$/mu,
+    /^ {2}src\/checkout\/price\.ts: priceLabel f1-5 ~ src\/util\/money\.ts: formatMoney f1-5 \(using it imports src\/util\/ from src\/checkout\/ for the first time\)$/mu,
   );
   assert.doesNotMatch(text, /test\/helpers/u);
 
@@ -658,7 +659,7 @@ test("a short declaration counts as a copy only when it repeats one of its name 
     const at = text.indexOf("EXISTING CODE LIKE THE NEW CODE");
     return at < 0
       ? ""
-      : text.slice(at, text.indexOf("\n", text.indexOf("Use the existing code", at)));
+      : text.slice(at, text.indexOf("\n", text.indexOf("Where it needs no new import", at)));
   };
 
   // Exported or not, however it is spaced, the same code under the same name is a copy. The same
@@ -670,10 +671,13 @@ test("a short declaration counts as a copy only when it repeats one of its name 
   const text = await similar();
   assert.match(
     text,
-    /^ {2}src\/new\.ts: directoryOf v1 ~ src\/other\.ts: directoryOf v1 \(\+1 more alike\)$/mu,
+    /^ {2}src\/new\.ts: directoryOf v1 ~ src\/other\.ts: directoryOf v1 \(\+1 more alike; no new import\)$/mu,
   );
-  assert.match(text, /^ {2}src\/new\.ts: same f3 ~ src\/paths\.ts: same f3$/mu);
-  assert.match(text, /^ {2}src\/new\.ts: tracer v6 ~ src\/a\.ts: tracer v2 \(\+2 more alike\)$/mu);
+  assert.match(text, /^ {2}src\/new\.ts: same f3 ~ src\/paths\.ts: same f3 \(no new import\)$/mu);
+  assert.match(
+    text,
+    /^ {2}src\/new\.ts: tracer v6 ~ src\/a\.ts: tracer v2 \(\+2 more alike; no new import\)$/mu,
+  );
   assert.doesNotMatch(text, /LIMIT|parent|logger|\bgo\b/u);
 
   // Moved to another file, it adds nothing, though another copy is still there.
@@ -681,6 +685,152 @@ test("a short declaration counts as a copy only when it repeats one of its name 
   await write("src/paths.ts", "export const LIMIT = 10;\n");
   await write("src/moved.ts", `${directoryOf}export { directoryOf };\n`);
   assert.equal(await similar(), "");
+});
+
+test("of copies equally alike, the one named is the first by path, whichever file is read first", async (t) => {
+  const shape =
+    "export function shape(value: number) {\n  const total = value * 2;\n  const label = String(total);\n  return { total, label };\n}\n";
+  const { root } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/a.ts": shape,
+    "src/b.ts": shape,
+    "src/new.ts": shape,
+    // Words every declaration holds weigh nothing; other code gives these theirs.
+    "src/other.ts": [
+      "export function parse(text: string) {\n  const parts = text.split(',');\n  return parts.map(Number);\n}\n",
+      "export function greet(name: string) {\n  const greeting = 'hi ' + name;\n  return greeting.trim();\n}\n",
+    ].join(""),
+  });
+  const store = new CodeIndexStore(
+    openMapDatabase(
+      mapDatabasePath(await sandbox(), root),
+    ) as unknown as CodeIndexStore["database"],
+  );
+  const { typescript } = await analyzers();
+  const index = new CodeIndex(
+    store,
+    undefined,
+    new ProjectMapAnalyzer([new TypeScriptMapAnalyzer(typescript)]),
+  );
+  t.after(async () => {
+    await index.quiesce();
+    index.close();
+    store.database.close();
+  });
+  const directory = await realpath(root);
+  const stat = await lstat(directory, { bigint: true });
+  const { version } = await index.prepare(
+    {
+      kind: "WORKTREE",
+      projectRef: "host:project",
+      directory: { canonicalPath: directory, device: String(stat.dev), inode: String(stat.ino) },
+    },
+    signal(),
+  );
+  await index.ensureIndex(version, signal());
+
+  // The first file by path is read last.
+  const read = async (file: string) => {
+    if (file === "src/a.ts") await new Promise((resolve) => setTimeout(resolve, 50));
+    return readFile(path.join(directory, file), "utf8");
+  };
+  const found = await similarCode(
+    store,
+    version,
+    undefined,
+    [{ path: "src/new.ts", status: "ADDED", lines: [[1, 5]] }],
+    read,
+  );
+  assert.deepEqual(
+    found.map(({ name, like, others }) => [name, like.path, others]),
+    [["shape", "src/a.ts", 1]],
+  );
+});
+
+test("each copy names which copy could use the other and what that would import, and copies in packages that do not import each other are not listed", async (t) => {
+  // Each family's words are its own, so a copy matches the declaration of its family alone.
+  const body = (name: string, word: string) =>
+    `export function ${name}(input: string) {\n  const ${word}Alpha = input.trim();\n  const ${word}Beta = ${word}Alpha.split(",");\n  return ${word}Beta.map((${word}Gamma) => ${word}Gamma.toUpperCase()).join("|");\n}\n`;
+  const web = "packages/web/src";
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["packages"] }),
+    "packages/web/package.json": JSON.stringify({ name: "web", private: true }),
+    "packages/shared/package.json": JSON.stringify({ name: "shared", private: true }),
+    "packages/server/package.json": JSON.stringify({ name: "server", private: true }),
+    [`${web}/a/money.ts`]: body("aMoney", "apple"),
+    [`${web}/b/thing.ts`]: `import { aMoney } from "../a/money";\nexport const useMoney = aMoney;\n${body("bThing", "banana")}`,
+    [`${web}/c/view.ts`]: 'import { dFmt } from "../d/fmt";\nexport const view = dFmt;\n',
+    [`${web}/d/fmt.ts`]: `${body("dFmt", "date")}${body("dOther", "dune")}`,
+    [`${web}/e/only.ts`]: body("webOnly", "walnut"),
+    [`${web}/app.ts`]: `import { sUtil } from "../../shared/src/util";\nexport const app = sUtil;\n${body("appKiwi", "kiwi")}`,
+    [`${web}/m/mango.ts`]: body("mMango", "mango"),
+    // i/ reaches j/ only through k/.
+    [`${web}/i/base.ts`]: "export const base = 1;\n",
+    [`${web}/k/link.ts`]: 'import { base } from "../i/base";\nexport const link = base;\n',
+    [`${web}/j/item.ts`]: `import { link } from "../k/link";\nexport const item = link;\n${body("jItem", "juniper")}`,
+    "packages/shared/src/util.ts": body("sUtil", "shell"),
+    // What four files already repeat is how the project writes it.
+    ...Object.fromEntries(
+      [1, 2, 3, 4].map((n) => [`${web}/f/step${n}.ts`, body("cherryStep", "cherry")]),
+    ),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  await write(`${web}/a/near.ts`, body("aNear", "apple"));
+  await write(`${web}/a/back.ts`, body("aBack", "banana"));
+  await write(`${web}/c/fresh.ts`, body("cFresh", "dune"));
+  await write(`${web}/h/plain.ts`, body("hPlain", "date"));
+  await write(`${web}/g/shared.ts`, body("gShell", "shell"));
+  await write(`${web}/i/copy.ts`, body("iCopy", "juniper"));
+  await write("packages/shared/src/kiwi.ts", body("sKiwi", "kiwi"));
+  await write("packages/shared/src/m/mango.ts", body("sMango", "mango"));
+  await write("packages/server/src/copy.ts", body("webOnly", "walnut"));
+  await write(`${web}/f/step5.ts`, body("cherryStep", "cherry"));
+  const { text } = await map.checkChanges({}, signal());
+  const line = (from: string, to: string) =>
+    text.split("\n").find((item) => item.startsWith(`  ${from}`) && item.includes(` ~ ${to}`));
+  // The same directory, or one this directory already imports: nothing new to import.
+  assert.match(line(`${web}/a/near.ts`, `${web}/a/money.ts`) ?? "", /\(no new import\)$/u);
+  assert.match(line(`${web}/c/fresh.ts`, `${web}/d/fmt.ts`) ?? "", /\(no new import\)$/u);
+  // The existing code's directory already imports the new code's: the existing code can use it.
+  assert.match(
+    line(`${web}/a/back.ts`, `${web}/b/thing.ts`) ?? "",
+    /\(the existing code can use the new with no new import: packages\/web\/src\/b\/ already imports packages\/web\/src\/a\/\)$/u,
+  );
+  // Another directory of the package: a first import, which closes a cycle where that one
+  // already reaches this one through others.
+  assert.match(
+    line(`${web}/h/plain.ts`, `${web}/d/fmt.ts`) ?? "",
+    /\(using it imports packages\/web\/src\/d\/ from packages\/web\/src\/h\/ for the first time\)$/u,
+  );
+  assert.match(
+    line(`${web}/i/copy.ts`, `${web}/j/item.ts`) ?? "",
+    /\(using it imports packages\/web\/src\/j\/ from packages\/web\/src\/i\/ for the first time; packages\/web\/src\/j\/ already reaches packages\/web\/src\/i\/, so the import closes a cycle\)$/u,
+  );
+  // Another package, which this one already imports.
+  assert.match(
+    line(`${web}/g/shared.ts`, "packages/shared/src/util.ts") ?? "",
+    /\(using it imports packages\/shared\/src\/ from packages\/web\/src\/g\/ for the first time, in packages\/shared\/, which packages\/web\/ already imports\)$/u,
+  );
+  // New code in a package the existing code's imports: the existing code can use it, through an
+  // import its directory has or one its package's imports allow.
+  assert.match(
+    line("packages/shared/src/kiwi.ts", `${web}/app.ts`) ?? "",
+    /\(the existing code can use the new with no new import: packages\/web\/src\/ already imports packages\/shared\/src\/\)$/u,
+  );
+  assert.match(
+    line("packages/shared/src/m/mango.ts", `${web}/m/mango.ts`) ?? "",
+    /\(the existing code using the new imports packages\/shared\/src\/m\/ from packages\/web\/src\/m\/ for the first time, in packages\/shared\/, which packages\/web\/ already imports\)$/u,
+  );
+  // Packages that do not import each other, and the project's convention: not listed.
+  const section = text.slice(
+    text.indexOf("EXISTING CODE LIKE THE NEW CODE"),
+    text.indexOf("Where it needs no new import"),
+  );
+  assert.doesNotMatch(section, /packages\/server\/|step5/u);
 });
 
 test("a change names the code it left without callers, as when new code replaces old", async (t) => {

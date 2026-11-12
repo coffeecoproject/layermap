@@ -12,7 +12,12 @@ import {
   routeClientsLine,
   routeRegistrations,
 } from "./project-map-clients";
-import { type MapModuleDependency, newModuleDependencies } from "./project-map-dependencies";
+import {
+  type MapModuleDependency,
+  type MapReuseImport,
+  mapReuseImports,
+  newModuleDependencies,
+} from "./project-map-dependencies";
 import { mapPackageOf } from "./project-map-installed";
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
@@ -1832,12 +1837,34 @@ export async function checkMapChanges(
       changes,
       impact,
       await mapRouteClients(project, index.store, working, impact, signal),
-      await similarCode(index.store, working, base, changes.files, (file) =>
-        readFile(path.join(project, file), "utf8").catch(() => undefined),
+      reusable(
+        index.store,
+        working,
+        await similarCode(index.store, working, base, changes.files, (file) =>
+          readFile(path.join(project, file), "utf8").catch(() => undefined),
+        ),
       ),
       changes.files.length ? await compileBreaks(input, changes, base, until, signal) : undefined,
     ),
   };
+}
+
+/** Code the diff adds that reads like existing code, with what using that code would import. */
+export type MapReusableCode = MapSimilarCode & Readonly<{ imports: MapReuseImport }>;
+
+// Existing code like the new code, and what one copy would import to use the other; copies in
+// packages neither of which imports the other's cannot share code, so they are no reuse missed.
+function reusable(
+  store: CodeIndexStore,
+  working: string,
+  similar: readonly MapSimilarCode[],
+): MapReusableCode[] {
+  if (!similar.length) return [];
+  const importsFor = mapReuseImports(store, new MapViewCache(), working);
+  return similar.flatMap((item) => {
+    const imports = importsFor(item.path, item.like.path);
+    return imports ? [{ ...item, imports }] : [];
+  });
 }
 
 /**
@@ -1982,7 +2009,7 @@ export function mapChangesText(
   changes: MapChanges,
   impact: MapChangeImpact,
   clients: readonly MapRouteClients[] = [],
-  similar: readonly MapSimilarCode[] = [],
+  similar: readonly MapReusableCode[] = [],
   compile: MapCompileBreaks = { errors: [], missing: [], unchecked: [] },
 ): string {
   const files = changes.files.length;
@@ -2112,8 +2139,17 @@ export function mapChangesText(
   if (similar.length) {
     const declaration = (item: { path: string; name: string; label: string }) =>
       `${item.path}: ${item.name} ${item.label}`;
+    // Which copy would use the other and what that would import, which decides whether to.
+    const reach = ({ user, from, to, imported, cycle, packages }: MapReuseImport) => {
+      const using = user === "NEW" ? "using it" : "the existing code using the new";
+      if (imported)
+        return user === "NEW"
+          ? "no new import"
+          : `the existing code can use the new with no new import: ${from} already imports ${to}`;
+      return `${using} imports ${to} from ${from} for the first time${packages ? `, in ${packages[1]}, which ${packages[0]} already imports` : ""}${cycle ? `; ${to} already reaches ${from}, so the import closes a cycle` : ""}`;
+    };
     // A file that repeats much of another reads best as one line.
-    const pairs = new Map<string, MapSimilarCode[]>();
+    const pairs = new Map<string, MapReusableCode[]>();
     for (const item of similar) {
       const key = `${item.path}\u0000${item.like.path}`;
       pairs.set(key, [...(pairs.get(key) ?? []), item]);
@@ -2121,23 +2157,23 @@ export function mapChangesText(
     list(
       "EXISTING CODE LIKE THE NEW CODE (declarations the diff adds whose code reads almost the same as code the project already has)",
       [...pairs.values()].flatMap((items) => {
-        const [first] = items as [MapSimilarCode];
+        const [first] = items as [MapReusableCode];
         if (items.length < 3)
           return items.map(
             (item) =>
-              `${declaration(item)} ~ ${declaration(item.like)}${item.others ? ` (+${item.others} more alike)` : ""}`,
+              `${declaration(item)} ~ ${declaration(item.like)} (${item.others ? `+${item.others} more alike; ` : ""}${reach(item.imports)})`,
           );
         const names = items
           .slice(0, LIST.similarNames)
           .map((item) => `${item.name} ~ ${item.like.name}`);
         return [
-          `${first.path} repeats ${first.like.path} in ${items.length} declarations: ${names.join(", ")}${items.length > LIST.similarNames ? ", …" : ""}`,
+          `${first.path} repeats ${first.like.path} in ${items.length} declarations: ${names.join(", ")}${items.length > LIST.similarNames ? ", …" : ""} (${reach(first.imports)})`,
         ];
       }),
       LIST.similar,
     );
     lines.push(
-      "Use the existing code rather than a copy, or, if the new code replaces it, remove the old; keep both only when they are meant to differ. Code that does the same in other words is not found.",
+      "Where it needs no new import, use the existing code rather than a copy, or, if the new code replaces it, remove the old; where the existing code is the one that can use the other, have it use the new code in place of its own; keep both only when they are meant to differ. Where either way imports another directory for the first time, whether that import runs the way the project's layers do is the project's call: if it does not, keep both, or, when the two must stay the same, move what both need where both may import it. Code that does the same in other words, and copies in packages neither of which imports the other's, are not listed.",
     );
   }
   const entry = (item: MapChangeEntry) =>

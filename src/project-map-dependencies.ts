@@ -1,6 +1,6 @@
 import type { CodeIndexStore } from "./code-index-store";
 import { mapCodePath } from "./project-map-language";
-import type { MapRelation } from "./project-map-types";
+import { type MapRelation, mapTestPath } from "./project-map-types";
 import { type MapViewCache, mapProjectModules } from "./project-map-view";
 import { MapViewGraph } from "./project-map-view-graph";
 
@@ -135,4 +135,92 @@ export function newModuleDependencies(
       (left.from < right.from ? -1 : left.from > right.from ? 1 : 0) ||
       (left.to < right.to ? -1 : left.to > right.to ? 1 : 0),
   );
+}
+
+// A package is a directory with a manifest of its own; a file belongs to the innermost one.
+const MANIFEST =
+  /(?:^|\/)(?:package\.json|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|pyproject\.toml|setup\.py|setup\.cfg)$/u;
+const directoryOf = (path: string) => path.slice(0, Math.max(path.lastIndexOf("/"), 0));
+const directoryLabel = (directory: string) => (directory ? `${directory}/` : "./");
+
+/**
+ * What one copy would import to use the other. The new code uses the existing code with nothing
+ * more when its directory already imports the other's (or they share one). Failing that, the
+ * existing code uses the new code when its directory already imports the new one's, or when only
+ * its package may import the new code's. Otherwise the new code uses the existing code through an
+ * import between two directories of one package, which may close a cycle, or into another package
+ * its own already imports.
+ */
+export type MapReuseImport = Readonly<{
+  /** Which copy would use the other. */
+  user: "NEW" | "EXISTING";
+  /** The user's directory and the directory of the code it would use. */
+  from: string;
+  to: string;
+  imported: boolean;
+  /** When the import would be new: the other directory already reaches this one. */
+  cycle: boolean;
+  /** When the copies are in two packages: the user's package and the other. */
+  packages?: readonly [string, string];
+}>;
+
+/**
+ * Reads the imports of the working tree once, and answers for a new declaration's file and the
+ * file of existing code like it. Packages neither of which imports the other cannot share code
+ * without a dependency the project never had, as a web app and its server: that is no answer.
+ */
+export function mapReuseImports(
+  store: CodeIndexStore,
+  cache: MapViewCache,
+  working: string,
+): (path: string, existing: string) => MapReuseImport | undefined {
+  const roots = store
+    .listEntries(working)
+    .filter((entry) => MANIFEST.test(entry.path))
+    .map((entry) => directoryOf(entry.path))
+    .sort((left, right) => right.length - left.length);
+  const packageOf = (path: string) =>
+    roots.find((root) => !root || path.startsWith(`${root}/`)) ?? "";
+  const directories: Edges = new Map();
+  const packages = new Map<string, Set<string>>();
+  for (const { source, target } of cache.imports(store, working)) {
+    if (target === null || mapTestPath(source)) continue;
+    const from = directoryOf(source);
+    const to = directoryOf(target);
+    if (from !== to) {
+      const targets = directories.get(from) ?? new Map<string, string[]>();
+      targets.set(to, []);
+      directories.set(from, targets);
+    }
+    const fromPackage = packageOf(source);
+    const toPackage = packageOf(target);
+    if (fromPackage !== toPackage)
+      packages.set(fromPackage, (packages.get(fromPackage) ?? new Set()).add(toPackage));
+  }
+  const use = (
+    user: MapReuseImport["user"],
+    [from, fromPackage]: readonly [string, string],
+    [to, toPackage]: readonly [string, string],
+  ): MapReuseImport => {
+    const imported = from === to || directories.get(from)?.has(to) === true;
+    return {
+      user,
+      from: directoryLabel(from),
+      to: directoryLabel(to),
+      imported,
+      cycle: !imported && pathBetween(directories, to, from) !== undefined,
+      ...(fromPackage === toPackage
+        ? {}
+        : { packages: [directoryLabel(fromPackage), directoryLabel(toPackage)] as const }),
+    };
+  };
+  return (path, existing) => {
+    const added = [directoryOf(path), packageOf(path)] as const;
+    const old = [directoryOf(existing), packageOf(existing)] as const;
+    const ahead = use("NEW", added, old);
+    if (ahead.imported) return ahead;
+    if (directories.get(old[0])?.has(added[0])) return use("EXISTING", old, added);
+    if (added[1] === old[1] || packages.get(added[1])?.has(old[1])) return ahead;
+    return packages.get(old[1])?.has(added[1]) ? use("EXISTING", old, added) : undefined;
+  };
 }
