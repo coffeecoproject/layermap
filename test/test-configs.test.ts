@@ -1,0 +1,79 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { test } from "node:test";
+import { promisify } from "node:util";
+import { openMap, project, signal } from "./support";
+
+const run = promisify(execFile);
+
+// The application's tsconfig leaves its tests out, as one that builds for release does; a second
+// one beside it, which the test runner and the type check of the tests use, takes them in. The
+// package is an ES module, so the relative imports without an extension resolve only under the
+// project's own module settings.
+const FILES = {
+  "package.json": JSON.stringify({ name: "app", type: "module" }),
+  "tsconfig.json": JSON.stringify({
+    compilerOptions: { strict: true, module: "ESNext", moduleResolution: "Bundler" },
+    include: ["src/**/*.ts"],
+    exclude: ["src/**/*.test.ts", "tests/**/*.ts"],
+  }),
+  "tsconfig.test.json": JSON.stringify({
+    extends: "./tsconfig.json",
+    include: ["src/**/*.ts", "tests/**/*.ts"],
+    exclude: [],
+  }),
+  "src/target.ts": "export function target(value: number): number {\n  return value * 2;\n}\n",
+  "src/target.test.ts":
+    'import { target } from "./target";\n\nexport function beside() {\n  return target(1);\n}\n',
+  "tests/target.test.ts":
+    'import { target } from "../src/target";\n\nexport function apart() {\n  return target(2);\n}\n',
+};
+
+test("tests that only another tsconfig of the project holds are read under that one", async (t) => {
+  const { root } = await project(FILES);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const { text } = await map.explore(
+    { path: "src/target.ts", name: "target", direction: "INCOMING", depth: 1, includeTests: true },
+    signal(),
+  );
+  assert.match(text, /← called by src\/target\.test\.ts: beside f3-5 @4$/mu);
+  assert.match(text, /← called by tests\/target\.test\.ts: apart f3-5 @4$/mu);
+  for (const path of ["src/target.test.ts", "tests/target.test.ts"])
+    assert.doesNotMatch((await map.explore({ path }, signal())).text, /UNRESOLVED IMPORTS/u);
+});
+
+test("a base tsconfig that every package extends does not take in the files outside them", async (t) => {
+  const INFERRED = /files outside a tsconfig use inferred settings/u;
+  const { root } = await project({
+    // No include: the compiler takes in every file below it, those of each package among them.
+    "tsconfig.base.json": JSON.stringify({
+      compilerOptions: { strict: true, module: "ESNext", moduleResolution: "Bundler" },
+    }),
+    "packages/a/package.json": JSON.stringify({ name: "a", type: "module" }),
+    "packages/a/tsconfig.json": JSON.stringify({
+      extends: "../../tsconfig.base.json",
+      include: ["src"],
+    }),
+    "packages/a/src/target.ts": FILES["src/target.ts"],
+    "scripts/tool.ts": "export const tool = 1;\n",
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  // The script stays under inferred settings rather than open a program of the whole project.
+  assert.match((await map.explore({ path: "." }, signal())).text, INFERRED);
+});
+
+test("a change check finds the tests another tsconfig holds by their calls", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/target.ts", FILES["src/target.ts"].replace("* 2", "* 3"));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /^ {2}src\/target\.test\.ts: beside \(calls target\)$/mu);
+  assert.match(text, /^ {2}tests\/target\.test\.ts: apart \(calls target\)$/mu);
+});

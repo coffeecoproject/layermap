@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { API, Project } from "typescript/unstable/async";
+import type { API, Project, Snapshot } from "typescript/unstable/async";
 import type { MapConfigurationResult, MapWorkspacePlan } from "./project-map-configuration-types";
 import { type MapVirtualFiles, mapRelativePath, mapVirtualPath } from "./project-map-virtual-files";
 import { mapWorkspaceMembership } from "./project-map-workspace-membership";
@@ -76,10 +76,17 @@ export async function discoverMapConfiguration(
   // Package-based configuration inheritance must resolve on the first compiler parse.
   applyMapWorkspaceLinks(files, workspaceLinks);
   const outputs = new Map<string, { source: string; configPath: string }[]>();
+  // The files each configuration takes in, as the tsconfig.test.json beside a tsconfig.json that
+  // leaves the tests out does.
+  const members = new Map<string, Set<string>>();
   for (const configPath of Object.keys(files.input.files)
     .filter((file) => configuration.test(file))
     .sort()) {
     const parsed = await api.parseConfigFile(mapVirtualPath(configPath));
+    members.set(
+      configPath,
+      new Set(parsed.fileNames.flatMap((source) => mapRelativePath(source) ?? [])),
+    );
     const { rootDir, outDir, outFile, noEmit, declarationDir } = parsed.options;
     if (typeof rootDir !== "string" || typeof outDir !== "string" || outFile || noEmit) continue;
     for (const source of parsed.fileNames) {
@@ -142,6 +149,7 @@ export async function discoverMapConfiguration(
   applyMapWorkspaceContents(files, workspace);
   const openFiles = files.input.inventory.filter((file) => /\.[cm]?[jt]sx?$/u.test(file));
   const snapshot = await api.updateSnapshot({ openFiles: openFiles.map(mapVirtualPath) });
+  let opened: Snapshot | undefined;
   try {
     // Let the compiler choose the containing/default project, not every base/build tsconfig.
     const selected = new Map<
@@ -169,6 +177,29 @@ export async function discoverMapConfiguration(
         entry.rootFiles.push(file);
       }
     }
+    // The compiler gives a file the tsconfig.json above it that takes it in, and otherwise infers
+    // a project under options of its own. A file another configuration of the project takes in, as
+    // a tsconfig.test.json takes in the tests, is read under that one, with its module settings.
+    const inferred = selected.get("INFERRED");
+    const candidates = inferred ? holders(members, selected) : new Map();
+    const held = new Map<string, string[]>();
+    for (const file of inferred?.rootFiles ?? []) {
+      const configPath = holder(candidates, file);
+      if (configPath) held.set(configPath, [...(held.get(configPath) ?? []), file]);
+    }
+    if (held.size && inferred) {
+      opened = await api.updateSnapshot({ openProjects: [...held.keys()].map(mapVirtualPath) });
+      for (const [configPath, rootFiles] of held) {
+        const project = opened.getProject(mapVirtualPath(configPath));
+        if (!project) continue;
+        const entry = selected.get(configPath);
+        if (entry) entry.rootFiles.push(...rootFiles);
+        else selected.set(configPath, { configPath, rootFiles, project });
+        const moved = new Set(rootFiles);
+        inferred.rootFiles = inferred.rootFiles.filter((file) => !moved.has(file));
+      }
+      if (!inferred.rootFiles.length) selected.delete("INFERRED");
+    }
     const projects: MapConfigurationResult["projects"] = [];
     for (const { project, ...entry } of selected.values()) {
       const inputFiles = (await project.program.getSourceFileNames()).flatMap((file) => {
@@ -179,8 +210,57 @@ export async function discoverMapConfiguration(
     }
     return { projects, workspace };
   } finally {
+    await opened?.dispose();
     await snapshot.dispose();
   }
+}
+
+const directoryOf = (file: string) => {
+  const directory = path.posix.dirname(file);
+  return directory === "." ? "" : directory;
+};
+const within = (directory: string, file: string) => !directory || inside(directory, file);
+
+// The configurations that may hold a file no tsconfig.json takes in. One that also takes in files a
+// tsconfig.json in a deeper directory governs spans other projects, as a base every package
+// extends or a configuration for a linter does, so it is not one written for such a file.
+function holders(
+  members: ReadonlyMap<string, ReadonlySet<string>>,
+  selected: ReadonlyMap<string, { rootFiles: readonly string[] }>,
+) {
+  const governing = new Set<string>();
+  for (const key of selected.keys()) if (key !== "INFERRED") governing.add(directoryOf(key));
+  const governed = new Map<string, string>();
+  for (const [key, entry] of selected)
+    if (key !== "INFERRED") for (const file of entry.rootFiles) governed.set(file, key);
+  const candidates = new Map<string, ReadonlySet<string>>();
+  for (const [configPath, sources] of members) {
+    const directory = directoryOf(configPath);
+    const deeper = [...governing].filter((own) => own !== directory && within(directory, own));
+    if (!deeper.length) {
+      candidates.set(configPath, sources);
+      continue;
+    }
+    const spans = [...sources].some((source) => {
+      const owner = governed.get(source);
+      return owner !== undefined && deeper.includes(directoryOf(owner));
+    });
+    if (!spans) candidates.set(configPath, sources);
+  }
+  return candidates;
+}
+
+// The configuration taking in a file that is nearest to it: the one in the deepest directory that
+// holds the file, then the first by path.
+function holder(candidates: ReadonlyMap<string, ReadonlySet<string>>, file: string) {
+  let best: { configPath: string; depth: number } | undefined;
+  for (const [configPath, sources] of candidates) {
+    if (!sources.has(file)) continue;
+    const directory = directoryOf(configPath);
+    const depth = !directory ? 0 : inside(directory, file) ? directory.split("/").length : -1;
+    if (!best || depth > best.depth) best = { configPath, depth };
+  }
+  return best?.configPath;
 }
 
 export function applyMapWorkspace(files: MapVirtualFiles, workspace: MapWorkspacePlan): void {
