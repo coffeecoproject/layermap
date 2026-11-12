@@ -13,7 +13,6 @@ process.once(
   (message: {
     compilerPath: string;
     operation: string;
-    modFile?: string;
     files: Record<string, string>;
     targets?: { path: string; offset: number }[];
   }) => {
@@ -54,7 +53,6 @@ process.once(
     helper.stdin.end(
       JSON.stringify({
         operation: message.operation,
-        modFile: message.modFile ?? "",
         files: message.files,
         ...(message.targets ? { targets: message.targets } : {}),
       }),

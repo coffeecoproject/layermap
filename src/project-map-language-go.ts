@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { posix } from "node:path";
 import type { ZodType } from "zod";
 import { ProjectEvidenceError } from "./core";
 import { digestValue } from "./digest";
@@ -26,12 +27,13 @@ import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-refer
 import type { MapAnalysis, MapWorkerInput } from "./project-map-types";
 
 const goModule = /(?:^|\/)go\.mod$/u;
+const goWork = /(?:^|\/)go\.work$/u;
 const codeHosts = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
 
 export const GO_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "go-1.24-map-v9",
+  id: "go-1.24-map-v10",
   claims: (path: string) => path.endsWith(".go"),
-  reads: (path: string) => goModule.test(path),
+  reads: (path: string) => goModule.test(path) || goWork.test(path),
   // A module path, or the standard library, whose first path element has no dot.
   importName: (specifier: string) => {
     const parts = specifier.split("/");
@@ -57,23 +59,101 @@ const GO_GAPS = [
 
 type GoInput = Omit<MapWorkerInput, "compilerPath">;
 
-/** The Go program's facts as map units. */
-export const goMapAnalysis = (facts: MapFacts, input: GoInput, modFile?: string): MapAnalysis =>
+/** The Go program's facts as map units; configurations are the go.mod and go.work files read. */
+export const goMapAnalysis = (
+  facts: MapFacts,
+  input: GoInput,
+  configurations: readonly string[],
+): MapAnalysis =>
   mapFactsAnalysis(facts, input, {
     language: "go",
     offsets: "UTF8_BYTES",
-    ...(modFile ? { configPath: modFile } : {}),
+    ...(input.configPath ? { configPath: input.configPath } : {}),
+    configurationFiles: configurations,
     optionsDigest: digestValue({ goos: "linux", goarch: "amd64", cgo: false }),
-    gaps: [...(modFile ? [] : [{ code: "NO_GO_MODULE" }]), ...GO_GAPS.map((code) => ({ code }))],
+    gaps: [
+      ...(input.configPath ? [] : [{ code: "NO_GO_MODULE" }]),
+      ...GO_GAPS.map((code) => ({ code })),
+    ],
     typeIssues: "GO_TYPE_CHECK_ISSUES",
     contract:
       "Declares a Go interface. This does not establish runtime enforcement or business authority.",
   });
 
 /**
+ * The directories ("." at the root), inside the project, of the modules a go.mod's replace
+ * directives or a go.work's use directives name: modules the go command builds from that source.
+ */
+export const goLocalModules = (path: string, text: string): string[] => {
+  const directive = goWork.test(path) ? "use" : "replace";
+  const found: string[] = [];
+  let block = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\/\/.*$/u, "").trim();
+    let entry: string | undefined;
+    if (block) {
+      if (line === ")") block = false;
+      else entry = line;
+    } else if (line === `${directive} (`) block = true;
+    else if (line.startsWith(`${directive} `)) entry = line.slice(directive.length + 1);
+    // replace module [version] => directory; use directory
+    const target = directive === "use" ? entry : entry?.split("=>")[1];
+    const directory = target
+      ?.trim()
+      .split(/\s+/u)[0]
+      ?.replace(/^(["`])(.*)\1$/u, "$2");
+    if (!directory || !/^\.\.?(?:\/|$)/u.test(directory)) continue;
+    const joined = posix.normalize(posix.join(posix.dirname(path), directory)).replace(/\/$/u, "");
+    if (joined !== ".." && !joined.startsWith("../")) found.push(joined);
+  }
+  return found;
+};
+
+export type GoModuleGroup = Readonly<{ configPath: string; modules: readonly string[] }>;
+
+/**
+ * The group of Go modules each go.mod is built with: modules a replace directive or a go.work
+ * joins, which share one map context so calls between them resolve. A group is named by its
+ * go.work, or else by its first go.mod.
+ */
+export const goModuleGroups = (
+  files: readonly string[],
+  text: (path: string) => string,
+): Map<string, GoModuleGroup> => {
+  const modules = files.filter((path) => goModule.test(path)).sort();
+  const moduleAt = new Map(modules.map((path) => [posix.dirname(path), path]));
+  const parent = new Map(modules.map((path) => [path, path]));
+  const root = (path: string): string => {
+    const up = parent.get(path) ?? path;
+    return up === path ? path : root(up);
+  };
+  const works: [string, string][] = [];
+  for (const path of [...files].filter((file) => goModule.test(file) || goWork.test(file)).sort()) {
+    const linked = goLocalModules(path, text(path)).flatMap((dir) => moduleAt.get(dir) ?? []);
+    const first = goWork.test(path) ? linked[0] : path;
+    if (!first) continue;
+    if (goWork.test(path)) works.push([path, first]);
+    for (const module of linked) {
+      const [low = first, high = module] = [root(first), root(module)].sort();
+      if (low !== high) parent.set(high, low);
+    }
+  }
+  const members = new Map<string, string[]>();
+  for (const path of modules) members.set(root(path), [...(members.get(root(path)) ?? []), path]);
+  const named = new Map(works.reverse().map(([work, module]) => [root(module), work]));
+  return new Map(
+    modules.map((path) => [
+      path,
+      { configPath: named.get(root(path)) ?? root(path), modules: members.get(root(path)) ?? [] },
+    ]),
+  );
+};
+
+/**
  * Go through the native go-map program: its parser and type checker, with the standard library
- * and other modules left unloaded. One map context per module (go.mod); files outside any module
- * share an inferred context.
+ * and other modules left unloaded. One map context per group of modules built together (go.mod
+ * files joined by replace directives or a go.work); files outside any module share an inferred
+ * context.
  */
 export class GoMapAnalyzer implements MapLanguageAnalyzer {
   readonly id = GO_MAP_LANGUAGE.id;
@@ -85,7 +165,7 @@ export class GoMapAnalyzer implements MapLanguageAnalyzer {
   constructor(private readonly resources: MapParserResources = installedGoMapResources()) {}
 
   private async operation<T>(
-    input: GoInput & { operation: string; modFile: string; [key: string]: unknown },
+    input: GoInput & { operation: string; [key: string]: unknown },
     schema: ZodType<T>,
     signal: AbortSignal,
     observe?: MapAnalyzerObserver,
@@ -105,32 +185,38 @@ export class GoMapAnalyzer implements MapLanguageAnalyzer {
   }
 
   async analyze(session: MapLanguageSession, signal: AbortSignal): Promise<void> {
-    const modules = session.readable
-      .map((entry) => entry.path)
-      .filter((path) => goModule.test(path))
-      .sort();
-    // Each file belongs to the nearest enclosing module.
+    const paths = session.readable.map((entry) => entry.path);
+    const groupOf = goModuleGroups(paths, (path) => session.texts[path] ?? "");
+    // Each file belongs to the nearest enclosing module, and is mapped with that module's group.
     const moduleOf = (path: string) => {
       let best: string | undefined;
-      for (const modFile of modules) {
+      for (const modFile of groupOf.keys()) {
         const directory = modFile.slice(0, modFile.lastIndexOf("/") + 1);
         if (path.startsWith(directory) && (!best || directory.length > best.lastIndexOf("/") + 1))
           best = modFile;
       }
       return best;
     };
-    const groups = new Map<string, string[]>();
-    for (const entry of session.readable) {
-      if (!this.claims(entry.path)) continue;
-      const key = moduleOf(entry.path) ?? "";
-      const into = groups.get(key);
-      if (into) into.push(entry.path);
-      else groups.set(key, [entry.path]);
+    const contexts = new Map<string, { configurations: readonly string[]; sources: string[] }>();
+    for (const path of paths) {
+      if (!this.claims(path)) continue;
+      const module = moduleOf(path);
+      const group = module ? groupOf.get(module) : undefined;
+      const configPath = group?.configPath ?? "";
+      const into = contexts.get(configPath);
+      if (into) into.sources.push(path);
+      else
+        contexts.set(configPath, {
+          configurations: group ? [...new Set([...group.modules, configPath])].sort() : [],
+          sources: [path],
+        });
     }
-    for (const modFile of [...groups.keys()].sort()) {
+    for (const [configPath, { configurations, sources }] of [...contexts].sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    )) {
       if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
       const files: Record<string, string> = Object.create(null);
-      for (const path of [...(groups.get(modFile) ?? []), ...(modFile ? [modFile] : [])]) {
+      for (const path of [...sources, ...configurations]) {
         const text = session.texts[path];
         if (text === undefined)
           throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
@@ -139,29 +225,29 @@ export class GoMapAnalyzer implements MapLanguageAnalyzer {
       const input: GoInput = {
         contextRef: digestValue({
           analyzer: this.id,
-          configPath: modFile || null,
+          configPath: configPath || null,
         }),
-        ...(modFile ? { configPath: modFile } : {}),
+        ...(configPath ? { configPath } : {}),
         files,
         inventory: Object.keys(files).sort(),
         syntaxOnly: false,
       };
       // A build without Go 1.24 leaves no analyzer: the files are mapped without facts.
       const built = existsSync(this.resources.compilerPath);
-      const reused = session.reuse(input.contextRef, { modFile, built }, Object.keys(files));
+      const reused = session.reuse(input.contextRef, { configurations, built }, Object.keys(files));
       if (reused) {
         session.accept(reused);
         continue;
       }
       const facts: MapFacts = built
         ? await this.operation(
-            { ...input, operation: "BUILD", modFile },
+            { ...input, operation: "BUILD" },
             MapFactsSchema,
             signal,
             session.observe,
           )
         : { files: [], objects: [], relations: [], notes: [], typeErrors: 0 };
-      const analysis = goMapAnalysis(facts, input, modFile || undefined);
+      const analysis = goMapAnalysis(facts, input, configurations);
       if (!built) analysis.gaps.push({ code: "GO_ANALYZER_NOT_BUILT" });
       validateMapAnalysis(analysis, input);
       session.accept(analysis);
@@ -178,13 +264,12 @@ export class GoMapAnalyzer implements MapLanguageAnalyzer {
       return { pages: references.map(() => null), requiredFiles: [] };
     const files: Record<string, string> = Object.create(null);
     for (const [path, value] of Object.entries(input.files))
-      if (this.claims(path) || goModule.test(path)) files[path] = value;
+      if (this.claims(path) || this.reads(path)) files[path] = value;
     const facts = await this.operation(
       {
         ...input,
         files,
         operation: "REFERENCES",
-        modFile: input.configPath ?? "",
         targets: references.map(({ targetPath, symbolStart }) => ({
           path: targetPath,
           offset: mapFactsOffset(input.files[targetPath] ?? "", symbolStart, "UTF8_BYTES"),

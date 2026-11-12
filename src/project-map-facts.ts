@@ -153,6 +153,8 @@ export type MapFactsContext = Readonly<{
   language: string;
   offsets: MapFactsOffsets;
   configPath?: string;
+  // The configuration files the context read, when more than its configPath.
+  configurationFiles?: readonly string[];
   optionsDigest: string;
   gaps: MapAnalysis["gaps"];
   // Code for the count of type-check issues the program reported, if any.
@@ -175,7 +177,11 @@ export function mapFactsAnalysis(
         optionsDigest: context.optionsDigest,
         mode: context.configPath ? "CONFIGURED" : "INFERRED",
         inputFiles: Object.keys(input.files).sort(),
-        configurationFiles: context.configPath ? [context.configPath] : [],
+        configurationFiles: context.configurationFiles
+          ? [...context.configurationFiles]
+          : context.configPath
+            ? [context.configPath]
+            : [],
       },
     ],
     objects: [],

@@ -62,12 +62,18 @@ type unit struct {
 	checking   bool
 }
 
+// A module of the request: its directory ("" at the root) and its module path.
+type module struct {
+	dir  string
+	path string
+}
+
 type program struct {
-	fset       *token.FileSet
-	modulePath string
-	moduleDir  string
-	files      []*sourceFile
-	byPath     map[string]*sourceFile
+	fset *token.FileSet
+	// The modules the request builds together, deepest directory first.
+	modules []module
+	files   []*sourceFile
+	byPath  map[string]*sourceFile
 	// Base units by import path, and the variants that include tests, by directory.
 	base      map[string]*unit
 	tested    map[string]*unit
@@ -90,15 +96,26 @@ func load(input request) *program {
 		external:  map[string]*unit{},
 		placehold: map[string]*types.Package{},
 	}
-	if input.ModFile != "" {
-		p.moduleDir = path.Dir(input.ModFile)
-		if p.moduleDir == "." {
-			p.moduleDir = ""
+	// Every go.mod of the request is a module; a file belongs to the deepest one enclosing it.
+	for name, text := range input.Files {
+		if path.Base(name) != "go.mod" {
+			continue
 		}
-		if match := moduleLine.FindStringSubmatch(input.Files[input.ModFile]); match != nil {
-			p.modulePath = strings.Trim(match[1], `"`)
+		m := module{dir: path.Dir(name)}
+		if m.dir == "." {
+			m.dir = ""
 		}
+		if match := moduleLine.FindStringSubmatch(text); match != nil {
+			m.path = strings.Trim(match[1], `"`)
+		}
+		p.modules = append(p.modules, m)
 	}
+	sort.Slice(p.modules, func(i, j int) bool {
+		if len(p.modules[i].dir) != len(p.modules[j].dir) {
+			return len(p.modules[i].dir) > len(p.modules[j].dir)
+		}
+		return p.modules[i].dir < p.modules[j].dir
+	})
 	names := make([]string, 0, len(input.Files))
 	for name := range input.Files {
 		if strings.HasSuffix(name, ".go") {
@@ -111,7 +128,11 @@ func load(input request) *program {
 		file := &sourceFile{path: name, text: text, test: strings.HasSuffix(name, "_test.go")}
 		p.files = append(p.files, file)
 		p.byPath[name] = file
-		if ignoredDirectory(strings.TrimPrefix(name, p.moduleDir+"/")) {
+		moduleDir := ""
+		if m := p.moduleOf(path.Dir(name)); m != nil {
+			moduleDir = m.dir
+		}
+		if ignoredDirectory(strings.TrimPrefix(name, moduleDir+"/")) {
 			file.excluded = "IGNORED_DIRECTORY"
 			continue
 		}
@@ -193,21 +214,33 @@ func importsC(file *ast.File) bool {
 	return false
 }
 
+// moduleOf is the deepest module whose directory holds dir ("." at the root), if any.
+func (p *program) moduleOf(dir string) *module {
+	for i := range p.modules {
+		m := &p.modules[i]
+		if m.dir == "" || dir == m.dir || strings.HasPrefix(dir, m.dir+"/") {
+			return m
+		}
+	}
+	return nil
+}
+
 func (p *program) importPathOf(dir string) string {
-	if p.modulePath == "" {
+	m := p.moduleOf(dir)
+	if m == nil || m.path == "" {
 		return ""
 	}
-	rel := strings.TrimPrefix(strings.TrimPrefix(dir, p.moduleDir), "/")
-	if p.moduleDir == "" {
+	rel := strings.TrimPrefix(strings.TrimPrefix(dir, m.dir), "/")
+	if m.dir == "" {
 		rel = dir
 		if rel == "." {
 			rel = ""
 		}
 	}
 	if rel == "" {
-		return p.modulePath
+		return m.path
 	}
-	return p.modulePath + "/" + rel
+	return m.path + "/" + rel
 }
 
 // group forms the package variants of each directory, as the go command does for tests.
@@ -280,8 +313,8 @@ func (p *program) group() {
 	}
 }
 
-// check type-checks every unit. Imports inside the module come from source; the standard library
-// and other modules are empty placeholder packages, so uses of them stay unresolved.
+// check type-checks every unit. Imports inside the request's modules come from source; the
+// standard library and other modules are empty placeholder packages, so uses of them stay unresolved.
 func (p *program) check() {
 	p.owner = map[*sourceFile]*unit{}
 	for _, u := range p.units {

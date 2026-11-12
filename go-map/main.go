@@ -1,4 +1,4 @@
-// Command go-map analyzes the Go sources of one module for LayerMap.
+// Command go-map analyzes the Go sources of one module, or of modules built together, for LayerMap.
 //
 // It reads one JSON request from stdin and writes one JSON result to stdout. It never reads or
 // writes the file system and never uses the network: every source comes from the request.
@@ -13,7 +13,6 @@ import (
 
 type request struct {
 	Operation string            `json:"operation"`
-	ModFile   string            `json:"modFile"`
 	Files     map[string]string `json:"files"`
 	Targets   []target          `json:"targets"`
 }
