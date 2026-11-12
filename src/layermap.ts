@@ -17,7 +17,7 @@ import { ProjectEvidenceError } from "./core";
 import { digestValue } from "./digest";
 import { GitRunner } from "./git-runner";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
-import { checkMapChanges, resolveMapBase } from "./project-map-changes";
+import { checkMapChanges, type MapChangesData, resolveMapBase } from "./project-map-changes";
 import { mapInstalledDigest } from "./project-map-installed";
 import { GoMapAnalyzer } from "./project-map-language-go";
 import { JavaMapAnalyzer } from "./project-map-language-java";
@@ -499,7 +499,7 @@ export class LayerMap {
   checkChanges(
     input: { base?: string; tests?: readonly string[]; format?: "text" | "json" },
     signal: AbortSignal,
-  ): Promise<{ text: string }> {
+  ): Promise<{ text: string; data: MapChangesData }> {
     return this.using(async (hold) =>
       checkMapChanges(
         {

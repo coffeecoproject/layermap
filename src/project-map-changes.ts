@@ -2044,12 +2044,13 @@ export function mapChangesData(changes: MapChanges, impact: MapChangeImpact): Ma
 /**
  * What the working tree's changes against a base commit affect, as project_check_changes reports
  * it: the changed and removed declarations, the entry points and tests their callers reach, the
- * code requesting affected routes, and what the map cannot see.
+ * code requesting affected routes, and what the map cannot see; and the same check as data, for a
+ * host that acts on it, such as on the changed code the given tests do not run.
  */
 export async function checkMapChanges(
   input: MapChangeCheckInput,
   signal: AbortSignal,
-): Promise<{ text: string }> {
+): Promise<{ text: string; data: MapChangesData }> {
   const { index, project, working } = input;
   const changes = await readMapChanges(project, input.base, signal);
   await index.ensureIndex(working, signal);
@@ -2100,8 +2101,10 @@ export async function checkMapChanges(
     project,
     input.tests,
   );
-  if (input.format === "json") return { text: JSON.stringify(mapChangesData(changes, impact)) };
+  const data = mapChangesData(changes, impact);
+  if (input.format === "json") return { text: JSON.stringify(data), data };
   return {
+    data,
     text: mapChangesText(
       changes,
       impact,

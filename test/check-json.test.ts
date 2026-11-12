@@ -86,6 +86,11 @@ test("the check as JSON gives the related tests by rank and the changed files th
     (await map.checkChanges({ format: "json", tests: ["test/other.test.ts"] }, signal())).text,
   ) as MapChangesData;
   assert.deepEqual(given.untested?.changed, ["src/store.ts: markRead f1-3"]);
+
+  // The report comes with the same check as data, for a host that acts on it.
+  const report = await map.checkChanges({ tests: ["test/other.test.ts"] }, signal());
+  assert.match(report.text, /NOT REACHED BY THE GIVEN TESTS/u);
+  assert.deepEqual(report.data, given);
 });
 
 test("every changed file the map does not follow is unmapped, migrations with mapped code too", async (t) => {
