@@ -1,9 +1,18 @@
-import { type Node, SyntaxKind } from "typescript/unstable/ast";
+import {
+  isCallExpression,
+  isIdentifier,
+  isPropertyAssignment,
+  isShorthandPropertyAssignment,
+  type Node,
+  SyntaxKind,
+} from "typescript/unstable/ast";
 import {
   type Symbol as CompilerSymbol,
   type Project,
+  SignatureKind,
   SymbolFlags,
 } from "typescript/unstable/async";
+import { mapExportedFunction } from "./project-map-declarations";
 import { mapCallableCarrier, mapUnwrapExpression } from "./project-map-execution";
 import type { MapObject, MapRelation, MapWorkerInput } from "./project-map-types";
 import { mapRelativePath } from "./project-map-virtual-files";
@@ -13,6 +22,19 @@ const signature = (node: Node) =>
   node.kind === SyntaxKind.FunctionDeclaration || node.kind === SyntaxKind.MethodDeclaration
     ? !(node as Node & { body?: Node }).body
     : undefined;
+
+// A call taking a function, as a wrapper does: catchAsync(async (req, res) => ...).
+const wraps = (value: Node) => {
+  const call = mapUnwrapExpression(value);
+  return (
+    isCallExpression(call) &&
+    call.arguments.some((argument) =>
+      [SyntaxKind.ArrowFunction, SyntaxKind.FunctionExpression].includes(
+        mapUnwrapExpression(argument).kind,
+      ),
+    )
+  );
+};
 
 // Declarations whose members a call can dispatch through: interfaces, type literals and classes.
 const memberContainers = new Set([
@@ -30,6 +52,8 @@ type Resolution = {
 export class MapTargetResolver {
   private readonly cache = new Map<number, Resolution>();
   private readonly mappedCache = new Map<number, MapObject[]>();
+  // Whether what a value's symbol holds can be called, by its type.
+  private readonly callableTypes = new Map<number, Promise<boolean>>();
   constructor(
     private readonly project: Project,
     private readonly input: MapWorkerInput,
@@ -63,7 +87,8 @@ export class MapTargetResolver {
           reasons.add(node ? "OUTSIDE_SOURCE_CONTEXT" : "DECLARATION_NOT_AVAILABLE");
           continue;
         }
-        const object = node && this.mapDeclaration(node);
+        // A CommonJS export, exports.getUser = fn, declares the function it assigns.
+        const object = node && this.mapDeclaration(mapExportedFunction(node)?.node ?? node);
         if (object) objects.push(object);
         else reasons.add("SOURCE_DECLARATION_UNMAPPED");
       } else if (
@@ -119,7 +144,10 @@ export class MapTargetResolver {
 
   // A value links only a function, a method or a binding initialized with a function expression.
   // Other values stay unlinked, so resolving them never materializes locals.
-  async resolveCallable(symbol: CompilerSymbol | undefined): Promise<Resolution | undefined> {
+  async resolveCallable(
+    symbol: CompilerSymbol | undefined,
+    depth = 0,
+  ): Promise<Resolution | undefined> {
     if (this.input.syntaxOnly || !symbol) return undefined;
     const target =
       symbol.flags & SymbolFlags.Alias
@@ -131,14 +159,54 @@ export class MapTargetResolver {
         const node = (await handle.resolve(this.project)) as
           | (Node & { initializer?: Node; expression?: Node })
           | undefined;
-        // A binding initialized with a function, or a default export of one.
+        // A property naming a function declared apart is that function, as the controllers a
+        // CommonJS module exports are: module.exports = { getUser }, { list: listItems }.
+        const named =
+          node && depth < 4
+            ? isShorthandPropertyAssignment(node)
+              ? await this.project.checker.getShorthandAssignmentValueSymbol(node)
+              : isPropertyAssignment(node) && isIdentifier(mapUnwrapExpression(node.initializer))
+                ? await this.project.checker.getSymbolAtLocation(
+                    mapUnwrapExpression(node.initializer),
+                  )
+                : undefined
+            : undefined;
+        const linked = named && (await this.resolveCallable(named, depth + 1));
+        if (linked) return linked;
+        // A binding initialized with a function, or a default export of one, or a function a
+        // CommonJS module exports: exports.getUser = (req, res) => ...
         const value =
           node?.kind === SyntaxKind.ExportAssignment ? node.expression : node?.initializer;
-        if (value && mapCallableCarrier(mapUnwrapExpression(value)) === node) callable = true;
+        const exported = node && mapExportedFunction(node);
+        if (
+          (value && mapCallableCarrier(mapUnwrapExpression(value)) === node) ||
+          (exported && !exported.wrapped)
+        )
+          callable = true;
+        // A function a wrapper returns, as Express handlers are: catchAsync(async (req, res) => ...),
+        // memo(() => ...). A call taking a function is a wrapper when what it gives can be called.
+        else if (
+          (exported?.wrapped || (value && wraps(value))) &&
+          (await this.callableType(target))
+        )
+          callable = true;
       }
     if (!callable) return undefined;
     const resolved = await this.resolve(target);
     return resolved.objects.length ? resolved : undefined;
+  }
+
+  private callableType(symbol: CompilerSymbol): Promise<boolean> {
+    const known = this.callableTypes.get(symbol.id);
+    if (known) return known;
+    const result = (async () => {
+      const type = await this.project.checker.getTypeOfSymbol(symbol);
+      return Boolean(
+        type && (await this.project.checker.getSignaturesOfType(type, SignatureKind.Call)).length,
+      );
+    })();
+    this.callableTypes.set(symbol.id, result);
+    return result;
   }
 
   // The source members of interfaces, type literals and classes that a property symbol declares.

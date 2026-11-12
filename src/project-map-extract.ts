@@ -12,10 +12,12 @@ import {
   isNamespaceImport,
   isNewExpression,
   isNoSubstitutionTemplateLiteral,
+  isObjectBindingPattern,
   isObjectLiteralExpression,
   isPropertyAccessExpression,
   isShorthandPropertyAssignment,
   isStringLiteral,
+  isVariableDeclaration,
   isVariableStatement,
   type Node,
   type SourceFile,
@@ -259,7 +261,11 @@ export async function extractProjectMap(
         ),
       ...(mapExecutionKind(node) ? { execution: mapExecutionKind(node) } : {}),
       contextRole: owned.has(location.path) ? "DEFAULT" : "DEPENDENCY",
-      ...(named(node) ? { symbolStart: anchor(named(node) as Node, file).start } : {}),
+      // A name outside the declaration, as exports.getUser = (req, res) => ... gives its function,
+      // is not where the declaration starts.
+      ...(named(node) && (named(node) as Node).pos >= node.pos
+        ? { symbolStart: anchor(named(node) as Node, file).start }
+        : {}),
       ...(kind === "FILE"
         ? {
             language: file.fileName.split(".").at(-1) ?? "unknown",
@@ -510,6 +516,21 @@ export async function extractProjectMap(
           (node as Contract).heritageClauses?.length)
       )
         contracts.push(node);
+      // A CommonJS require binds what an import does: const users = require("./users") a module,
+      // whose members are then looked up as a namespace import's are, and
+      // const { getUser } = require("./users") the names it takes.
+      if (
+        isVariableDeclaration(node) &&
+        node.initializer &&
+        isCallExpression(node.initializer) &&
+        isIdentifier(node.initializer.expression) &&
+        node.initializer.expression.text === "require"
+      ) {
+        if (isIdentifier(node.name)) namespaces.add(node.name.text);
+        else if (isObjectBindingPattern(node.name))
+          for (const element of node.name.elements)
+            if (element.name && isIdentifier(element.name)) valueNames.add(element.name.text);
+      }
       if (reference && owned.has(path)) {
         pending.push({
           ...reference,

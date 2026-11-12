@@ -557,15 +557,16 @@ class Tracer {
             // Test support (conftest.py, fixtures, helpers) reaches tests by injection or import.
             if (!mapRunnableTest(callerObject.anchor.path))
               this.support.add(callerObject.anchor.path);
-            this.test(
-              callerObject.anchor.path,
-              this.name(caller.ref),
-              `${caller.uses ? "uses" : "calls"} ${this.name(current.ref)}`,
-              // Tests closer to the change come first; all of them rank before other relations.
-              current.depth / 10,
-            );
-            if (certain && mapRunnableTest(callerObject.anchor.path))
-              this.area(current.ref, callerObject.anchor.path, this.name(caller.ref));
+            for (const [file, name] of testEntries(this.graph, this.graph.owner(caller.ref))) {
+              this.test(
+                file,
+                name,
+                `${caller.uses ? "uses" : "calls"} ${this.name(current.ref)}`,
+                // Tests closer to the change come first; all of them rank before other relations.
+                current.depth / 10,
+              );
+              if (certain) this.area(current.ref, file, name);
+            }
             continue;
           }
           // The framework runs a handler when its route is requested: the tests requesting the
@@ -952,12 +953,12 @@ class Tracer {
     this.entries.set(label, { label, route, chain, ...(site ? { site } : {}), certain });
   }
 
-  private area(ref: string, test: string, name: string) {
+  private area(ref: string, test: string, name: string | undefined) {
     const area = areaOf(this.graph.object(ref).anchor.path);
     const known = this.areas.get(area) ?? { through: new Set<string>(), tests: new Map() };
     known.through.add(this.name(ref));
     const names = known.tests.get(test) ?? new Set<string>();
-    if (!name.startsWith("<")) names.add(name);
+    if (name && !name.startsWith("<")) names.add(name);
     known.tests.set(test, names);
     this.areas.set(area, known);
   }
@@ -1784,7 +1785,7 @@ function routeTests(
     const routes = closest(note.text).filter((route) => affected.has(route));
     if (!routes.length) continue;
     // A request made in test support (a helper sending it) is made by the tests calling it.
-    for (const [file, name] of requesters(graph, graph.owner(String(row.entity_ref))))
+    for (const [file, name] of testEntries(graph, graph.owner(String(row.entity_ref))))
       for (const route of routes) {
         requested.add(route);
         tracer.test(file, name, `requests ${JSON.stringify(route)}`, 2);
@@ -1854,7 +1855,7 @@ async function unworkedRequests(
     .all(version, MAP_PATH_PARAMETER)) {
     const note = JSON.parse(String(row.note_json)) as { anchor: { path: string } };
     if (!testCode(note.anchor.path)) continue;
-    for (const [file, name] of requesters(graph, graph.owner(String(row.entity_ref))))
+    for (const [file, name] of testEntries(graph, graph.owner(String(row.entity_ref))))
       unworked.set(file, (unworked.get(file) ?? new Set()).add(name));
   }
   if (!unworked.size) return;
@@ -1873,30 +1874,45 @@ async function unworkedRequests(
   }
 }
 
-// The runnable tests making a request in a declaration of test code: the test itself, or the tests
-// calling the helper it is in, a few calls up.
-function requesters(graph: MapViewGraph, ref: string): [string, string | undefined][] {
-  const found: [string, string | undefined][] = [];
+// The runnable tests that run a declaration of test code: the tests themselves, which the runner
+// calls and no test code does, and for a helper, even one in a test file (Go's setupRouter, a
+// Python _client()), the tests calling it, a few calls up. A helper no test is found to call is
+// kept as it is, in its file.
+function testEntries(graph: MapViewGraph, ref: string): [string, string][] {
+  const found: [string, string][] = [];
+  const kept: [string, string][] = [];
+  const entry = (at: string): [string, string] => [
+    graph.object(at).anchor.path,
+    graph.qualifiedName(at),
+  ];
   const seen = new Set([ref]);
   let level = [ref];
-  for (let depth = 0; level.length && depth <= 4; depth++) {
+  for (let depth = 0; level.length; depth++) {
     const next: string[] = [];
     for (const at of level) {
       const object = graph.object(at);
-      if (mapRunnableTest(object.anchor.path)) {
-        found.push([object.anchor.path, mapIsModule(object) ? undefined : graph.qualifiedName(at)]);
+      const runnable = mapRunnableTest(object.anchor.path);
+      const callers = mapIsModule(object)
+        ? []
+        : graph
+            .relationsTo([at])
+            .filter(runsTarget)
+            .map((relation) => graph.owner(relation.from))
+            .filter((caller) => caller !== at && testCode(graph.object(caller).anchor.path));
+      if (!callers.length || depth === 4) {
+        if (runnable) found.push(entry(at));
         continue;
       }
-      for (const relation of graph.relationsTo([at])) {
-        const caller = graph.owner(relation.from);
-        if (!runsTarget(relation) || seen.has(caller)) continue;
-        seen.add(caller);
-        if (testCode(graph.object(caller).anchor.path)) next.push(caller);
-      }
+      if (runnable) kept.push(entry(at));
+      for (const caller of callers)
+        if (!seen.has(caller)) {
+          seen.add(caller);
+          next.push(caller);
+        }
     }
     level = next;
   }
-  return found;
+  return found.length ? found : kept;
 }
 
 // Test files beside a changed file, as Go's _test.go files and many projects keep them.
