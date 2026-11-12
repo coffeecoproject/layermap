@@ -206,6 +206,7 @@ export class ProjectMapQuery {
     const notes = object
       ? this.store.database
           .prepare(`SELECT note_json FROM project_map_notes WHERE version_ref = ? AND entity_ref = ?
+      AND json_extract(note_json, '$.kind') <> 'ROUTE_REQUEST'
       ORDER BY CASE json_extract(note_json, '$.kind') WHEN 'SOURCE_DOCUMENTATION' THEN 0 WHEN 'CONTRACT_DECLARATION' THEN 1 ELSE 2 END,
       json_extract(note_json, '$.anchor.start') LIMIT 6`)
           .all(input.version, object.id)

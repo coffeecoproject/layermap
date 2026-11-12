@@ -27,7 +27,7 @@ import {
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "typescript-7.0.2-map-v25",
+  id: "typescript-7.0.2-map-v26",
   claims: (path: string) => /\.[cm]?[jt]sx?$/u.test(path),
   reads: (path: string) =>
     path.endsWith(".json") || path.endsWith(".wxml") || path === "pnpm-workspace.yaml",

@@ -59,6 +59,7 @@ import {
 } from "./project-map-miniprogram";
 import { MapOutputCollector } from "./project-map-output";
 import { MapTargetResolver } from "./project-map-resolution";
+import { MapPathFolder } from "./project-map-route-paths";
 import { decoratorRoute, registeredRoute } from "./project-map-routes";
 import { mapSourceFiles } from "./project-map-source-files";
 import { MapSourcePositions } from "./project-map-source-positions";
@@ -69,6 +70,7 @@ import {
   type MapObject,
   type MapRelation,
   type MapWorkerInput,
+  mapTestPath,
 } from "./project-map-types";
 import { mapRelativePath as relativePath } from "./project-map-virtual-files";
 import { isMapWrite } from "./project-map-write";
@@ -270,6 +272,7 @@ export async function extractProjectMap(
     return object;
   };
 
+  const folder = new MapPathFolder(input.syntaxOnly ? undefined : project);
   trace.phase = "SOURCE_FILES";
   for await (const { file, path, syntaxErrors, exports } of mapSourceFiles(project, input, trace)) {
     if (!file) {
@@ -288,6 +291,8 @@ export async function extractProjectMap(
     if (template) pages.push({ file, template });
     exportedSymbols.set(file.fileName, exports);
     const state = moduleStateNames(file);
+    trace.phase = "COMPUTED_PATHS";
+    const paths = await folder.file(file, mapTestPath(path));
     trace.phase = "TRAVERSAL";
     const stack: {
       node: Node;
@@ -341,6 +346,15 @@ export async function extractProjectMap(
           collect.note(note);
         }
       }
+      const requested = paths.requested.get(node);
+      if (requested)
+        collect.note({
+          entityRef: owner.id,
+          kind: "ROUTE_REQUEST",
+          text: requested,
+          anchor: anchor(node, file),
+          truncated: false,
+        });
       let reference: Omit<Pending, "owner" | "anchor"> | undefined;
       const moduleSpecifier = isImportDeclaration(node)
         ? node.moduleSpecifier
@@ -358,7 +372,7 @@ export async function extractProjectMap(
           target: moduleSpecifier.text,
         };
       } else if (isCallExpression(node) || isNewExpression(node)) {
-        const route = registeredRoute(node, "CALLS");
+        const route = registeredRoute(node, "CALLS", paths.registered);
         reference = {
           node,
           lookup: node.expression,
@@ -408,7 +422,7 @@ export async function extractProjectMap(
             target: label(node),
           };
         } else if (isPropertyAccessExpression(node) && mapValueUse(node)) {
-          const route = registeredRoute(node, "REFERENCES");
+          const route = registeredRoute(node, "REFERENCES", paths.registered);
           reference = {
             node,
             lookup: node.name,
@@ -440,7 +454,7 @@ export async function extractProjectMap(
             !isImportSpecifier(parent);
           if (writes) reference = { node, lookup: node, kind: "WRITES", target: label(node) };
           else if (mapValueUse(node)) {
-            const route = registeredRoute(node, "REFERENCES");
+            const route = registeredRoute(node, "REFERENCES", paths.registered);
             reference = {
               node,
               lookup: node,

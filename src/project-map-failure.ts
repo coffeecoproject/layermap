@@ -8,6 +8,7 @@ const PhaseSchema = z.enum([
   "SOURCE_AST",
   "SYNTAX_DIAGNOSTICS",
   "EXPORTS",
+  "COMPUTED_PATHS",
   "TRAVERSAL",
   "RELATION_SYMBOLS",
   "RELATION_TARGETS",

@@ -8,6 +8,7 @@ import { ProjectEvidenceError } from "./core";
 import { GitRunner } from "./git-runner";
 import {
   type MapRouteClients,
+  mapRequestedRoutes,
   routeClients,
   routeClientsLine,
   routeRegistrations,
@@ -437,12 +438,26 @@ class Tracer {
   readonly handlers = new Map<string, Set<string>>();
   /** Test support files that call the changed code; the tests beside and below them may use it. */
   readonly support = new Set<string>();
+  /**
+   * The steps from route handlers to the code registering them, by route, held until the tests
+   * requesting each route are looked for: the trace climbs on only for a route none requests.
+   */
+  readonly held = new Map<string, { current: Reached; caller: Caller }[]>();
+  // Routes the trace climbs on from: no test requests them.
+  private readonly released = new Set<string>();
+  // The reached declarations whose tests by name and entry points were recorded.
+  private readonly finished = new Set<string>();
 
   constructor(
     private readonly graph: MapViewGraph,
     private readonly memberCalls: ReturnType<MapViewCache["memberCalls"]>,
     /** Who uses the fields and types traced, read as the trace reaches them. */
     readonly shapes: MapShapeUses,
+    /**
+     * Whether the trace stops at route handlers until the tests requesting each route are looked
+     * for (held, then released); only the trace of the change itself looks for them.
+     */
+    private readonly holdsRoutes = false,
   ) {}
 
   // The trace walks the declarations relations name, closures and locals among them; a reader sees
@@ -460,7 +475,7 @@ class Tracer {
    * affected, unlike what calls it.
    */
   async trace(starts: readonly string[], own: readonly string[] = []) {
-    let frontier: Reached[] = [];
+    const frontier: Reached[] = [];
     for (const ref of starts)
       if (!this.reached.has(ref)) {
         const start = { ref, depth: 0, certain: true, shaped: true };
@@ -482,6 +497,27 @@ class Tracer {
             caller: { ref: member, anchor: this.graph.object(member).anchor, certain: false },
           });
     }
+    await this.walk(frontier, uncertain);
+  }
+
+  /** Climbs on from the handlers of these routes to the code registering them, and above. */
+  async release(routes: Iterable<string>) {
+    const frontier: Reached[] = [];
+    const uncertain: { current: Reached; caller: Caller }[] = [];
+    for (const route of routes) {
+      this.released.add(route);
+      for (const { current, caller } of this.held.get(route) ?? [])
+        if (current.certain && caller.certain) frontier.push(...this.step(current, caller, true));
+        else uncertain.push({ current, caller });
+      this.held.delete(route);
+    }
+    await this.walk(frontier, uncertain);
+  }
+
+  private async walk(
+    frontier: Reached[],
+    uncertain: { current: Reached; caller: Caller }[],
+  ): Promise<void> {
     while (frontier.length || uncertain.length) {
       if (!frontier.length)
         frontier = uncertain
@@ -512,8 +548,9 @@ class Tracer {
         for (const caller of callers) {
           const site = `${caller.anchor.path}:${caller.anchor.startLine}`;
           const certain = current.certain && caller.certain;
-          if (caller.argument && ROUTE.test(caller.argument))
-            this.entry(caller.argument, true, current, site, certain);
+          const route =
+            caller.argument && ROUTE.test(caller.argument) ? caller.argument : undefined;
+          if (route) this.entry(route, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
           if (testCode(callerObject.anchor.path)) {
             // Test support (conftest.py, fixtures, helpers) reaches tests by injection or import.
@@ -530,6 +567,12 @@ class Tracer {
               this.area(current.ref, callerObject.anchor.path, this.name(caller.ref));
             continue;
           }
+          // The framework runs a handler when its route is requested: the tests requesting the
+          // route run the change, not every test building the app that registers it.
+          if (route && this.holdsRoutes && !this.released.has(route)) {
+            this.held.set(route, [...(this.held.get(route) ?? []), { current, caller }]);
+            continue;
+          }
           if (certain) next.push(...this.step(current, caller, true));
           else uncertain.push({ current, caller });
         }
@@ -539,7 +582,9 @@ class Tracer {
     // Tests that call a reached method's name on a receiver of unknown type, as untyped Python and
     // JavaScript tests do (client.get, request.url_for): they may run it. A name called too often
     // by name says nothing, so such names are left to the CHECK BY HAND count.
-    for (const reached of this.reached.values()) {
+    const reachedNow = [...this.reached.values()].filter(({ ref }) => !this.finished.has(ref));
+    for (const reached of reachedNow) this.finished.add(reached.ref);
+    for (const reached of reachedNow) {
       const object = this.graph.object(reached.ref);
       const language = mapLanguageOf(object.anchor.path);
       if (object.kind !== "METHOD" || !language || /^__\w+__$/u.test(object.name)) continue;
@@ -556,7 +601,7 @@ class Tracer {
     }
     // Declarations nothing calls are where the chains start: commands, jobs, framework-wired
     // handlers, or code that is not used. Routes already name the more useful entry points.
-    for (const reached of this.reached.values()) {
+    for (const reached of reachedNow) {
       if (this.callerCount.get(reached.ref) !== 0 || this.shapes.unread.has(reached.ref)) continue;
       const object = this.graph.object(reached.ref);
       if (testCode(object.anchor.path) || this.routes.has(reached.ref)) continue;
@@ -830,17 +875,24 @@ class Tracer {
     // A local nothing is seen to call runs through what holds it: a callback through the code passing
     // it, a method of the object a factory returns through whoever gets that object. Called only by
     // tests, it may still run that way, through a call the map could not resolve.
+    // A handler registered under a route runs when the route is requested, as its calls, which carry
+    // the route, say.
     if (
       parent &&
       local &&
       callers.every((caller) => testCode(this.graph.object(caller.ref).anchor.path))
-    )
+    ) {
+      const route = this.graph
+        .relationsFrom([ref])
+        .find((relation) => relation.argument && ROUTE.test(relation.argument))?.argument;
       callers.push({
         ref: parent,
         anchor: object.anchor,
         certain: callers.length === 0,
         holds: true,
+        ...(route ? { argument: route } : {}),
       });
+    }
     this.known.set(ref, callers);
     return callers;
   }
@@ -944,7 +996,12 @@ export async function mapChangeImpact(
   const graph = new MapViewGraph(store, working);
   const cache = new MapViewCache();
   const memberCalls = cache.memberCalls(store, working);
-  const tracer = new Tracer(graph, memberCalls, new MapShapeUses(graph, shapes.working, until));
+  const tracer = new Tracer(
+    graph,
+    memberCalls,
+    new MapShapeUses(graph, shapes.working, until),
+    true,
+  );
   const changed: string[] = [];
   const unclear: string[] = [];
   const unmapped: { path: string; kind: string }[] = [];
@@ -1057,6 +1114,22 @@ export async function mapChangeImpact(
     starts.flatMap((start) => start.refs),
     starts.flatMap((start) => start.own),
   );
+  // The tests requesting the routes the change reaches run it; for a route none is found to
+  // request, the trace climbs on to the code registering it, as for a call, until no route is left.
+  const asked = new Set<string>();
+  for (;;) {
+    const fresh = [...tracer.entries.values()].filter(
+      (entry) => entry.route && !asked.has(entry.label),
+    );
+    if (!fresh.length) break;
+    for (const entry of fresh) asked.add(entry.label);
+    const requested = routeTests(project, store, working, graph, fresh, tracer);
+    const unrequested = fresh
+      .map((entry) => entry.label)
+      .filter((label) => tracer.held.has(label) && !requested.has(label));
+    if (!unrequested.length) break;
+    await tracer.release(unrequested);
+  }
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
@@ -1069,7 +1142,6 @@ export async function mapChangeImpact(
     );
   const untested =
     tests && (await untestedChanges(project, graph, tracer, memberCalls, starts, changed, tests));
-  if (project) routeTests(project, store, working, [...tracer.entries.values()], tracer);
   supportTests(store, working, tracer);
 
   // Declarations the diff removed or renamed, and the code it left unchanged that still uses them.
@@ -1682,22 +1754,47 @@ function mirroredTests(paths: readonly string[], file: string, tracer: Tracer) {
   }
 }
 
-// Tests that request an affected route over HTTP: no call links them, but they mention its path.
-// The longest literal stretch of the route is searched for, so parameters and prefixes added
-// where the router is mounted do not hide it.
+// Tests that request an affected route over HTTP: no call links them, but they request its path.
+// The paths tests compute from constants are in the map, matched as code requesting routes is;
+// a test spelling the path out is found by the longest literal stretch of the route, so
+// parameters and prefixes added where the router is mounted do not hide it. Returns the routes
+// some test requests: a mention of a stretch alone does not say the test requests that route,
+// only one of its whole path does.
 function routeTests(
-  project: string,
+  project: string | undefined,
   store: CodeIndexStore,
   version: string,
+  graph: MapViewGraph,
   entries: readonly MapChangeEntry[],
   tracer: Tracer,
-) {
-  const fragments = new Map<string, string>();
-  for (const entry of entries) {
-    const fragment = entry.route ? routeFragment(entry.label) : undefined;
-    if (fragment) fragments.set(fragment, entry.label);
+): Set<string> {
+  const requested = new Set<string>();
+  const affected = new Set(entries.filter((entry) => entry.route).map((entry) => entry.label));
+  if (!affected.size) return requested;
+  const closest = mapRequestedRoutes([...routeRegistrations(store, version).routes, ...affected]);
+  for (const row of store.database
+    .prepare(
+      "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST'",
+    )
+    .all(version)) {
+    const note = JSON.parse(String(row.note_json)) as { text: string; anchor: { path: string } };
+    if (!testCode(note.anchor.path)) continue;
+    const routes = closest(note.text).filter((route) => affected.has(route));
+    if (!routes.length) continue;
+    // A request made in test support (a helper sending it) is made by the tests calling it.
+    for (const [file, name] of requesters(graph, graph.owner(String(row.entity_ref))))
+      for (const route of routes) {
+        requested.add(route);
+        tracer.test(file, name, `requests ${JSON.stringify(route)}`, 2);
+      }
   }
-  if (!fragments.size) return;
+  if (!project) return requested;
+  const fragments = new Map<string, string>();
+  for (const label of affected) {
+    const fragment = routeFragment(label);
+    if (fragment) fragments.set(fragment, label);
+  }
+  if (!fragments.size) return requested;
   let budget = 32 * 1024 * 1024;
   for (const row of store.database
     .prepare("SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ?")
@@ -1711,9 +1808,10 @@ function routeTests(
       continue;
     }
     budget -= text.length;
-    if (budget < 0) return;
+    if (budget < 0) return requested;
     for (const [fragment, label] of fragments)
       if (text.includes(fragment)) {
+        if (fragment === routePath(label) && wholePath(text, fragment)) requested.add(label);
         // A mention alone is weak evidence; with another relation it is the strongest one.
         tracer.test(
           candidate,
@@ -1724,6 +1822,40 @@ function routeTests(
         break;
       }
   }
+  return requested;
+}
+
+// Whether a text names this path whole somewhere, not as the start of a longer one.
+function wholePath(text: string, path: string): boolean {
+  for (let at = text.indexOf(path); at >= 0; at = text.indexOf(path, at + 1))
+    if (!/[\w./-]/u.test(text[at + path.length] ?? "")) return true;
+  return false;
+}
+
+// The runnable tests making a request in a declaration of test code: the test itself, or the tests
+// calling the helper it is in, a few calls up.
+function requesters(graph: MapViewGraph, ref: string): [string, string | undefined][] {
+  const found: [string, string | undefined][] = [];
+  const seen = new Set([ref]);
+  let level = [ref];
+  for (let depth = 0; level.length && depth <= 4; depth++) {
+    const next: string[] = [];
+    for (const at of level) {
+      const object = graph.object(at);
+      if (mapRunnableTest(object.anchor.path)) {
+        found.push([object.anchor.path, mapIsModule(object) ? undefined : graph.qualifiedName(at)]);
+        continue;
+      }
+      for (const relation of graph.relationsTo([at])) {
+        const caller = graph.owner(relation.from);
+        if (!runsTarget(relation) || seen.has(caller)) continue;
+        seen.add(caller);
+        if (testCode(graph.object(caller).anchor.path)) next.push(caller);
+      }
+    }
+    level = next;
+  }
+  return found;
 }
 
 // Test files beside a changed file, as Go's _test.go files and many projects keep them.

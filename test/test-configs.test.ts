@@ -64,6 +64,47 @@ test("a base tsconfig that every package extends does not take in the files outs
   assert.match((await map.explore({ path: "." }, signal())).text, INFERRED);
 });
 
+test("a test tsconfig at the root of a monorepo holds the tests every package leaves out", async (t) => {
+  const PACKAGE = {
+    compilerOptions: { strict: true, module: "ESNext", moduleResolution: "Bundler" },
+    include: ["src"],
+    exclude: ["src/**/*.test.ts"],
+  };
+  const { root } = await project({
+    "tsconfig.base.json": JSON.stringify({ compilerOptions: PACKAGE.compilerOptions }),
+    // The test runner's configuration takes in the sources and tests of every package.
+    "tsconfig.test.json": JSON.stringify({
+      extends: "./tsconfig.base.json",
+      include: ["packages/*/src", "packages/*/tests"],
+    }),
+    "packages/a/package.json": JSON.stringify({ name: "a", type: "module" }),
+    "packages/a/tsconfig.json": JSON.stringify(PACKAGE),
+    "packages/a/src/target.ts": FILES["src/target.ts"],
+    "packages/a/src/target.test.ts": FILES["src/target.test.ts"],
+    "packages/a/tests/target.test.ts": FILES["tests/target.test.ts"],
+    "scripts/tool.ts": "export const tool = 1;\n",
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const { text } = await map.explore(
+    {
+      path: "packages/a/src/target.ts",
+      name: "target",
+      direction: "INCOMING",
+      depth: 1,
+      includeTests: true,
+    },
+    signal(),
+  );
+  assert.match(text, /← called by packages\/a\/src\/target\.test\.ts: beside f3-5 @4$/mu);
+  assert.match(text, /← called by packages\/a\/tests\/target\.test\.ts: apart f3-5 @4$/mu);
+  // A script is not a test: it stays under inferred settings.
+  assert.match(
+    (await map.explore({ path: "." }, signal())).text,
+    /files outside a tsconfig use inferred settings/u,
+  );
+});
+
 test("a change check finds the tests another tsconfig holds by their calls", async (t) => {
   const { root, write } = await project(FILES);
   await run("git", ["add", "-A"], { cwd: root });

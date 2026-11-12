@@ -21,8 +21,11 @@ const PATH = /^(?:[A-Z]+ +)?\/\S*$/u;
 
 const text = (node: Node | undefined) =>
   node && (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined;
-const pathText = (node: Node | undefined) => {
-  const value = text(node);
+/** Registration path arguments that code computes, by node, as MapPathFolder works them out. */
+export type MapComputedPaths = ReadonlyMap<Node, string>;
+const NONE: MapComputedPaths = new Map();
+const pathText = (node: Node | undefined, computed: MapComputedPaths = NONE) => {
+  const value = text(node) ?? (node && computed.get(node));
   return value !== undefined && value.length <= 256 && PATH.test(value) ? value : undefined;
 };
 const isFunction = (node: Node) =>
@@ -55,10 +58,14 @@ export const httpMethod = (name: string) =>
  * path and a computed value otherwise say little: fetch("/api/users", options()). Functions in
  * an options object are callbacks of a request, not handlers: useAction("/start", { onSuccess }).
  */
-export function registeredRoute(node: Node, kind: "CALLS" | "REFERENCES"): string | undefined {
+export function registeredRoute(
+  node: Node,
+  kind: "CALLS" | "REFERENCES",
+  computed: MapComputedPaths = NONE,
+): string | undefined {
   for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
     if (isCallExpression(parent) && parent.arguments.includes(child as never)) {
-      const registration = routeOf(parent, parent.arguments.indexOf(child as never));
+      const registration = routeOf(parent, parent.arguments.indexOf(child as never), computed);
       const direct = child === node && (kind === "REFERENCES" || registration?.method);
       if (registration && (isFunction(child) || direct)) return registration.label;
     }
@@ -70,17 +77,21 @@ export function registeredRoute(node: Node, kind: "CALLS" | "REFERENCES"): strin
 type Registration = { label: string; method?: string };
 
 // What a call registers the argument at index under, if that argument follows its path.
-function routeOf(call: CallExpression, index: number): Registration | undefined {
+function routeOf(
+  call: CallExpression,
+  index: number,
+  computed: MapComputedPaths,
+): Registration | undefined {
   const callee = call.expression;
   const name = isPropertyAccessExpression(callee) ? callee.name.text : undefined;
   let path: string | undefined;
   let receiver: Node | undefined = isPropertyAccessExpression(callee)
     ? callee.expression
     : undefined;
-  const at = call.arguments.findIndex((argument) => pathText(argument) !== undefined);
+  const at = call.arguments.findIndex((argument) => pathText(argument, computed) !== undefined);
   if (at >= 0) {
     if (index <= at) return undefined;
-    path = pathText(call.arguments[at]);
+    path = pathText(call.arguments[at], computed);
   } else if (
     name &&
     httpMethod(name) &&
@@ -91,7 +102,7 @@ function routeOf(call: CallExpression, index: number): Registration | undefined 
   ) {
     // A handler attached by method to a route the router method before it set up:
     // router.route("/users").get(list), but not fetch("/users").then(read).
-    path = pathText(receiver.arguments[0]);
+    path = pathText(receiver.arguments[0], computed);
     receiver = receiver.expression.expression;
   }
   if (path === undefined) return undefined;
@@ -126,7 +137,7 @@ function routerPrefix(expression: Node, depth: number): string {
 }
 
 // The initializer of the const declaration in the same file that a name refers to, by scope.
-function constDeclaration(name: Node & { text: string }): Node | undefined {
+export function constDeclaration(name: Node & { text: string }): Node | undefined {
   for (let scope = name.parent; scope; scope = scope.parent) {
     const statements = (scope as Node & { statements?: readonly Node[] }).statements;
     for (const statement of statements ?? []) {

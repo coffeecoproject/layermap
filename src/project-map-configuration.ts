@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { API, Project, Snapshot } from "typescript/unstable/async";
 import type { MapConfigurationResult, MapWorkspacePlan } from "./project-map-configuration-types";
+import { mapTestPath } from "./project-map-types";
 import { type MapVirtualFiles, mapRelativePath, mapVirtualPath } from "./project-map-virtual-files";
 import { mapWorkspaceMembership } from "./project-map-workspace-membership";
 
@@ -181,10 +182,10 @@ export async function discoverMapConfiguration(
     // a project under options of its own. A file another configuration of the project takes in, as
     // a tsconfig.test.json takes in the tests, is read under that one, with its module settings.
     const inferred = selected.get("INFERRED");
-    const candidates = inferred ? holders(members, selected) : new Map();
+    const candidates = inferred ? holders(members, selected) : undefined;
     const held = new Map<string, string[]>();
     for (const file of inferred?.rootFiles ?? []) {
-      const configPath = holder(candidates, file);
+      const configPath = candidates && holder(candidates, file);
       if (configPath) held.set(configPath, [...(held.get(configPath) ?? []), file]);
     }
     if (held.size && inferred) {
@@ -223,7 +224,9 @@ const within = (directory: string, file: string) => !directory || inside(directo
 
 // The configurations that may hold a file no tsconfig.json takes in. One that also takes in files a
 // tsconfig.json in a deeper directory governs spans other projects, as a base every package
-// extends or a configuration for a linter does, so it is not one written for such a file.
+// extends, one for a linter, or one the test runner of a monorepo uses for every package's tests
+// does: it holds only the tests the packages leave out, rather than open a program of the whole
+// project for a script.
 function holders(
   members: ReadonlyMap<string, ReadonlySet<string>>,
   selected: ReadonlyMap<string, { rootFiles: readonly string[] }>,
@@ -233,32 +236,35 @@ function holders(
   const governed = new Map<string, string>();
   for (const [key, entry] of selected)
     if (key !== "INFERRED") for (const file of entry.rootFiles) governed.set(file, key);
-  const candidates = new Map<string, ReadonlySet<string>>();
+  const candidates = new Map<string, { sources: ReadonlySet<string>; spans: boolean }>();
   for (const [configPath, sources] of members) {
     const directory = directoryOf(configPath);
     const deeper = [...governing].filter((own) => own !== directory && within(directory, own));
-    if (!deeper.length) {
-      candidates.set(configPath, sources);
-      continue;
-    }
-    const spans = [...sources].some((source) => {
-      const owner = governed.get(source);
-      return owner !== undefined && deeper.includes(directoryOf(owner));
-    });
-    if (!spans) candidates.set(configPath, sources);
+    const spans =
+      deeper.length > 0 &&
+      [...sources].some((source) => {
+        const owner = governed.get(source);
+        return owner !== undefined && deeper.includes(directoryOf(owner));
+      });
+    candidates.set(configPath, { sources, spans });
   }
   return candidates;
 }
 
 // The configuration taking in a file that is nearest to it: the one in the deepest directory that
-// holds the file, then the first by path.
-function holder(candidates: ReadonlyMap<string, ReadonlySet<string>>, file: string) {
-  let best: { configPath: string; depth: number } | undefined;
-  for (const [configPath, sources] of candidates) {
-    if (!sources.has(file)) continue;
+// holds the file, then one named for tests, then the first by path.
+function holder(
+  candidates: ReadonlyMap<string, { sources: ReadonlySet<string>; spans: boolean }>,
+  file: string,
+) {
+  let best: { configPath: string; depth: number; tests: boolean } | undefined;
+  for (const [configPath, { sources, spans }] of candidates) {
+    if (!sources.has(file) || (spans && !mapTestPath(file))) continue;
     const directory = directoryOf(configPath);
     const depth = !directory ? 0 : inside(directory, file) ? directory.split("/").length : -1;
-    if (!best || depth > best.depth) best = { configPath, depth };
+    const tests = /(?:test|spec|vitest|jest)[^/]*$/iu.test(configPath);
+    if (!best || depth > best.depth || (depth === best.depth && tests && !best.tests))
+      best = { configPath, depth, tests };
   }
   return best?.configPath;
 }

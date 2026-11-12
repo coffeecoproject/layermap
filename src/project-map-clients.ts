@@ -109,6 +109,40 @@ function fit(route: readonly Segment[], requested: readonly Segment[]): number {
   return extra.every((segment) => MOUNT.test(segment.text)) || shorter >= 2 ? extra.length : -1;
 }
 
+// The routes a request fits most closely: the fewest extra segments, then the most segments named
+// literally, so a request for /owners/new is that route's, not /owners/{ownerId}'s.
+function closestRoutes(
+  known: readonly Readonly<{ route: string; segments: readonly Segment[] }>[],
+  requested: readonly Segment[],
+): string[] {
+  const fits = known
+    .map((entry) => ({
+      route: entry.route,
+      extra: fit(entry.segments, requested),
+      literal: entry.segments.filter((segment) => !segment.param).length,
+    }))
+    .filter((entry) => entry.extra >= 0);
+  const fewest = Math.min(...fits.map((entry) => entry.extra));
+  const named = Math.max(
+    ...fits.filter((entry) => entry.extra === fewest).map((entry) => entry.literal),
+  );
+  return fits
+    .filter((entry) => entry.extra === fewest && entry.literal === named)
+    .map((entry) => entry.route);
+}
+
+/**
+ * The routes among these that a requested path is closest to, as a test computes the path: its
+ * unknown parts are parameters.
+ */
+export function mapRequestedRoutes(routes: Iterable<string>): (path: string) => string[] {
+  const known = [...new Set(routes)].map((route) => ({ route, segments: routeSegments(route) }));
+  return (path) => {
+    const requested = segments(path);
+    return requested.length ? closestRoutes(known, requested) : [];
+  };
+}
+
 /**
  * The routes the map found registered, and the lines (path:line) registering them: those lines
  * define routes rather than request them.
@@ -198,27 +232,10 @@ export async function routeClients(
       const after = text.slice((literal.index ?? 0) + literal[0].length).trimStart();
       const requested = requestedPath(literal[2] ?? "", after.startsWith("+"));
       if (!requested) continue;
-      // The closest fit: fewest extra segments, then the most segments named literally, so a
-      // request for /owners/new is that route's, not /owners/{ownerId}'s.
-      const fits = known
-        .map((entry) => ({
-          route: entry.route,
-          extra: fit(entry.segments, requested),
-          literal: entry.segments.filter((segment) => !segment.param).length,
-        }))
-        .filter((entry) => entry.extra >= 0);
-      const fewest = Math.min(...fits.map((entry) => entry.extra));
-      const named = Math.max(
-        ...fits.filter((entry) => entry.extra === fewest).map((entry) => entry.literal),
-      );
+      const closest = new Set(closestRoutes(known, requested));
       const mounted = MOUNT.test(requested[0]?.text ?? "");
       for (const entry of wanted)
-        if (
-          fits.some(
-            (other) =>
-              other.route === entry.route && other.extra === fewest && other.literal === named,
-          )
-        )
+        if (closest.has(entry.route))
           clients.set(
             entry.route,
             (clients.get(entry.route) ?? new Map()).set(`${file}:${line}`, mounted),
