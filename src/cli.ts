@@ -28,8 +28,11 @@ Usage:
                    [--depth N] [--tests] [--unresolved] [--offset N]
   layermap search QUERY [--path DIR] [--mode ANY|ALL|LITERAL] [--max N] [--offset N]
   layermap refs PATH NAME [--line N] [--path DIR] [--max N] [--cursor C]
-  layermap check [--base REF] [TEST...]   what the uncommitted changes (or those since REF) affect,
-                                          and what of them the test files given do not run
+  layermap check [--base REF] [--json] [TEST...]
+                                          what the uncommitted changes (or those since REF) affect,
+                                          and what of them the test files given do not run; --json
+                                          prints the related tests by rank and what the map cannot
+                                          follow, for a program choosing which tests to run
 
 The project is the Git work tree around the current directory unless --project names one; the MCP
 server also maps any other repository a tool call's path names.
@@ -79,6 +82,7 @@ async function main(argv: string[]): Promise<number> {
       mode: { type: "string" },
       max: { type: "string" },
       cursor: { type: "string" },
+      json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", short: "v", default: false },
     },
@@ -90,6 +94,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (values.help || !command) return usage(command ? 0 : 1);
+  if (values.json && command !== "check") return usage(1);
   const { directory: project, git } = await projectDirectory(values.project ?? process.cwd());
   const cache = cacheDirectory();
   const open = async (directory: string) => {
@@ -135,6 +140,15 @@ async function main(argv: string[]): Promise<number> {
       log(
         `Mapped ${project} (${mapVersion.slice(0, 12)}) in ${Math.round(performance.now() - started)} ms.`,
       );
+      return 0;
+    }
+    if (command === "check" && values.json) {
+      const tests = rest.length ? await checkedTests(project, rest) : undefined;
+      const { text } = await map.checkChanges(
+        { base: values.base, ...(tests ? { tests } : {}), format: "json" },
+        signal,
+      );
+      process.stdout.write(`${text}\n`);
       return 0;
     }
     const call: Record<string, [string, Record<string, unknown>]> = {

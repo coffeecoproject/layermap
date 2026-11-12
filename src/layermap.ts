@@ -497,7 +497,7 @@ export class LayerMap {
    * The base commit's map is built only when the diff removes or changes lines there.
    */
   checkChanges(
-    input: { base?: string; tests?: readonly string[] },
+    input: { base?: string; tests?: readonly string[]; format?: "text" | "json" },
     signal: AbortSignal,
   ): Promise<{ text: string }> {
     return this.using(async (hold) =>
@@ -510,6 +510,7 @@ export class LayerMap {
           base: input.base ?? "HEAD",
           baseVersion: (commit, baseSignal) => this.versionAt(commit, baseSignal, hold),
           ...(input.tests ? { tests: input.tests } : {}),
+          ...(input.format ? { format: input.format } : {}),
         },
         signal,
       ),

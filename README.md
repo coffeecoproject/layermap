@@ -225,6 +225,7 @@ npx layermap search "invoice total"
 npx layermap refs src/billing/tax.ts calculateTax
 npx layermap check --base main
 npx layermap check test/billing.test.ts   # also: what of the change this test does not run
+npx layermap check --json                 # related tests by rank and what the map cannot follow, as JSON
 ```
 
 ## FAQ

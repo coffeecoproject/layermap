@@ -314,6 +314,11 @@ export type MapChangeImpact = Readonly<{
     tests: readonly Readonly<{ path: string; names: readonly string[] }>[];
   }>[];
   unclear: readonly string[];
+  /**
+   * Changed files the map does not analyze, by kind (configuration, dependencies, migrations,
+   * templates): which tests their change reaches is not known, as unclear also says.
+   */
+  unmapped: readonly Readonly<{ path: string; kind: string }>[];
   /** Routes the base registered in the changed files that they no longer register. */
   removedRoutes: readonly string[];
   /** Declarations the base called from lines the diff removed or changed, which nothing calls now. */
@@ -927,6 +932,7 @@ export async function mapChangeImpact(
   const tracer = new Tracer(graph, memberCalls, new MapShapeUses(graph, shapes.working, until));
   const changed: string[] = [];
   const unclear: string[] = [];
+  const unmapped: { path: string; kind: string }[] = [];
   const removed: { declaration: string; usedBy: Set<string> }[] = [];
   const declarations = (g: MapViewGraph, path: string) =>
     g.objectsAt(path).filter((object) => !mapIsModule(object) && g.isAddressable(object));
@@ -967,8 +973,10 @@ export async function mapChangeImpact(
       objects.length > 0 &&
       (mapLanguageOf(file.path) !== undefined ||
         (template && objects.some((object) => object.parsing === "PARSED")));
-    if (!analyzed && file.status !== "DELETED" && kind)
+    if (!analyzed && file.status !== "DELETED" && kind) {
       unclear.push(`${file.path} changed (${kind}): its effects are not mapped`);
+      unmapped.push({ path: file.path, kind });
+    }
     if (!objects.length) continue;
     // The innermost declarations around each changed line; top-level lines belong to the file.
     const hits = new Set<string>();
@@ -1448,6 +1456,7 @@ export async function mapChangeImpact(
       }))
       .sort((left, right) => right.tests.length - left.tests.length),
     unclear: [...new Set([...unclear, ...tracer.unclear])],
+    unmapped,
     removedRoutes,
     uncalled,
     dependencies: newModuleDependencies(store, cache, working, base, changes.files),
@@ -1777,7 +1786,47 @@ export type MapChangeCheckInput = Readonly<{
    * Only these files count, not the project's other tests.
    */
   tests?: readonly string[];
+  /**
+   * "json" returns the check as data for a program choosing tests (see MapChangesData), and skips
+   * what only a reader acts on: the code requesting routes, copies of existing code and compile
+   * errors.
+   */
+  format?: "text" | "json";
 }>;
+
+/**
+ * The check as data, for a program that chooses which tests to run: the changed files, the related
+ * tests by rank (0 calls the change ... 4 imports it indirectly), the changed files the map does not
+ * analyze, what else it cannot see, and whether the trace stopped at its limits.
+ */
+export type MapChangesData = Readonly<{
+  base: string;
+  commit: string;
+  files: readonly Readonly<{ path: string; basePath?: string; status: MapChangedFile["status"] }>[];
+  tests: MapChangeImpact["tests"];
+  unmapped: MapChangeImpact["unmapped"];
+  checkByHand: readonly string[];
+  truncated: boolean;
+  /** With test files given, the changed code they do not run. */
+  untested?: MapUntestedChanges;
+}>;
+
+export function mapChangesData(changes: MapChanges, impact: MapChangeImpact): MapChangesData {
+  return {
+    base: changes.base,
+    commit: changes.commit,
+    files: changes.files.map(({ path, basePath, status }) => ({
+      path,
+      ...(basePath !== undefined && basePath !== path ? { basePath } : {}),
+      status,
+    })),
+    tests: impact.tests,
+    unmapped: impact.unmapped,
+    checkByHand: impact.unclear,
+    truncated: impact.truncated,
+    ...(impact.untested ? { untested: impact.untested } : {}),
+  };
+}
 
 /**
  * What the working tree's changes against a base commit affect, as project_check_changes reports
@@ -1838,6 +1887,7 @@ export async function checkMapChanges(
     project,
     input.tests,
   );
+  if (input.format === "json") return { text: JSON.stringify(mapChangesData(changes, impact)) };
   return {
     text: mapChangesText(
       changes,
