@@ -2141,47 +2141,6 @@ export function mapChangesText(
       `Decide for each whether it runs the way the project's layers do: code others build on (shared types, storage, utilities) should not import the features or interfaces built on it.${impact.dependencies.some((dependency) => dependency.back) ? " A cycle ties the modules together, so neither can change or be tested alone." : ""} If one runs the wrong way, move what both need into the lower module or pass it in, rather than import upward.`,
     );
   }
-  // Code the diff adds that the project already has: reuse it, or retire the old copy.
-  if (similar.length) {
-    const declaration = (item: { path: string; name: string; label: string }) =>
-      `${item.path}: ${item.name} ${item.label}`;
-    // Which copy would use the other and what that would import, which decides whether to.
-    const reach = ({ user, from, to, imported, cycle, packages }: MapReuseImport) => {
-      const using = user === "NEW" ? "using it" : "the existing code using the new";
-      if (imported)
-        return user === "NEW"
-          ? "no new import"
-          : `the existing code can use the new with no new import: ${from} already imports ${to}`;
-      return `${using} imports ${to} from ${from} for the first time${packages ? `, in ${packages[1]}, which ${packages[0]} already imports` : ""}${cycle ? `; ${to} already reaches ${from}, so the import closes a cycle` : ""}`;
-    };
-    // A file that repeats much of another reads best as one line.
-    const pairs = new Map<string, MapReusableCode[]>();
-    for (const item of similar) {
-      const key = `${item.path}\u0000${item.like.path}`;
-      pairs.set(key, [...(pairs.get(key) ?? []), item]);
-    }
-    list(
-      "EXISTING CODE LIKE THE NEW CODE (declarations the diff adds whose code reads almost the same as code the project already has)",
-      [...pairs.values()].flatMap((items) => {
-        const [first] = items as [MapReusableCode];
-        if (items.length < 3)
-          return items.map(
-            (item) =>
-              `${declaration(item)} ~ ${declaration(item.like)} (${item.others ? `+${item.others} more alike; ` : ""}${reach(item.imports)})`,
-          );
-        const names = items
-          .slice(0, LIST.similarNames)
-          .map((item) => `${item.name} ~ ${item.like.name}`);
-        return [
-          `${first.path} repeats ${first.like.path} in ${items.length} declarations: ${names.join(", ")}${items.length > LIST.similarNames ? ", …" : ""} (${reach(first.imports)})`,
-        ];
-      }),
-      LIST.similar,
-    );
-    lines.push(
-      "Where it needs no new import, use the existing code rather than a copy, or, if the new code replaces it, remove the old; where the existing code is the one that can use the other, have it use the new code in place of its own. Where either way imports another directory for the first time, whether that import runs the way the project's layers do is the project's call: if it does not, keep both, or, when the two must stay the same, move what both need where both may import it. Keep both when they are meant to differ: code written alike for another feature, layer or table often is, so share only what must stay the same, once both are known to do the same thing. Change existing code only where it is part of the task; tell the user of the rest rather than change it. Code that does the same in other words, copies in packages neither of which imports the other's, copies in files no other file uses and copies in database migrations are not listed.",
-    );
-  }
   const entry = (item: MapChangeEntry) =>
     `${item.route ? JSON.stringify(item.label) : item.label}${item.chain.length ? ` → ${item.chain.join(" → ")}` : ""}${
       item.removed
@@ -2281,5 +2240,48 @@ export function mapChangesText(
   lines.push(
     "Static estimate: calls through dependency injection, reflection, string dispatch, configuration and database coupling are not mapped, so an empty list does not prove the change is safe; confirm the entry points in source.",
   );
+  // Code the diff adds that the project already has: reuse it, or retire the old copy. It comes
+  // last, after what the change reaches and breaks: a copy is no fault, and weighing it first
+  // leaves the rest of the report less looked at.
+  if (similar.length) {
+    const declaration = (item: { path: string; name: string; label: string }) =>
+      `${item.path}: ${item.name} ${item.label}`;
+    // Which copy would use the other and what that would import, which decides whether to.
+    const reach = ({ user, from, to, imported, cycle, packages }: MapReuseImport) => {
+      const using = user === "NEW" ? "using it" : "the existing code using the new";
+      if (imported)
+        return user === "NEW"
+          ? "no new import"
+          : `the existing code can use the new with no new import: ${from} already imports ${to}`;
+      return `${using} imports ${to} from ${from} for the first time${packages ? `, in ${packages[1]}, which ${packages[0]} already imports` : ""}${cycle ? `; ${to} already reaches ${from}, so the import closes a cycle` : ""}`;
+    };
+    // A file that repeats much of another reads best as one line.
+    const pairs = new Map<string, MapReusableCode[]>();
+    for (const item of similar) {
+      const key = `${item.path}\u0000${item.like.path}`;
+      pairs.set(key, [...(pairs.get(key) ?? []), item]);
+    }
+    list(
+      "EXISTING CODE LIKE THE NEW CODE (declarations the diff adds whose code reads almost the same as code the project already has; weigh them after everything above)",
+      [...pairs.values()].flatMap((items) => {
+        const [first] = items as [MapReusableCode];
+        if (items.length < 3)
+          return items.map(
+            (item) =>
+              `${declaration(item)} ~ ${declaration(item.like)} (${item.others ? `+${item.others} more alike; ` : ""}${reach(item.imports)})`,
+          );
+        const names = items
+          .slice(0, LIST.similarNames)
+          .map((item) => `${item.name} ~ ${item.like.name}`);
+        return [
+          `${first.path} repeats ${first.like.path} in ${items.length} declarations: ${names.join(", ")}${items.length > LIST.similarNames ? ", …" : ""} (${reach(first.imports)})`,
+        ];
+      }),
+      LIST.similar,
+    );
+    lines.push(
+      "Where it needs no new import, or only one that runs the way the project's layers do, and both copies must stay the same, keep one; code alike for another feature, layer or table is often meant to differ, so keep both. Change existing code only where it is part of the task; tell the user of the rest.",
+    );
+  }
   return lines.join("\n");
 }

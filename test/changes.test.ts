@@ -858,6 +858,10 @@ test("each copy names which copy could use the other and what that would import,
     text,
     /Change existing code only where it is part of the task; tell the user of the rest/u,
   );
+  // Copies come last, after what the change reaches: weighing them first leaves the rest unread.
+  assert.ok(text.indexOf("EXISTING CODE LIKE THE NEW CODE") > text.indexOf("Static estimate"));
+  assert.match(text, /weigh them after everything above\)/u);
+  assert.match(text, /tell the user of the rest\.$/u);
 });
 
 test("a change names the code it left without callers, as when new code replaces old", async (t) => {
