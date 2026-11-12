@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -84,6 +86,51 @@ test("the check as JSON gives the related tests by rank and the changed files th
     (await map.checkChanges({ format: "json", tests: ["test/other.test.ts"] }, signal())).text,
   ) as MapChangesData;
   assert.deepEqual(given.untested?.changed, ["src/store.ts: markRead f1-3"]);
+});
+
+test("every changed file the map does not follow is unmapped, migrations with mapped code too", async (t) => {
+  const { root, write } = await project({
+    ...FILES,
+    "src/db/migrations/001_orders.ts": "export function up() {\n  return 1;\n}\n",
+    "scripts/deploy.sh": "echo 1\n",
+    "scripts/old.sh": "echo old\n",
+    "styles/app.wxss": ".a { color: red; }\n",
+    "data/plans.json": '{ "plans": 1 }\n',
+    "assets/logo.png": "\u0000\u0001png",
+    "README.md": "# app\n",
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write("src/store.ts", "export function markRead(id: number) {\n  return id + 1;\n}\n");
+  await write("src/db/migrations/001_orders.ts", "export function up() {\n  return 2;\n}\n");
+  await write("scripts/deploy.sh", "echo 2\n");
+  await rm(path.join(root, "scripts/old.sh"));
+  await write("styles/app.wxss", ".a { color: blue; }\n");
+  await write("data/plans.json", '{ "plans": 2 }\n');
+  await write("assets/logo.png", "\u0000\u0002png");
+  await write("README.md", "# app 2\n");
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  const data = JSON.parse(
+    (await map.checkChanges({ format: "json" }, signal())).text,
+  ) as MapChangesData;
+  // The service code still selects its test; the rest widens the check. Documentation does not.
+  assert.ok(data.tests.some((item) => item.path === "test/store.test.ts"));
+  assert.deepEqual(
+    [...data.unmapped].sort((a, b) => a.path.localeCompare(b.path)),
+    [
+      { path: "assets/logo.png", kind: "binary file" },
+      { path: "data/plans.json", kind: "unanalyzed file" },
+      { path: "scripts/deploy.sh", kind: "shell script" },
+      { path: "scripts/old.sh", kind: "shell script" },
+      { path: "src/db/migrations/001_orders.ts", kind: "database migration or schema" },
+      { path: "styles/app.wxss", kind: "style sheet" },
+    ],
+  );
+  assert.ok(
+    data.checkByHand.includes("scripts/old.sh deleted (shell script): its effects are not mapped"),
+  );
 });
 
 test("layermap check --json prints only the JSON on stdout", async () => {

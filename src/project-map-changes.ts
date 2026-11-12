@@ -282,6 +282,20 @@ const NON_CODE: readonly (readonly [RegExp, string])[] = [
   [/\.(?:html?|jinja2?|j2|hbs|ejs|tmpl|tpl|gohtml|vue|svelte|wxml)$/iu, "template"],
 ];
 const nonCodeKind = (path: string) => NON_CODE.find(([pattern]) => pattern.test(path))?.[1];
+// Other files the map does not analyze, by what they are; documentation changes no behavior.
+const UNANALYZED: readonly (readonly [RegExp, string])[] = [
+  [/\.(?:sh|bash|zsh|fish|ps1|bat|cmd)$/iu, "shell script"],
+  [/\.(?:css|scss|sass|less|styl|wxss|acss)$/iu, "style sheet"],
+];
+const DOCUMENTATION = /\.(?:md|mdx|markdown|rst|adoc)$|(?:^|\/)(?:LICENSE|NOTICE)[^/]*$/iu;
+/** What a changed file the map does not follow is, or nothing for documentation. */
+const unmappedKind = (path: string, binary: boolean) =>
+  nonCodeKind(path) ??
+  (binary
+    ? "binary file"
+    : DOCUMENTATION.test(path)
+      ? undefined
+      : (UNANALYZED.find(([pattern]) => pattern.test(path))?.[1] ?? "unanalyzed file"));
 
 export type MapChangeEntry = Readonly<{
   /** The route, or the declaration at the top of a call chain. */
@@ -315,8 +329,9 @@ export type MapChangeImpact = Readonly<{
   }>[];
   unclear: readonly string[];
   /**
-   * Changed files the map does not analyze, by kind (configuration, dependencies, migrations,
-   * templates): which tests their change reaches is not known, as unclear also says.
+   * Changed files the map does not follow, by kind (configuration, dependencies, migrations even
+   * where their code is mapped, templates, scripts, styles, binaries; not documentation): which
+   * tests their change reaches is not known, as unclear also says.
    */
   unmapped: readonly Readonly<{ path: string; kind: string }>[];
   /** Routes the base registered in the changed files that they no longer register. */
@@ -959,22 +974,31 @@ export async function mapChangeImpact(
     if (!unclear.includes(note)) unclear.push(note);
   };
   for (const file of changes.files) {
-    if (file.binary) continue;
-    const kind = nonCodeKind(file.path);
-    const objects = file.status === "DELETED" ? [] : graph.objectsAt(file.path);
+    const objects = file.status === "DELETED" || file.binary ? [] : graph.objectsAt(file.path);
     if (testCode(file.path)) {
-      if (file.status !== "DELETED") tracer.test(file.path, undefined, "changed in this diff", 1);
+      if (file.status !== "DELETED" && !file.binary)
+        tracer.test(file.path, undefined, "changed in this diff", 1);
       continue;
     }
     // Files in a language the map does not analyze have no declarations; whether the capture kept
     // them as files (a host may keep every file) does not make their changes code.
     const template = mapMiniprogramTemplate(file.path);
     const analyzed =
-      objects.length > 0 &&
-      (mapLanguageOf(file.path) !== undefined ||
-        (template && objects.some((object) => object.parsing === "PARSED")));
-    if (!analyzed && file.status !== "DELETED" && kind) {
-      unclear.push(`${file.path} changed (${kind}): its effects are not mapped`);
+      file.status === "DELETED"
+        ? !file.binary && (mapLanguageOf(file.path) !== undefined || template)
+        : objects.length > 0 &&
+          (mapLanguageOf(file.path) !== undefined ||
+            (template && objects.some((object) => object.parsing === "PARSED")));
+    // A migration changes the data the code reads, which the map does not follow even where it
+    // maps the migration's own code.
+    const kind =
+      !analyzed || MAP_MIGRATION_PATH.test(file.path)
+        ? unmappedKind(file.path, file.binary)
+        : undefined;
+    if (kind) {
+      unclear.push(
+        `${file.path} ${file.status === "DELETED" ? "deleted" : "changed"} (${kind}): its effects are not mapped`,
+      );
       unmapped.push({ path: file.path, kind });
     }
     if (!objects.length) continue;
