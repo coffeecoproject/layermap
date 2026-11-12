@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "0.1.39";
+const VERSION = "0.1.40";
 const ARGUMENTS = ["mcp"];
 
 // The same directory as cacheDirectory in src/agent/environment.ts.
