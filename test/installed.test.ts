@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { mapInstalledDigest, mapMissingPackage, mapPackageOf } from "../src/project-map-installed";
 import { MapVirtualFiles } from "../src/project-map-virtual-files";
+import { mapWorkspaceMembership } from "../src/project-map-workspace-membership";
 import { openMap, project, sandbox, signal } from "./support";
 
 const run = promisify(execFile);
@@ -397,6 +398,60 @@ test("a workspace package's output directories can come from an installed config
     }`,
   });
   assert.match(await callers(), /← called by packages\/app\/src\/main\.ts: main /u);
+});
+
+test("a pnpm workspace links its packages when its file holds other settings too", async (t) => {
+  const options = { strict: true, noEmit: true, module: "ESNext", moduleResolution: "Bundler" };
+  const { root } = await project({
+    ".gitignore": "node_modules\n",
+    "package.json": '{"name":"root","private":true}',
+    "pnpm-workspace.yaml":
+      "allowBuilds:\n  esbuild: true\n\npackages:\n  - packages/*\n\noverrides:\n  esbuild: ^0.28.1\n",
+    "packages/lib/package.json": JSON.stringify({
+      name: "@x/lib",
+      version: "1.0.0",
+      exports: { "./sub": "./src/sub.ts" },
+    }),
+    "packages/lib/tsconfig.json": JSON.stringify({ compilerOptions: options, include: ["src"] }),
+    "packages/lib/src/sub.ts": "export function shared() {\n  return 1;\n}\n",
+    "packages/app/package.json": JSON.stringify({
+      name: "app",
+      version: "1.0.0",
+      dependencies: { "@x/lib": "workspace:*" },
+    }),
+    "packages/app/tsconfig.json": JSON.stringify({ compilerOptions: options, include: ["src"] }),
+    "packages/app/src/main.ts":
+      'import { shared } from "@x/lib/sub";\nexport function main() {\n  return shared();\n}\n',
+  });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const { text } = await map.explore(
+    { path: "packages/lib/src/sub.ts", name: "shared", direction: "INCOMING", depth: 1 },
+    signal(),
+  );
+  assert.match(text, /← called by packages\/app\/src\/main\.ts: main /u);
+});
+
+test("a pnpm workspace's package list is read only in the shapes it is known by", () => {
+  const read = (text: string) => {
+    const membership = mapWorkspaceMembership({ "pnpm-workspace.yaml": text });
+    return membership.code ?? ["apps/web", "tools/x"].filter((dir) => membership.contains(dir));
+  };
+  assert.deepEqual(read("packages:\n  - apps/*\n"), ["apps/web"]);
+  assert.deepEqual(read("onlyBuiltDependencies:\n  - esbuild\npackages:\n- apps/*\n"), [
+    "apps/web",
+  ]);
+  assert.deepEqual(read("packages:\n  - '*/*'\n  - \"!tools/*\"\ncatalog:\n  zod: 4.4.3\n"), [
+    "apps/web",
+  ]);
+  for (const unknown of [
+    "packages: [apps/*]\n",
+    "packages:\n  - apps/*\npackages:\n  - tools/*\n",
+    "packages:\n  apps: '*'\n",
+    "allowBuilds:\n  esbuild: true\n",
+  ])
+    assert.equal(read(unknown), "WORKSPACE_CONFIGURATION_UNSUPPORTED", unknown);
 });
 
 test("the compiler is shown only what lies in the project", async () => {

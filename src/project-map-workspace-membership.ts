@@ -1,16 +1,24 @@
 import path from "node:path";
 
-// A deliberately small, fail-closed declaration reader, not a general YAML parser.
-// Other pnpm YAML shapes remain source-investigation gaps; they never create guessed links.
+// A deliberately small, fail-closed declaration reader, not a general YAML parser. It reads the
+// top-level `packages` list and passes over the file's other settings (allowBuilds, overrides and
+// the like), which say nothing of membership. Other shapes of that list remain source-investigation
+// gaps; they never create guessed links.
 function pnpmPackages(text: string): string[] | undefined {
   const lines = text
     .replace(/^\uFEFF/u, "")
     .split(/\r?\n/u)
     .filter((line) => line.trim() && !line.trimStart().startsWith("#"));
-  if (!/^packages:\s*(?:#.*)?$/u.test(lines[0] ?? "")) return undefined;
+  const keys = lines.flatMap((line, index) =>
+    /^packages:\s*(?:#.*)?$/u.test(line) ? [index] : [],
+  );
+  if (keys.length !== 1 || keys[0] === undefined) return undefined;
+  // The list runs to the next top-level key; its items may sit at the key's own indentation.
+  const after = lines.slice(keys[0] + 1);
+  const end = after.findIndex((line) => !/^\s/u.test(line) && !line.startsWith("-"));
   const patterns: string[] = [];
-  for (const line of lines.slice(1)) {
-    const match = /^\s+-\s+("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#]+)\s*(?:#.*)?$/u.exec(line);
+  for (const line of end === -1 ? after : after.slice(0, end)) {
+    const match = /^\s*-\s+("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#]+)\s*(?:#.*)?$/u.exec(line);
     if (!match?.[1]) return undefined;
     const value = match[1];
     try {
