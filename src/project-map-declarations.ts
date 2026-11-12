@@ -39,12 +39,16 @@ export function mapDeclarationKind(node: Node, linked = false): MapObject["kind"
     )
   )
     return "METHOD";
-  if (isVariableDeclaration(node)) return "VARIABLE";
+  if (isVariableDeclaration(node)) return mapRequireBinding(node) ? undefined : "VARIABLE";
   if (isEnumDeclaration(node)) return "ENUM";
   if (!linked) return undefined;
   if ([SyntaxKind.PropertyAssignment, SyntaxKind.ShorthandPropertyAssignment].includes(node.kind))
     return "PROPERTY";
-  if (node.kind === SyntaxKind.BindingElement) return "VARIABLE";
+  if (node.kind === SyntaxKind.BindingElement) {
+    let at = node.parent;
+    while (at && !isVariableDeclaration(at)) at = at.parent;
+    return at && mapRequireBinding(at) ? undefined : "VARIABLE";
+  }
   if (node.kind === SyntaxKind.Parameter) {
     const property = (node as Node & { modifiers?: readonly Node[] }).modifiers?.some((modifier) =>
       [
@@ -70,6 +74,23 @@ export const mapDeclarationName = (node: Node): Node | undefined => {
 
 const isFunctionValue = (node: Node) =>
   node.kind === SyntaxKind.ArrowFunction || node.kind === SyntaxKind.FunctionExpression;
+/**
+ * Whether a variable binds what a CommonJS require gives, as const fs = require("node:fs") or
+ * const { join } = require("node:path").posix do: an import, not a declaration of the file.
+ */
+export function mapRequireBinding(node: Node): boolean {
+  if (!isVariableDeclaration(node) || !node.initializer) return false;
+  let value = unwrap(node.initializer);
+  while (isPropertyAccessExpression(value)) value = unwrap(value.expression);
+  return (
+    isCallExpression(value) &&
+    isIdentifier(value.expression) &&
+    value.expression.text === "require" &&
+    value.arguments.length === 1 &&
+    isStringLiteral(value.arguments[0] as Node)
+  );
+}
+
 const unwrap = (node: Node): Node =>
   isParenthesizedExpression(node) || isAsExpression(node) ? unwrap(node.expression) : node;
 const isExports = (node: Node) =>

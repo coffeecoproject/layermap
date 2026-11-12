@@ -36,6 +36,7 @@ import {
   mapNodeLabel as label,
   mapDeclarationKind,
   mapDeclarationName as named,
+  mapRequireBinding,
 } from "./project-map-declarations";
 import {
   mapCallableCarrier,
@@ -123,14 +124,19 @@ const NOT_STATE_READS = new Set<SyntaxKind>([
 ]);
 
 // The names a file can read module state by: its own top-level variables, and the names it imports
-// (namespace imports apart). A read of another name cannot reach a module-level variable.
+// (namespace imports apart), a CommonJS require's among them. A read of another name cannot reach a
+// module-level variable.
 function moduleStateNames(file: SourceFile): { names: Set<string>; namespaces: Set<string> } {
   const names = new Set<string>();
   const namespaces = new Set<string>();
   for (const statement of file.statements) {
     if (isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations)
-        if (isIdentifier(declaration.name)) names.add(declaration.name.text);
+        if (isIdentifier(declaration.name))
+          (mapRequireBinding(declaration) ? namespaces : names).add(declaration.name.text);
+        else if (mapRequireBinding(declaration) && isObjectBindingPattern(declaration.name))
+          for (const element of declaration.name.elements)
+            if (element.name && isIdentifier(element.name)) names.add(element.name.text);
     } else if (isImportDeclaration(statement) && statement.importClause) {
       const clause = statement.importClause;
       if (clause.name) names.add(clause.name.text);

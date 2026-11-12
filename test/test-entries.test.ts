@@ -219,3 +219,35 @@ export function readsWithSetup() {
     JSON.stringify(data.tests),
   );
 });
+
+test("a CommonJS require binds an import, not a declaration of the file", async () => {
+  const read = (path: string) => `const fs = require("${path}");
+const { join } = require("node:path");
+const store = require("./store");
+
+function readConfig(dir) {
+  return fs.readFileSync(join(dir, "config.json"), "utf8") + store.count;
+}
+
+module.exports = { readConfig };
+`;
+  const { root, write } = await project({
+    "src/store.js": "let count = 0;\n\nmodule.exports = { count };\n",
+    "src/read.js": read("node:fs"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  await write("src/read.js", read("fs"));
+  const map = await openMap(root);
+  try {
+    const text = (await map.checkChanges({}, signal())).text;
+    assert.match(text, /0 changed and 0 removed declarations/u, text);
+    assert.match(text, /top-level code of src\/read\.js changed/u, text);
+    const explored = (await map.explore({ path: "src/read.js" }, signal())).text;
+    assert.doesNotMatch(explored, /\b(fs|join|store) v\d/u, explored);
+  } finally {
+    map.close();
+  }
+});
