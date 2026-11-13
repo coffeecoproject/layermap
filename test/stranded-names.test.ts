@@ -152,17 +152,71 @@ test("a search for removed names that git cannot finish is named, not taken for 
   );
   const settings = (name: string) =>
     `import os\n\n\ndef url():\n    return os.environ.get("${name}")\n`;
+  // More changed styles than CHECK BY HAND lists: what the check did not finish still shows, first.
+  const styles = (color: string) =>
+    Object.fromEntries(
+      Array.from({ length: 25 }, (_, at) => [`web/s${at}.css`, `a { color: ${color}; }\n`]),
+    );
   const text = await checkAfter(
     {
       "app/__init__.py": "",
       "app/settings.py": settings("DATABASE_URL"),
       ".env.example": "DATABASE_URL=postgres://localhost/app\n",
+      ...styles("red"),
     },
-    { "app/settings.py": settings("DB_URL") },
+    { "app/settings.py": settings("DB_URL"), ...styles("blue") },
   );
   assert.equal(section(text), "");
   assert.match(
     text,
-    /the text search for the environment variables and configuration keys the diff removed did not finish \(Git command exceeded 60000ms\.\)/u,
+    /^CHECK BY HAND[^\n]*\n {2}the text search for the environment variables and configuration keys the diff removed did not finish \(Git command exceeded 60000ms\.\)/mu,
   );
+});
+
+test("removed names past the search's limit are counted, not taken for unused", async () => {
+  const names = Array.from({ length: 52 }, (_, at) => `SETTING_${at}`);
+  const reads = (prefix: string) =>
+    `import os\n\n\ndef settings():\n    return [${names.map((name) => `os.environ.get("${prefix}${name}")`).join(", ")}]\n`;
+  const text = await checkAfter(
+    {
+      "app/__init__.py": "",
+      "app/settings.py": reads(""),
+      ".env.example": names.map((name) => `${name}=1\n`).join(""),
+    },
+    { "app/settings.py": reads("APP_") },
+  );
+  assert.match(
+    text,
+    /^CHECK BY HAND[^\n]*\n {2}the diff removed more environment variables and configuration keys than the check looks up; 2 of them were not looked for/mu,
+  );
+});
+
+test("the check as data, which leaves stranded names out, does not search for them", async (t) => {
+  const settings = (name: string) =>
+    `import os\n\n\ndef url():\n    return os.environ.get("${name}")\n`;
+  const { root, write } = await project({
+    "app/__init__.py": "",
+    "app/settings.py": settings("DATABASE_URL"),
+    ".env.example": "DATABASE_URL=postgres://localhost/app\n",
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("app/settings.py", settings("DB_URL"));
+  const searches: string[][] = [];
+  const gitRun = git.run.bind(git);
+  t.mock.method(git, "run", (args: string[], options: Parameters<typeof git.run>[1]) => {
+    if (args[0] === "grep") searches.push(args);
+    return gitRun(args, options);
+  });
+  await map.checkChanges({ format: "json" }, signal());
+  assert.deepEqual(searches, []);
+  assert.match(
+    (await map.checkChanges({}, signal())).text,
+    /DATABASE_URL, gone from app\/settings\.py/u,
+  );
+  assert.equal(searches.length, 1);
 });

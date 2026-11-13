@@ -13,7 +13,12 @@ import { mapTestPath } from "./project-map-types";
 export type MapStrandedName = Readonly<{ name: string; from: string; mentions: readonly string[] }>;
 
 /** The stranded names found, and why the search for them did not finish when it did not. */
-export type MapStrandedNames = Readonly<{ names: readonly MapStrandedName[]; failed?: string }>;
+export type MapStrandedNames = Readonly<{
+  names: readonly MapStrandedName[];
+  failed?: string;
+  /** How many removed names were past the search's limit, and not looked for. */
+  unsearched?: number;
+}>;
 
 // A key a configuration line sets: KEY=value (.env, properties), key: value (YAML), key = value
 // (TOML, INI), - KEY=value (a Compose environment list).
@@ -99,12 +104,13 @@ export async function strandedNames(
   }
   const names = [...from.keys()].slice(0, LIMIT.names);
   if (!names.length) return { names: [] };
+  const past = from.size > names.length ? { unsearched: from.size - names.length } : {};
 
   const patterns = new Map(
     names.map((name) => [name, { whole: wholeName(name), quoted: quotedName(name) }]),
   );
   const search = await gitGrep(git, { strings: names, paths: ["."], words: true }, options);
-  if (search.failed) return { names: [], failed: search.failed };
+  if (search.failed) return { names: [], failed: search.failed, ...past };
   // The lines the change added or changed, by file; an untracked file is all new lines.
   const changed = new Map(files.map((file) => [file.path, file.lines]));
   const moved = new Set<string>();
@@ -138,6 +144,7 @@ export async function strandedNames(
         from: from.get(name)?.path ?? "",
         mentions: mentions.get(name) ?? [],
       })),
+    ...past,
   };
 }
 

@@ -15,6 +15,8 @@ import {
   existingTestsChanged,
   type Importer,
   importerTests,
+  type MapPathIndex,
+  mapPathIndex,
   mirroredTests,
   RouteRequests,
   routesIn,
@@ -71,10 +73,6 @@ import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-vi
 // graph, and anything uncertain is named rather than ruled out. Who uses a changed field or type is
 // not in the call graph, so it is found on demand (project-map-shapes.ts).
 
-// A template is named by its path, so a renamed one is removed whichever of its lines changed.
-const renamedTemplate = (file: MapChangedFile) =>
-  file.status === "RENAMED" && file.basePath !== undefined && mapMiniprogramTemplate(file.basePath);
-
 export async function mapChangeImpact(
   store: CodeIndexStore,
   working: string,
@@ -97,6 +95,19 @@ export async function mapChangeImpact(
   );
   const changed: string[] = [];
   const unclear: string[] = [];
+  const incomplete: string[] = [];
+  if (changes.quoted.length)
+    incomplete.push(
+      `${changes.quoted.length} changed file${changes.quoted.length === 1 ? " has" : "s have"} a tab, a newline or a quote in ${changes.quoted.length === 1 ? "its" : "their"} path, which the map cannot hold, and ${changes.quoted.length === 1 ? "was" : "were"} not checked: ${changes.quoted.slice(0, LIST.names).join(", ")}${changes.quoted.length > LIST.names ? ", …" : ""}`,
+    );
+  if (changes.stranded.unsearched)
+    incomplete.push(
+      `the diff removed more environment variables and configuration keys than the check looks up; ${changes.stranded.unsearched} of them were not looked for, so the files still using those are not listed`,
+    );
+  if (changes.stranded.failed)
+    incomplete.push(
+      `the text search for the environment variables and configuration keys the diff removed did not finish (${changes.stranded.failed}), so the files still using them are not listed`,
+    );
   const unmapped: { path: string; kind: string }[] = [];
   const removed: { declaration: string; usedBy: Set<string> }[] = [];
   const declarations = (g: MapViewGraph, path: string) =>
@@ -118,6 +129,8 @@ export async function mapChangeImpact(
       .prepare("SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ?")
       .all(working)
       .map((row) => String(row.path)));
+  let paths: MapPathIndex | undefined;
+  const pathIndex = () => (paths ??= mapPathIndex(mappedPaths()));
 
   const topLevelChanged = (path: string) => {
     const note = `top-level code of ${path} changed (imports, constants or registrations)`;
@@ -198,8 +211,8 @@ export async function mapChangeImpact(
     if (analyzed && topLevel && file.status !== "ADDED") topLevelChanged(file.path);
     // A file's importers back up its callers: tests that import it, even without a mapped call.
     importerTests(graph, objects, tracer, importers);
-    sameDirectoryTests(mappedPaths(), file.path, tracer);
-    mirroredTests(mappedPaths(), file.path, tracer);
+    sameDirectoryTests(pathIndex(), file.path, tracer);
+    mirroredTests(pathIndex(), file.path, tracer);
   }
   await tracer.trace(
     starts.flatMap((start) => start.refs),
@@ -267,7 +280,7 @@ export async function mapChangeImpact(
     );
   if (tracer.held.size) await unworkedRequests(routeRequests(), tracer, reaching);
   if (requests?.unsearched)
-    unclear.push(
+    incomplete.push(
       `the check ran out of time before searching ${requests.unsearched} of the project's runnable tests for the paths of the routes the change reaches, so a test naming one of them there is not selected`,
     );
   const unread = [...tracer.shapes.unread];
@@ -373,7 +386,10 @@ export async function mapChangeImpact(
     }[] = [];
     for (const file of changes.files) {
       if (!file.basePath || file.binary || mapTestPath(file.basePath)) continue;
-      const renamed = renamedTemplate(file);
+      // Code names what a renamed file declares by its path (an import, a template's tag) as much
+      // as by its name, so all of it is read: a declaration that kept its name counts as removed
+      // where code the diff left alone still names it at the old path.
+      const renamed = file.status === "RENAMED";
       if (!file.baseLines.length && !renamed) continue;
       const now = new Set(
         file.status === "DELETED"
@@ -383,11 +399,11 @@ export async function mapChangeImpact(
       for (const object of units(before, file.basePath)) {
         if (!renamed && !overlaps(file.baseLines, object.anchor.startLine, object.anchor.endLine))
           continue;
-        if (now.has(`${object.kind}\u0000${before.qualifiedName(object.id)}`)) continue;
+        const kept = now.has(`${object.kind}\u0000${before.qualifiedName(object.id)}`);
+        if (kept && !renamed) continue;
         // Only the outermost removed declaration: a removed class, not each of its methods.
         const parent = before.parent(object.id);
         if (parent && !mapIsModule(before.object(parent)) && gone.includes(parent)) continue;
-        gone.push(object.id);
         // Code outside it that names it or one of its members, as a removed class's methods are
         // called, or as a subclass extends it.
         const inside = (ref: string) => {
@@ -411,6 +427,9 @@ export async function mapChangeImpact(
               : `${user.anchor.path}: ${before.qualifiedName(owner)}`,
           );
         }
+        // Moved with its file and named by nothing at the old path: not removed.
+        if (kept && !usedBy.size) continue;
+        gone.push(object.id);
         goneShapes.push({
           shapes: mapIsShape(object)
             ? [object.id]
@@ -570,9 +589,11 @@ export async function mapChangeImpact(
       // The base's trace names the base's files and lines. Each is taken to where the working
       // tree has it: a renamed file by its new path, a line by where the diff moved it, and a test
       // file the diff deleted runs nothing. A route the diff removed keeps the base's site.
-      const pathNow = (path: string) => changedIn.get(path)?.path ?? path;
-      const testNow = (path: string) =>
-        changedIn.get(path)?.status === "DELETED" ? undefined : pathNow(path);
+      // A file of the base where the working tree has it: none for a deleted file.
+      const pathNow = (path: string) => {
+        const file = changedIn.get(path);
+        return file?.status === "DELETED" ? undefined : (file?.path ?? path);
+      };
       const siteNow = (site: string) => {
         const at = site.lastIndexOf(":");
         const line = Number(site.slice(at + 1));
@@ -582,12 +603,13 @@ export async function mapChangeImpact(
       // A declaration's label starts with its file's path: "src/cli.ts: main".
       const labelNow = (label: string) => {
         const at = label.indexOf(": ");
-        const path = at < 0 ? label : label.slice(0, at);
-        return `${pathNow(path)}${label.slice(path.length)}`;
+        const file = at < 0 ? label : label.slice(0, at);
+        const now = pathNow(file);
+        return now === undefined ? undefined : `${now}${label.slice(file.length)}`;
       };
       for (const entry of beforeTracer.entries.values()) {
         const label = entry.route ? entry.label : labelNow(entry.label);
-        if (tracer.entries.has(label)) continue;
+        if (label === undefined || tracer.entries.has(label)) continue;
         const removed = entry.route && removedRoutes.includes(entry.label);
         const site = entry.site && (removed ? entry.site : siteNow(entry.site));
         tracer.entries.set(label, {
@@ -600,15 +622,17 @@ export async function mapChangeImpact(
         });
       }
       for (const [path, test] of beforeTracer.tests) {
-        const now = testNow(path);
+        const now = pathNow(path);
         if (now === undefined) continue;
         tracer.test(now, undefined, test.why, test.rank);
         for (const name of test.names) tracer.test(now, name, test.why, test.rank);
       }
       for (const [area, known] of beforeTracer.areas)
         for (const [path, names] of known.tests) {
-          const now = testNow(path);
-          if (now !== undefined) tracer.shareArea(pathNow(area), known.through, now, names);
+          const now = pathNow(path);
+          const place = pathNow(area);
+          if (now !== undefined && place !== undefined)
+            tracer.shareArea(place, known.through, now, names);
         }
       unclear.push(...beforeTracer.unclear);
       if (beforeTracer.truncated) tracer.truncated = true;
@@ -713,6 +737,14 @@ export async function mapChangeImpact(
       }))
       .sort((left, right) => right.tests.length - left.tests.length),
     unclear: [...new Set([...unclear, ...tracer.unclear])],
+    incomplete: [
+      ...incomplete,
+      ...(tracer.truncated
+        ? [
+            `the trace stopped at ${LIMITS.depth} levels or ${LIMITS.declarations} declarations; continue with project_explore_map from the last ones`,
+          ]
+        : []),
+    ],
     unmapped,
     removedRoutes,
     uncalled,
@@ -858,6 +890,8 @@ export type MapChangesData = Readonly<{
   files: readonly Readonly<{ path: string; basePath?: string; status: MapChangedFile["status"] }>[];
   tests: MapChangeImpact["tests"];
   unmapped: MapChangeImpact["unmapped"];
+  /** Where the check itself stopped short, so what it would have found is missing. */
+  incomplete: readonly string[];
   checkByHand: readonly string[];
   truncated: boolean;
   /** With test files given, the changed code they do not run. */
@@ -875,6 +909,7 @@ export function mapChangesData(changes: MapChanges, impact: MapChangeImpact): Ma
     })),
     tests: impact.tests,
     unmapped: impact.unmapped,
+    incomplete: impact.incomplete,
     checkByHand: impact.unclear,
     truncated: impact.truncated,
     ...(impact.untested ? { untested: impact.untested } : {}),
@@ -892,13 +927,15 @@ export async function checkMapChanges(
   signal: AbortSignal,
 ): Promise<{ text: string; data: MapChangesData }> {
   const { index, project, working } = input;
-  const changes = await readMapChanges(project, input.base, signal);
+  const changes = await readMapChanges(project, input.base, signal, {
+    names: input.format !== "json",
+  });
   await index.ensureIndex(working, signal);
   // The base map tells what the diff removed, and which existing tests it changed.
   const base = changes.files.some(
     (file) =>
       file.basePath !== undefined &&
-      (file.baseLines.length || file.baseText !== undefined || renamedTemplate(file)),
+      (file.baseLines.length || file.baseText !== undefined || file.status === "RENAMED"),
   )
     ? await input.baseVersion(changes.commit, signal)
     : undefined;
@@ -1013,10 +1050,10 @@ export async function mapRouteClients(
   return routeClients(routes, registrations, git, gitOptions(project, signal));
 }
 
-/** What the compiler says the diff broke, on the lines it left unchanged. */
 /**
- * The errors on lines the diff left unchanged that the base did not have on such lines, each error
- * counted, as the same text at another place in a file is another error. A context compares with
+ * What the compiler says the diff broke: the errors on lines the diff left unchanged that the
+ * base did not have on such lines, each error counted, as the same text at another place in a file
+ * is another error. A context compares with
  * the same configuration's in the base, and only one compiled on both sides says anything: without
  * the base's errors, those it had would look new. Both compile against the packages installed now,
  * so a version the base needed differently is not seen.

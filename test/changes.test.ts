@@ -13,7 +13,7 @@ import { GitCommandOutputLimitError } from "../src/git-runner";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
 import { git, parseMapDiff, readMapChanges } from "../src/project-map-change-diff";
-import { mirroredTests } from "../src/project-map-change-tests";
+import { mapPathIndex, mirroredTests } from "../src/project-map-change-tests";
 import type { Tracer } from "../src/project-map-change-trace";
 import { checkMapChanges, type MapChangesData } from "../src/project-map-changes";
 import { GoMapAnalyzer } from "../src/project-map-language-go";
@@ -52,7 +52,7 @@ router.get("/old", oldHandler);
 };
 
 test("git diff hunks become changed line ranges on both sides, with the text they removed", () => {
-  const files = parseMapDiff(
+  const { files, quoted } = parseMapDiff(
     [
       "diff --git a/src/a.ts b/src/a.ts",
       "index 1..2 100644",
@@ -105,6 +105,7 @@ test("git diff hunks become changed line ranges on both sides, with the text the
       "+r",
     ].join("\n"),
   );
+  assert.deepEqual(quoted, ['"a/t\\tab.ts" "b/t\\tab.ts"']);
   assert.deepEqual(files, [
     {
       path: "src/a.ts",
@@ -189,13 +190,13 @@ test("a mirrored test tree is the module's tests only in the package the module 
   const picked: string[] = [];
   const tracer = { test: (path: string) => picked.push(path) } as unknown as Tracer;
   mirroredTests(
-    [
+    mapPathIndex([
       "tests/billing/test_charge.py",
       "server/tests/unit/billing/test_refund.py",
       "src/test/java/billing/ChargeTest.java",
       "packages/shop/tests/billing/test_cart.py",
       "server/billing/tests/test_inline.py",
-    ],
+    ]),
     "server/billing/service.py",
     tracer,
   );
@@ -205,11 +206,76 @@ test("a mirrored test tree is the module's tests only in the package the module 
   ]);
   picked.length = 0;
   mirroredTests(
-    ["src/test/java/billing/ChargeTest.java", "other/src/test/java/billing/X.java"],
+    mapPathIndex(["src/test/java/billing/ChargeTest.java", "other/src/test/java/billing/X.java"]),
     "src/main/java/billing/Charge.java",
     tracer,
   );
   assert.deepEqual(picked, ["src/test/java/billing/ChargeTest.java"]);
+});
+
+test("a moved module is removed where code the diff left alone imports its old path", async (t) => {
+  const { root, write } = await project({
+    "app/__init__.py": "",
+    "app/a.py": "def foo():\n    return 1\n",
+    "app/main.py": "from app.a import foo\n\n\ndef run():\n    return foo()\n",
+    "tests/test_main.py": "from app.main import run\n\n\ndef test_run():\n    assert run() == 1\n",
+    "src/a.ts": "export function bar() {\n  return 1;\n}\n",
+    "src/main.ts": 'import { bar } from "./a";\n\nexport function go() {\n  return bar();\n}\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  // The Python module moves alone; the TypeScript one moves with its importer.
+  await run("git", ["mv", "app/a.py", "app/b.py"], { cwd: root });
+  await run("git", ["mv", "src/a.ts", "src/b.ts"], { cwd: root });
+  await write(
+    "src/main.ts",
+    'import { bar } from "./b";\n\nexport function go() {\n  return bar();\n}\n',
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /REMOVED OR RENAMED, STILL USED[^\n]*\n {2}app\/a\.py: foo f1-2 ← app\/main\.py: run\n/u,
+  );
+  assert.doesNotMatch(text, /src\/a\.ts: bar/u);
+  assert.match(text, /tests\/test_main\.py: test_run \(calls run\)/u);
+});
+
+test("an entry point in a file the diff deleted is not named as reached", async (t) => {
+  const { root } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/lib.ts": "export function work() {\n  return 1;\n}\n",
+    "src/cli.ts":
+      'import { work } from "./lib";\n\nfunction main() {\n  return work();\n}\n\nmain();\n',
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await rm(path.join(root, "src/cli.ts"));
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(text, /^ {2}src\/cli\.ts: main f3-5$/mu);
+  assert.doesNotMatch(text, /AFFECTED ENTRY POINTS/u);
+});
+
+test("an untracked binary is named as one, and a path git quotes as not checked", async (t) => {
+  const { root, write } = await project({ "a.ts": "export const a = 1;\n", "odd\tname.ts": "x\n" });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("odd\tname.ts", "y\n");
+  await write("logo.png", "\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR");
+  await write("notes.xyz", "plain text\n");
+  const { data } = await map.checkChanges({ format: "json" }, signal());
+  assert.deepEqual(data.unmapped, [
+    { path: "logo.png", kind: "binary file" },
+    { path: "notes.xyz", kind: "unanalyzed file" },
+  ]);
+  assert.deepEqual(data.incomplete, [
+    '1 changed file has a tab, a newline or a quote in its path, which the map cannot hold, and was not checked: "a/odd\\tname.ts" "b/odd\\tname.ts"',
+  ]);
 });
 
 test("a change lists the routes it reaches, removed declarations, unmapped files and related tests", async (t) => {

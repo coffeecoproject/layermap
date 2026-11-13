@@ -37,6 +37,8 @@ export type MapChanges = Readonly<{
   base: string;
   commit: string;
   files: readonly MapChangedFile[];
+  /** Changed files whose paths git quotes (a tab, a newline or a quote), which are not checked. */
+  quoted: readonly string[];
   /** Environment variables and configuration keys the diff removed that other files still use. */
   stranded: MapStrandedNames;
 }>;
@@ -72,6 +74,11 @@ export type MapChangeImpact = Readonly<{
     tests: readonly Readonly<{ path: string; names: readonly string[] }>[];
   }>[];
   unclear: readonly string[];
+  /**
+   * Where the check itself stopped short (a search cut by the deadline, a limit or git, the trace
+   * stopping at its limits), so what it would have found is missing; shown before anything else.
+   */
+  incomplete: readonly string[];
   /**
    * Changed files the map does not follow, by kind (configuration, dependencies, migrations even
    * where their code is mapped, templates, scripts, styles, binaries; not documentation): which

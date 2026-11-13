@@ -1,6 +1,9 @@
+import { open } from "node:fs/promises";
+import path from "node:path";
 import { ProjectEvidenceError } from "./core";
 import { GitCommandOutputLimitError, GitRunner } from "./git-runner";
 import type { Hunk, Lines, MapChangedFile, MapChanges } from "./project-map-change-types";
+import { mapLanguageOf } from "./project-map-language";
 import { strandedNames } from "./project-map-names";
 import { MAP_MIGRATION_PATH, mapTestPath } from "./project-map-types";
 import { inExcludedDirectory } from "./source-scope";
@@ -48,6 +51,8 @@ export async function readMapChanges(
   project: string,
   base: string,
   signal: AbortSignal,
+  // The names the diff strands are reported in the text alone; data leaves them out.
+  options: Readonly<{ names: boolean }> = { names: true },
 ): Promise<MapChanges> {
   const commit = await resolveMapBase(project, base, signal);
   // A diff cut at the output limit would leave changes out of the check, so it is not checked.
@@ -78,9 +83,17 @@ export async function readMapChanges(
   ).stdout.toString("utf8");
   // A map never holds dependencies or coding agents' own directories, so their files are not
   // changes to check.
-  const files = parseMapDiff(diff).filter((file) => !inExcludedDirectory(file.path));
+  const parsed = parseMapDiff(diff);
+  const files = parsed.files.filter((file) => !inExcludedDirectory(file.path));
+  // A test's existing tests are read from its code; data and fixtures beside it hold none.
   for (const [index, file] of files.entries())
-    if (file.basePath && file.status !== "ADDED" && !file.binary && mapTestPath(file.basePath))
+    if (
+      file.basePath &&
+      file.status !== "ADDED" &&
+      !file.binary &&
+      mapTestPath(file.basePath) &&
+      mapLanguageOf(file.basePath)
+    )
       files[index] = {
         ...file,
         baseText: (
@@ -93,29 +106,49 @@ export async function readMapChanges(
     .toString("utf8")
     .split("\0")
     .filter((path) => path && !inExcludedDirectory(path));
-  for (const path of untracked)
+  for (const file of untracked)
     files.push({
-      path,
+      path: file,
       status: "ADDED",
       lines: [EVERYTHING],
       baseLines: [],
       hunks: [],
       removed: [],
-      binary: false,
+      // git diff says which tracked files are binary; an untracked one in a language the map does
+      // not analyze is told the way git tells it, by a NUL in its first 8000 bytes.
+      binary: !mapLanguageOf(file) && (await startsBinary(path.join(project, file))),
     });
-  const stranded = await strandedNames(
-    project,
-    files,
-    (file) => nonCodeKind(file) === "configuration",
-    git,
-    gitOptions(project, signal),
-  );
-  return { base, commit, files, stranded };
+  const stranded = options.names
+    ? await strandedNames(
+        project,
+        files,
+        (file) => nonCodeKind(file) === "configuration",
+        git,
+        gitOptions(project, signal),
+      )
+    : { names: [] };
+  return { base, commit, files, quoted: parsed.quoted, stranded };
 }
 
-/** Files, changed line ranges and removed text from `git diff --unified=0 -M`. */
-export function parseMapDiff(text: string): MapChangedFile[] {
+async function startsBinary(file: string): Promise<boolean> {
+  const handle = await open(file, "r").catch(() => undefined);
+  if (!handle) return false;
+  try {
+    const head = Buffer.alloc(8000);
+    const { bytesRead } = await handle.read(head, 0, head.length, 0);
+    return head.subarray(0, bytesRead).includes(0);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Files, changed line ranges and removed text from `git diff --unified=0 -M`, and the paths git
+ * quoted (a tab, a newline or a quote in them), which the map cannot hold, as git wrote them.
+ */
+export function parseMapDiff(text: string): { files: MapChangedFile[]; quoted: string[] } {
   const files: MapChangedFile[] = [];
+  const quoted: string[] = [];
   type Draft = {
     path: string;
     basePath?: string;
@@ -131,7 +164,8 @@ export function parseMapDiff(text: string): MapChangedFile[] {
   let inHunk = false;
   const finish = () => {
     if (!current) return;
-    if (!current.path.startsWith('"')) files.push(current);
+    if (current.path.startsWith('"')) quoted.push(current.path);
+    else files.push(current);
     current = undefined;
   };
   for (const line of text.split("\n")) {
@@ -184,7 +218,7 @@ export function parseMapDiff(text: string): MapChangedFile[] {
     }
   }
   finish();
-  return files;
+  return { files, quoted };
 }
 
 function addHunk(

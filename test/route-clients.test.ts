@@ -83,6 +83,38 @@ test("a search for a route's requests that git cannot finish is named, not taken
   );
 });
 
+test("code requesting a route from a file with a non-ASCII name is named by that name", async () => {
+  const text = await checkAfter(
+    {
+      ...FILES,
+      "web/页面.ts": "export const go = () => fetch('/api/feeds/3/read', { method: 'PUT' });\n",
+      "web/页面.test.ts": "export const url = '/api/feeds/4/read';\n",
+    },
+    { "server/routes.ts": routes("/feeds/:id/read", "id + 1") },
+  );
+  const requested = section(text);
+  assert.match(requested, /^ {2}"PUT \/feeds\/:id\/read" ← web\/api\.ts:1, web\/页面\.ts:1$/mu);
+});
+
+test("routes past the request search's limit are counted, not taken for unrequested", async () => {
+  const handlers = (body: string) =>
+    `declare const router: { get(path: string, h: unknown): void };\nexport function work() {\n  return ${body};\n}\n${Array.from(
+      { length: 42 },
+      (_, at) => `router.get("/report${at}", () => work());\n`,
+    ).join("")}`;
+  const text = await checkAfter(
+    {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["server"] }),
+      "server/routes.ts": handlers("1"),
+    },
+    { "server/routes.ts": handlers("2") },
+  );
+  assert.match(
+    text,
+    /^CHECK BY HAND[^\n]*\n {2}the change reaches more routes than the check searches requests for; 2 of them were not searched/mu,
+  );
+});
+
 test("a route whose path a registration with another method keeps is not named as removed", async () => {
   const text = await checkAfter(FILES, {
     "server/routes.ts": routes("/feeds/:id/read", "id").replace("router.put(", "router.get("),

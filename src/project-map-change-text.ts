@@ -240,27 +240,24 @@ export function mapChangesText(
       "If the change alters what a route accepts or returns, or its path, these callers must change with it. Paths built at run time are not found.",
     );
   }
+  // What the check did not finish comes first, and in full: it says what the rest leaves out.
+  const incomplete = [
+    ...impact.incomplete,
+    ...(clients.unsearched
+      ? [
+          `the change reaches more routes than the check searches requests for; ${clients.unsearched} of them were not searched, so the code requesting them is not listed`,
+        ]
+      : []),
+    ...(clients.failed
+      ? [
+          `the text search for code and templates requesting the routes the change reaches did not finish (${clients.failed}), so the callers that name their paths are not listed`,
+        ]
+      : []),
+  ];
   list(
     "CHECK BY HAND (the map cannot see these)",
-    [
-      ...impact.unclear,
-      ...(changes.stranded.failed
-        ? [
-            `the text search for the environment variables and configuration keys the diff removed did not finish (${changes.stranded.failed}), so the files still using them are not listed`,
-          ]
-        : []),
-      ...(clients.failed
-        ? [
-            `the text search for code and templates requesting the routes the change reaches did not finish (${clients.failed}), so the callers that name their paths are not listed`,
-          ]
-        : []),
-      ...(impact.truncated
-        ? [
-            `the trace stopped at ${LIMITS.depth} levels or ${LIMITS.declarations} declarations; continue with project_explore_map from the last ones`,
-          ]
-        : []),
-    ],
-    LIST.unclear,
+    [...incomplete, ...impact.unclear],
+    incomplete.length + LIST.unclear,
   );
   if (direct.length) {
     list(

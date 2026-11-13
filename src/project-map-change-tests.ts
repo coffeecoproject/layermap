@@ -134,17 +134,42 @@ export function supportTests(store: CodeIndexStore, version: string, tracer: Tra
   }
 }
 
+/** The mapped files by where they are, read once per check for the tests beside each change. */
+export type MapPathIndex = Readonly<{
+  /** Test files by their directory ("" or ending in /). */
+  testsIn: ReadonlyMap<string, readonly string[]>;
+  /** Files by the name of the directory holding them. */
+  under: ReadonlyMap<string, readonly string[]>;
+}>;
+
+export function mapPathIndex(paths: readonly string[]): MapPathIndex {
+  const testsIn = new Map<string, string[]>();
+  const under = new Map<string, string[]>();
+  const add = (map: Map<string, string[]>, key: string, path: string) => {
+    const found = map.get(key);
+    if (found) found.push(path);
+    else map.set(key, [path]);
+  };
+  for (const path of paths) {
+    const slash = path.lastIndexOf("/");
+    const directory = slash < 0 ? "" : path.slice(0, slash + 1);
+    if (mapTestPath(path)) add(testsIn, directory, path);
+    const name = directory.slice(directory.lastIndexOf("/", directory.length - 2) + 1, -1);
+    if (name) add(under, name, path);
+  }
+  return { testsIn, under };
+}
+
 // Tests of the same module in a mirrored test tree: tests/file/ for polar/file/service.py, in the
 // same package: what is above the test tree (server/ of server/tests/) is above the file too.
-export function mirroredTests(paths: readonly string[], file: string, tracer: Tracer) {
+export function mirroredTests(paths: MapPathIndex, file: string, tracer: Tracer) {
   const directories = file.split("/").slice(0, -1);
   const module = directories.at(-1);
   if (!module) return;
-  for (const candidate of paths) {
-    if (!candidate.includes(`/${module}/`)) continue;
+  for (const candidate of paths.under.get(module) ?? []) {
     const parts = candidate.split("/");
-    const at = parts.lastIndexOf(module);
-    if (at < 1 || at !== parts.length - 2) continue;
+    const at = parts.length - 2;
+    if (at < 1) continue;
     const tree = parts
       .slice(0, at)
       .some(
@@ -343,14 +368,10 @@ export async function unworkedRequests(
 }
 
 // Test files beside a changed file, as Go's _test.go files and many projects keep them.
-export function sameDirectoryTests(paths: readonly string[], path: string, tracer: Tracer) {
+export function sameDirectoryTests(paths: MapPathIndex, path: string, tracer: Tracer) {
   const slash = path.lastIndexOf("/");
-  const directory = slash < 0 ? "" : path.slice(0, slash + 1);
-  for (const candidate of paths) {
-    if (!candidate.startsWith(directory)) continue;
-    if (candidate.slice(directory.length).includes("/") || !mapTestPath(candidate)) continue;
+  for (const candidate of paths.testsIn.get(slash < 0 ? "" : path.slice(0, slash + 1)) ?? [])
     tracer.test(candidate, undefined, "in the same directory", 3);
-  }
 }
 
 // The routes a file registers: a call's route literal, or a decorator's route.

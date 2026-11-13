@@ -18,6 +18,8 @@ export type MapRouteClients = Readonly<{
 export type MapRouteClientSearch = Readonly<{
   routes: readonly MapRouteClients[];
   failed?: string;
+  /** How many routes were past the search's limit, and not searched for. */
+  unsearched?: number;
 }>;
 
 type Segment = Readonly<{ text: string; param: boolean }>;
@@ -249,10 +251,14 @@ export async function routeClients(
   git: GitRunner,
   options: GitRunOptions,
 ): Promise<MapRouteClientSearch> {
-  const wanted = routes
+  const searchable = routes
     .map((entry) => ({ ...entry, segments: routeSegments(entry.route) }))
-    .filter((entry) => entry.segments.some((segment) => !segment.param && segment.text.length >= 3))
-    .slice(0, LIMIT.routes);
+    .filter((entry) =>
+      entry.segments.some((segment) => !segment.param && segment.text.length >= 3),
+    );
+  const wanted = searchable.slice(0, LIMIT.routes);
+  const past =
+    searchable.length > wanted.length ? { unsearched: searchable.length - wanted.length } : {};
   // A request is the route it fits most closely among those the map knows, the removed ones included.
   const known = [...new Set([...registrations.routes, ...wanted.map((entry) => entry.route)])].map(
     (route) => ({ route, segments: routeSegments(route) }),
@@ -263,7 +269,7 @@ export async function routeClients(
     for (const segment of entry.segments) if (!segment.param) needles.add(`/${segment.text}`);
   if (!needles.size) return { routes: [] };
   const search = await gitGrep(git, { strings: [...needles], paths: CLIENT_FILES }, options);
-  if (search.failed) return { routes: [], failed: search.failed };
+  if (search.failed) return { routes: [], failed: search.failed, ...past };
   // Each route's requests, and whether each one's path starts with a mount prefix (/api, /v1).
   const clients = new Map<string, Map<string, boolean>>();
   for (const { path: file, line, text } of search.hits) {
@@ -296,7 +302,7 @@ export async function routeClients(
       };
     })
     .filter((entry) => entry.clients.length);
-  return { routes: requestedRoutes };
+  return { routes: requestedRoutes, ...past };
 }
 
 /** One line per route: its label, whether it was removed, and the first few places requesting it. */

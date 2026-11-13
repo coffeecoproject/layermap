@@ -273,6 +273,10 @@ export async function gitGrep(
       await git.run(
         [
           "grep",
+          // NUL after the path and the line number: the path as it is, whatever it holds, and no
+          // column field whatever grep.column says.
+          "-z",
+          "--no-column",
           "-n",
           "-I",
           ...(search.words ? ["-w"] : []),
@@ -298,9 +302,10 @@ export async function gitGrep(
     return error.exitCode === 1 ? { hits: [] } : { hits: [], failed: error.message };
   }
   const hits: GitGrepHit[] = [];
-  for (const text of found.split("\n")) {
-    const match = /^(.+?):(\d+):(.*)$/u.exec(text);
-    if (match) hits.push({ path: match[1] ?? "", line: Number(match[2]), text: match[3] ?? "" });
+  for (const record of found.split("\n")) {
+    const [path, line, text, extra] = record.split("\0");
+    if (path && line && text !== undefined && extra === undefined)
+      hits.push({ path, line: Number(line), text });
   }
   return { hits };
 }
