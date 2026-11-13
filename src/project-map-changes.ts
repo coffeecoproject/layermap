@@ -4,29 +4,29 @@ import type { CodeIndex } from "./code-index";
 import type { CodeIndexStore } from "./code-index-store";
 import type { CodeIndexSource } from "./code-index-types";
 import {
+  changedInBase,
+  changedInWorkingTree,
   git,
   gitOptions,
   overlaps,
   readMapChanges,
   unmappedKind,
-  workingLine,
 } from "./project-map-change-diff";
+import { mapRemovedImpact } from "./project-map-change-removed";
 import {
-  existingTestsChanged,
   type Importer,
   importerTests,
   type MapPathIndex,
   mapPathIndex,
   mirroredTests,
   RouteRequests,
-  routesIn,
   routeTests,
   sameDirectoryTests,
   supportTests,
   unworkedRequests,
 } from "./project-map-change-tests";
 import { mapChangesText } from "./project-map-change-text";
-import { CALLER_KINDS, type ChangeStart, NAMING_KINDS, Tracer } from "./project-map-change-trace";
+import { type ChangeStart, changeUnits, Tracer } from "./project-map-change-trace";
 import {
   LIMITS,
   LIST,
@@ -48,24 +48,13 @@ import {
 import { mapReuseImports, newModuleDependencies } from "./project-map-dependencies";
 import { mapPackageOf } from "./project-map-installed";
 import { mapLanguageOf } from "./project-map-language";
-import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
+import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { MAP_REFERENCES_MAX, type MapDiagnostic } from "./project-map-reference-types";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
-import {
-  type MapShapeReader,
-  MapShapeUses,
-  mapIsShape,
-  mapShapeDeadline,
-} from "./project-map-shapes";
-import {
-  MAP_MIGRATION_PATH,
-  type MapAnchor,
-  type MapObject,
-  type MapRelation,
-  mapTestPath,
-} from "./project-map-types";
+import { type MapShapeReader, MapShapeUses, mapShapeDeadline } from "./project-map-shapes";
+import { MAP_MIGRATION_PATH, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
-import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
+import { MapViewGraph, mapDeclarationLabel, mapInnermost } from "./project-map-view-graph";
 
 // "What does this change affect?": the declarations a diff touches, the entry points and tests
 // their callers reach, and what a static map cannot see. It borrows test impact analysis practice:
@@ -109,15 +98,6 @@ export async function mapChangeImpact(
       `the text search for the environment variables and configuration keys the diff removed did not finish (${changes.stranded.failed}), so the files still using them are not listed`,
     );
   const unmapped: { path: string; kind: string }[] = [];
-  const removed: { declaration: string; usedBy: Set<string> }[] = [];
-  const declarations = (g: MapViewGraph, path: string) =>
-    g.objectsAt(path).filter((object) => !mapIsModule(object) && g.isAddressable(object));
-  // What a change is read in: a file's declarations, or a template as one unit, the page or
-  // component it shows.
-  const units = (g: MapViewGraph, path: string) =>
-    mapMiniprogramTemplate(path)
-      ? g.objectsAt(path).filter((object) => mapIsModule(object) && object.parsing === "PARSED")
-      : declarations(g, path);
   let changedCount = 0;
   const starts: ChangeStart[] = [];
   // Read once for all changed files, as a large change (thousands of files nobody has added to
@@ -168,26 +148,14 @@ export async function mapChangeImpact(
     // The innermost declarations around each changed line; top-level lines belong to the file.
     const hits = new Set<string>();
     let topLevel = false;
-    const inFile = units(graph, file.path);
+    const inFile = changeUnits(graph, file.path);
     for (const [from, to] of file.lines) {
       const containing = inFile.filter(
         (object) => object.anchor.startLine <= to && from <= object.anchor.endLine,
       );
       // What a deletion took from top-level code is found in the base.
       if (!containing.length && from <= to) topLevel = true;
-      // Keep the innermost: a changed method, not its whole class.
-      for (const object of containing)
-        if (
-          !containing.some(
-            (other) =>
-              other !== object &&
-              object.anchor.start <= other.anchor.start &&
-              other.anchor.end <= object.anchor.end &&
-              other.anchor.startLine <= to &&
-              from <= other.anchor.endLine,
-          )
-        )
-          hits.add(object.id);
+      for (const object of mapInnermost(containing)) hits.add(object.id);
     }
     for (const ref of hits) {
       if (changedCount++ >= LIMITS.changed) {
@@ -297,424 +265,28 @@ export async function mapChangeImpact(
     tests && (await untestedChanges(graph, tracer, memberCalls, starts, changed, tests));
   supportTests(store, working, tracer);
 
-  // Declarations the diff removed or renamed, and the code it left unchanged that still uses them.
-  const rewrittenTests: { path: string; names: string[] }[] = [];
-  const removedRoutes: string[] = [];
-  const uncalled: string[] = [];
-  if (base) {
-    const before = new MapViewGraph(store, base);
-    const registered = new Set<string>();
-    for (const file of changes.files)
-      if (file.status !== "DELETED")
-        for (const route of routesIn(graph, file.path)) registered.add(route);
-    for (const file of changes.files)
-      if (file.basePath && file.status !== "ADDED")
-        for (const route of routesIn(before, file.basePath))
-          if (!registered.has(route) && !removedRoutes.includes(route)) removedRoutes.push(route);
-    for (const file of changes.files)
-      if (file.basePath && file.baseText !== undefined && mapTestPath(file.basePath)) {
-        const names = await existingTestsChanged(before, graph, file, project);
-        if (names.length) rewrittenTests.push({ path: file.path, names });
-      }
-    const beforeTracer = new Tracer(
-      before,
-      cache.memberCalls(store, base),
-      new MapShapeUses(before, shapes.base, until),
-    );
-    const changedIn = new Map(
-      changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
-    );
-    // Where a use in the base is in the working tree, when the diff left its lines alone.
-    const nowAt = (anchor: Pick<MapAnchor, "path" | "startLine" | "endLine">) => {
-      const file = changedIn.get(anchor.path);
-      if (
-        file &&
-        (file.status === "DELETED" || overlaps(file.baseLines, anchor.startLine, anchor.endLine))
-      )
-        return undefined;
-      return {
-        path: file?.path ?? anchor.path,
-        startLine: workingLine(file, anchor.startLine),
-        endLine: workingLine(file, anchor.endLine),
-      };
-    };
-    const samePlace = (
-      anchor: MapAnchor,
-      place: { path: string; startLine: number; endLine: number },
-    ) =>
-      anchor.path === place.path &&
-      anchor.startLine === place.startLine &&
-      anchor.endLine === place.endLine;
-    // What took a removed declaration's place: one of its kind and name, as the method of a renamed
-    // class or a moved function is. The code the diff left alone uses it where it used the old one.
-    const replaces = (now: MapObject, removed: MapObject) =>
-      now.kind === removed.kind && now.name === removed.name;
-    const relationsNow = new Map<string, MapRelation[]>();
-    const relationsIn = (path: string) => {
-      let found = relationsNow.get(path);
-      if (!found) {
-        found = graph.relationsFrom(graph.objectsAt(path).map((object) => object.id));
-        relationsNow.set(path, found);
-      }
-      return found;
-    };
-    // A use in the base that names what the diff removed, on lines the diff did not touch, which in
-    // the working tree names nothing that took its place.
-    const stillUses = (relation: MapRelation) => {
-      const place = nowAt(relation.anchor);
-      if (!place) return false;
-      if (relation.to === undefined) return true;
-      const used = before.object(relation.to);
-      // A template is named by the tag that shows it, which a moved component keeps.
-      const tag = mapIsModule(used);
-      return !relationsIn(place.path).some(
-        (use) =>
-          NAMING_KINDS.has(use.kind) &&
-          use.to !== undefined &&
-          samePlace(use.anchor, place) &&
-          (tag ? use.target === relation.target : replaces(graph.object(use.to), used)),
-      );
-    };
-    const gone: string[] = [];
-    // The fields and types each removed declaration takes away, whose uses are read once all are
-    // known. A removed field or type counts alone: what is nested in it is reached through it, and
-    // a generic access such as Operations[K]["request"] finds the same member of every key.
-    const goneShapes: {
-      shapes: readonly string[];
-      inside: (ref: string) => boolean;
-      usedBy: Set<string>;
-    }[] = [];
-    for (const file of changes.files) {
-      if (!file.basePath || file.binary || mapTestPath(file.basePath)) continue;
-      // Code names what a renamed file declares by its path (an import, a template's tag) as much
-      // as by its name, so all of it is read: a declaration that kept its name counts as removed
-      // where code the diff left alone still names it at the old path.
-      const renamed = file.status === "RENAMED";
-      if (!file.baseLines.length && !renamed) continue;
-      const now = new Set(
-        file.status === "DELETED"
-          ? []
-          : units(graph, file.path).map((o) => `${o.kind}\u0000${graph.qualifiedName(o.id)}`),
-      );
-      for (const object of units(before, file.basePath)) {
-        if (!renamed && !overlaps(file.baseLines, object.anchor.startLine, object.anchor.endLine))
-          continue;
-        const kept = now.has(`${object.kind}\u0000${before.qualifiedName(object.id)}`);
-        if (kept && !renamed) continue;
-        // Only the outermost removed declaration: a removed class, not each of its methods.
-        const parent = before.parent(object.id);
-        if (parent && !mapIsModule(before.object(parent)) && gone.includes(parent)) continue;
-        // Code outside it that names it or one of its members, as a removed class's methods are
-        // called, or as a subclass extends it.
-        const inside = (ref: string) => {
-          for (let at: string | undefined = ref; at !== undefined; at = before.parent(at))
-            if (at === object.id) return true;
-          return false;
-        };
-        const usedBy = new Set<string>();
-        for (const relation of before.relationsTo(
-          before
-            .objectsAt(file.basePath)
-            .filter((member) => inside(member.id))
-            .map((member) => member.id),
-        )) {
-          const owner = before.owner(relation.from);
-          if (!NAMING_KINDS.has(relation.kind) || inside(owner) || !stillUses(relation)) continue;
-          const user = before.object(owner);
-          usedBy.add(
-            mapIsModule(user)
-              ? `${user.anchor.path}${mapMiniprogramTemplate(user.anchor.path) ? " (template)" : ": top-level code"}`
-              : `${user.anchor.path}: ${before.qualifiedName(owner)}`,
-          );
-        }
-        // Moved with its file and named by nothing at the old path: not removed.
-        if (kept && !usedBy.size) continue;
-        gone.push(object.id);
-        goneShapes.push({
-          shapes: mapIsShape(object)
-            ? [object.id]
-            : before
-                .objectsAt(file.basePath)
-                .filter((member) => inside(member.id) && mapIsShape(member))
-                .map((member) => member.id),
-          inside,
-          usedBy,
-        });
-        removed.push({
-          declaration: mapIsModule(object)
-            ? `${file.basePath} (template)`
-            : `${file.basePath}: ${before.qualifiedName(object.id)} ${mapDeclarationLabel(object)}`,
-          usedBy,
-        });
-      }
-    }
-    // The code that reads or names the fields and types the diff removed, on lines it left alone,
-    // unless the working tree reads there what took their place: a renamed type's fields, a moved
-    // type. A field or type taking a place is declared in a changed file.
-    await beforeTracer.shapes.read(goneShapes.flatMap((item) => item.shapes));
-    const declared = new Map<string, MapObject[]>();
-    for (const file of changes.files)
-      if (file.status !== "DELETED")
-        for (const object of graph.objectsAt(file.path))
-          if (mapIsShape(object)) {
-            const key = `${object.kind}\u0000${object.name}`;
-            declared.set(key, [...(declared.get(key) ?? []), object]);
-          }
-    const successors = (shape: string) => {
-      const removed = before.object(shape);
-      return declared.get(`${removed.kind}\u0000${removed.name}`) ?? [];
-    };
-    await tracer.shapes.read(
-      goneShapes.flatMap((item) =>
-        item.shapes.flatMap((shape) => successors(shape).map((object) => object.id)),
-      ),
-    );
-    const unfollowed = new Set<string>();
-    for (const { shapes: inRemoved, inside, usedBy } of goneShapes)
-      for (const shape of inRemoved) {
-        if (beforeTracer.shapes.unread.has(shape))
-          unclear.push(
-            `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; search the code for its name`,
-          );
-        const now = successors(shape);
-        for (const { owner, anchor } of beforeTracer.shapes.uses.get(shape) ?? []) {
-          const place = nowAt(anchor);
-          if (
-            inside(owner) ||
-            !place ||
-            now.some((object) =>
-              tracer.shapes.uses.get(object.id)?.some((use) => samePlace(use.anchor, place)),
-            )
-          )
-            continue;
-          if (now.some((object) => tracer.shapes.unread.has(object.id))) {
-            unfollowed.add(`${before.object(shape).anchor.path}: ${before.qualifiedName(shape)}`);
-            continue;
-          }
-          const user = before.object(owner);
-          usedBy.add(
-            mapIsModule(user)
-              ? `${user.anchor.path}: top-level code`
-              : `${user.anchor.path}: ${before.qualifiedName(owner)}`,
-          );
-        }
-      }
-    if (unfollowed.size)
-      unclear.push(
-        `${unfollowed.size} removed fields or types are used on lines the diff left alone, and whether that code now uses what took their place was not read (${[
-          ...unfollowed,
-        ]
-          .sort()
-          .slice(0, LIST.names)
-          .join(
-            ", ",
-          )}${unfollowed.size > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
-      );
-    // Template links the diff broke: a template's binding or tag that reached a method, a component
-    // or an event in the base and reaches nothing now, as when a component stops emitting an event
-    // a page binds, or app.json registers a component where there is none. No compiler checks a
-    // template: what one the diff did not change still names is still used; on a line the diff
-    // changed, it is new. What the diff removed is listed above.
-    const removedAt = (ref: string) => {
-      for (let at: string | undefined = ref; at !== undefined; at = before.parent(at))
-        if (gone.includes(at)) return true;
-      return false;
-    };
-    const lost = new Map<string, Set<string>>();
-    const changedAt = new Map(changes.files.map((file) => [file.path, file]));
-    for (const path of mappedPaths().filter(mapMiniprogramTemplate)) {
-      const template = graph.objectsAt(path).find((object) => mapIsModule(object));
-      if (!template) continue;
-      const broken = graph
-        .relationsFrom(graph.scope(template.id).refs)
-        .filter((relation) => relation.to === undefined && NAMING_KINDS.has(relation.kind));
-      if (!broken.length) continue;
-      const file = changedAt.get(path);
-      const basePath = file ? file.basePath : path;
-      const was = basePath === undefined ? undefined : before.objectsAt(basePath).find(mapIsModule);
-      const links = was ? before.relationsFrom(before.scope(was.id).refs) : [];
-      for (const relation of broken) {
-        const earlier = links.filter(
-          (link) => link.kind === relation.kind && link.target === relation.target,
-        );
-        if (earlier.some((link) => link.to === undefined)) continue;
-        const event = miniprogramEventOf(relation.target);
-        const at = `${path}:${relation.anchor.startLine}`;
-        if (file && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)) {
-          unclear.push(
-            event
-              ? `${at} binds the ${event.event} event of <${event.tag}>, which it does not emit`
-              : relation.kind === "REFERENCES"
-                ? `${at} puts <${relation.target}>, which its registration does not find`
-                : `${at} binds ${relation.target}, which its page or component does not register`,
-          );
-          continue;
-        }
-        // An event is named by the component that no longer emits it.
-        const reached = event
-          ? links.find((link) => link.kind === "REFERENCES" && link.target === event.tag)?.to
-          : earlier.find((link) => link.to !== undefined)?.to;
-        if (reached === undefined || removedAt(reached)) continue;
-        const object = before.object(reached);
-        const name = mapIsModule(object)
-          ? `${object.anchor.path} (template)${event ? `: ${event.event} event` : ""}`
-          : `${object.anchor.path}: ${before.qualifiedName(reached)} ${mapDeclarationLabel(object)}`;
-        const users = lost.get(name) ?? new Set();
-        users.add(`${path} (template)`);
-        lost.set(name, users);
-      }
-    }
-    for (const [declaration, users] of lost) removed.push({ declaration, usedBy: users });
-
-    // Top-level code the diff removed: imports, calls and registrations outside any declaration,
-    // not the declarations it holds.
-    for (const file of changes.files) {
-      if (!file.basePath || file.status === "DELETED" || mapTestPath(file.basePath)) continue;
-      const module = before.objectsAt(file.basePath).find(mapIsModule);
-      if (
-        module &&
-        mapLanguageOf(file.basePath) !== undefined &&
-        before
-          .relationsFrom(before.scope(module.id).refs)
-          .some(
-            (relation) =>
-              relation.kind !== "CONTAINS" &&
-              overlaps(file.baseLines, relation.anchor.startLine, relation.anchor.endLine),
-          )
-      )
-        topLevelChanged(file.path);
-    }
-    if (gone.length) {
-      await beforeTracer.trace(gone, gone, true);
-      // The base's trace names the base's files and lines. Each is taken to where the working
-      // tree has it: a renamed file by its new path, a line by where the diff moved it, and a test
-      // file the diff deleted runs nothing. A route the diff removed keeps the base's site.
-      // A file of the base where the working tree has it: none for a deleted file.
-      const pathNow = (path: string) => {
-        const file = changedIn.get(path);
-        return file?.status === "DELETED" ? undefined : (file?.path ?? path);
-      };
-      const siteNow = (site: string) => {
-        const at = site.lastIndexOf(":");
-        const line = Number(site.slice(at + 1));
-        const place = nowAt({ path: site.slice(0, at), startLine: line, endLine: line });
-        return place && `${place.path}:${place.startLine}`;
-      };
-      // A declaration's label starts with its file's path: "src/cli.ts: main".
-      const labelNow = (label: string) => {
-        const at = label.indexOf(": ");
-        const file = at < 0 ? label : label.slice(0, at);
-        const now = pathNow(file);
-        return now === undefined ? undefined : `${now}${label.slice(file.length)}`;
-      };
-      for (const entry of beforeTracer.entries.values()) {
-        const label = entry.route ? entry.label : labelNow(entry.label);
-        if (label === undefined || tracer.entries.has(label)) continue;
-        const removed = entry.route && removedRoutes.includes(entry.label);
-        const site = entry.site && (removed ? entry.site : siteNow(entry.site));
-        tracer.entries.set(label, {
-          label,
-          route: entry.route,
-          chain: entry.chain,
-          ...(site ? { site } : {}),
-          certain: entry.certain,
-          ...(removed ? { removed: true } : {}),
-        });
-      }
-      for (const [path, test] of beforeTracer.tests) {
-        const now = pathNow(path);
-        if (now === undefined) continue;
-        tracer.test(now, undefined, test.why, test.rank);
-        for (const name of test.names) tracer.test(now, name, test.why, test.rank);
-      }
-      for (const [area, known] of beforeTracer.areas)
-        for (const [path, names] of known.tests) {
-          const now = pathNow(path);
-          const place = pathNow(area);
-          if (now !== undefined && place !== undefined)
-            tracer.shareArea(place, known.through, now, names);
-        }
-      unclear.push(...beforeTracer.unclear);
-      if (beforeTracer.truncated) tracer.truncated = true;
-    }
-
-    // Declarations the diff took the last caller from, as when it replaces old code with new: the
-    // base called them from the lines it removed or changed, and nothing outside tests calls them
-    // now. Only those the base called from outside tests; the ones the diff removed are listed above.
-    const moved = new Map(
-      changes.files.flatMap((file) =>
-        file.basePath ? [[file.basePath, file.status === "DELETED" ? undefined : file.path]] : [],
-      ),
-    );
-    const called = new Set<string>();
-    for (const file of changes.files) {
-      if (!file.basePath || !file.baseLines.length || file.binary || mapTestPath(file.basePath))
-        continue;
-      for (const relation of before.relationsFrom(
-        before.objectsAt(file.basePath).map((object) => object.id),
-      ))
-        if (
-          CALLER_KINDS.has(relation.kind) &&
-          relation.to !== undefined &&
-          overlaps(file.baseLines, relation.anchor.startLine, relation.anchor.endLine)
-        )
-          called.add(before.owner(relation.to));
-    }
-    const outsideTests = (callers: { ref: string }[], g: MapViewGraph) =>
-      callers.filter((caller) => !mapTestPath(g.object(caller.ref).anchor.path));
-    const candidates: { path: string; name: string; now: MapObject; tested: boolean }[] = [];
-    for (const ref of called) {
-      const object = before.object(ref);
-      if (mapIsModule(object) || mapTestPath(object.anchor.path) || gone.includes(ref)) continue;
-      const path = moved.has(object.anchor.path)
-        ? moved.get(object.anchor.path)
-        : object.anchor.path;
-      if (path === undefined) continue;
-      const name = before.qualifiedName(ref);
-      const now = declarations(graph, path).find(
-        (candidate) => candidate.kind === object.kind && graph.qualifiedName(candidate.id) === name,
-      );
-      if (!now) continue;
-      // What the trace read of a field's uses is weighed below, with those of the fields it did not.
-      const calls = tracer.callers(now.id).filter((caller) => !caller.uses);
-      if (outsideTests(calls, graph).length || tracer.usesWithoutCalls(now.id).length) continue;
-      if (!outsideTests(beforeTracer.callers(ref), before).length) continue;
-      candidates.push({ path, name, now, tested: calls.length > 0 });
-    }
-    // A field's other reads are not all in the map; it counts only if a search finds none.
-    await tracer.shapes.read(candidates.map(({ now }) => now.id));
-    const unknown: string[] = [];
-    for (const { path, name, now, tested } of candidates) {
-      if (tracer.shapes.unread.has(now.id)) unknown.push(name);
-      else if (
-        !tracer.shapes.uses
-          .get(now.id)
-          ?.some(({ owner, write }) => !write && !mapTestPath(graph.object(owner).anchor.path))
-      ) {
-        uncalled.push(
-          `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
-        );
-      }
-    }
-    uncalled.sort();
-    if (unknown.length)
-      unclear.push(
-        `${unknown.length} fields lost callers the diff removed, and whether others use them was not read (${unknown
-          .sort()
-          .slice(0, LIST.names)
-          .join(
-            ", ",
-          )}${unknown.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
-      );
-  }
+  // What the diff took away, read in the base.
+  const taken = base
+    ? await mapRemovedImpact({
+        store,
+        cache,
+        base,
+        graph,
+        tracer,
+        changes,
+        shapes: shapes.base,
+        until,
+        project,
+        mappedPaths,
+      })
+    : undefined;
+  for (const path of taken?.topLevel ?? []) topLevelChanged(path);
+  unclear.push(...(taken?.unclear ?? []));
 
   return {
     changed,
-    removed: removed.map(({ declaration, usedBy }) => ({
-      declaration,
-      usedBy: [...usedBy].sort(),
-    })),
-    rewrittenTests,
+    removed: taken?.removed ?? [],
+    rewrittenTests: taken?.rewrittenTests ?? [],
     entries: [...tracer.entries.values()].sort(entryOrder),
     tests: [...tracer.tests]
       .map(([path, test]) => ({
@@ -746,8 +318,8 @@ export async function mapChangeImpact(
         : []),
     ],
     unmapped,
-    removedRoutes,
-    uncalled,
+    removedRoutes: taken?.removedRoutes ?? [],
+    uncalled: taken?.uncalled ?? [],
     dependencies: newModuleDependencies(store, cache, working, base, changes.files),
     ...(untested ? { untested } : {}),
     truncated: tracer.truncated,
@@ -1094,10 +666,10 @@ async function compileBreaks(
         const name = mapPackageOf(specifier);
         if (name && notInstalled.includes(name)) missing.add(name);
       }
-  const changedIn = new Map(changes.files.map((file) => [file.path, file]));
+  const changedAt = changedInWorkingTree(changes.files);
   const onUnchanged = after.contexts.flatMap(({ configPath, errors }) => {
     const unchanged = errors.filter((item) => {
-      const file = changedIn.get(item.path);
+      const file = changedAt.get(item.path);
       return !file || !overlaps(file.lines, item.line, item.line);
     });
     return unchanged.length ? [{ configPath, unchanged }] : [];
@@ -1115,9 +687,7 @@ async function compileBreaks(
           signal,
         )
       : { contexts: [], unchecked: [] };
-  const inBase = new Map(
-    changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
-  );
+  const inBase = changedInBase(changes.files);
   const named = (path: string, item: MapDiagnostic) =>
     `${path}\u0000${item.code}\u0000${item.span}\u0000${item.text}`;
   const compiled = new Map(before.contexts.map((context) => [context.configPath, context.errors]));

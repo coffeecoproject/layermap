@@ -34,6 +34,15 @@ const USED_BY: Partial<Record<MapRelation["kind"], string>> = {
 const runsTarget = (relation: MapRelation) => CALLER_KINDS.has(relation.kind) && !relation.event;
 export const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 
+/**
+ * What a change is read in: a file's declarations, or a template as one unit, the page or
+ * component it shows.
+ */
+export const changeUnits = (graph: MapViewGraph, path: string) =>
+  mapMiniprogramTemplate(path)
+    ? graph.objectsAt(path).filter((object) => mapIsModule(object) && object.parsing === "PARSED")
+    : graph.declarationsAt(path);
+
 // A declaration the trace reached, and the one below it on the way from the change; used: it was
 // reached by reading or naming a field or type, not by calling; shaped: it was reached from the
 // change through such uses alone, so what the change did to a type may have changed it too.

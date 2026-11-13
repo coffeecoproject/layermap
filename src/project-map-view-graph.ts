@@ -38,6 +38,19 @@ export const mapLineRange = ({ anchor }: Lines) =>
 export const mapDeclarationLabel = (object: Lines & Pick<MapObject, "kind">) =>
   `${MAP_KIND_LETTERS[object.kind]}${mapLineRange(object)}`;
 
+type Span = Readonly<{ anchor: Readonly<{ start: number; end: number }> }>;
+/** The objects no other of them lies inside: a changed method, not its whole class. */
+export const mapInnermost = <T extends Span>(objects: readonly T[]): T[] =>
+  objects.filter(
+    (object) =>
+      !objects.some(
+        (other) =>
+          other !== object &&
+          object.anchor.start <= other.anchor.start &&
+          other.anchor.end <= object.anchor.end,
+      ),
+  );
+
 /**
  * Reader-facing declarations over the occurrence index. A declaration is addressable when it
  * is module-level or a member of a class, type or module-level object literal; closures,
@@ -107,8 +120,27 @@ export class MapViewGraph {
     return parent ?? undefined;
   }
 
+  /** The object and the objects around it, innermost first. */
+  lineage(ref: string): string[] {
+    const found: string[] = [];
+    for (let at: string | undefined = ref; at !== undefined; at = this.parent(at)) found.push(at);
+    return found;
+  }
+
   children(ref: string): string[] {
     return this.statements.children.all(this.version, ref).map((row) => String(row.to_ref));
+  }
+
+  /** The declarations of a file other code can name, without the file itself. */
+  declarationsAt(path: string): MapObject[] {
+    return this.objectsAt(path).filter(
+      (object) => !mapIsModule(object) && this.isAddressable(object),
+    );
+  }
+
+  /** What a declaration is in either version of a file: its kind and qualified name. */
+  declarationKey(object: MapObject): string {
+    return `${object.kind}\u0000${this.qualifiedName(object.id)}`;
   }
 
   isAddressable(object: MapObject): boolean {

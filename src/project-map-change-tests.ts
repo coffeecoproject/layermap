@@ -14,7 +14,7 @@ import {
 import { mapReadsRequests } from "./project-map-language";
 import { MAP_PATH_PARAMETER } from "./project-map-route-paths";
 import { type MapObject, mapRunnableTest, mapTestPath } from "./project-map-types";
-import { type MapViewGraph, mapIsModule } from "./project-map-view-graph";
+import { type MapViewGraph, mapInnermost, mapIsModule } from "./project-map-view-graph";
 
 // The tests related to a change beyond its callers: by import, place and name, by the routes
 // they request, and the existing tests a diff rewrote.
@@ -38,8 +38,6 @@ export async function existingTestsChanged(
           "\n",
         ) ?? [])
       : [];
-  const key = (graph: MapViewGraph, object: MapObject) =>
-    `${object.kind}\u0000${graph.qualifiedName(object.id)}`;
   const body = (lines: readonly string[], object: MapObject) =>
     lines.slice(object.anchor.startLine - 1, object.anchor.endLine).map((line) => line.trimEnd());
   // A test whose every line is still there, in order, only gained lines (a new table row, another
@@ -50,28 +48,17 @@ export async function existingTestsChanged(
     return at === before.length;
   };
   const now = new Map(
-    (file.status === "DELETED" ? [] : after.objectsAt(file.path))
-      .filter((object) => !mapIsModule(object) && after.isAddressable(object))
-      .map((object) => [key(after, object), object]),
+    (file.status === "DELETED" ? [] : after.declarationsAt(file.path)).map((object) => [
+      after.declarationKey(object),
+      object,
+    ]),
   );
-  const changed = before
-    .objectsAt(file.basePath)
-    .filter((object) => !mapIsModule(object) && before.isAddressable(object))
-    .filter((object) => {
-      const counterpart = now.get(key(before, object));
-      return !counterpart || !extended(body(baseLines, object), body(workingLines, counterpart));
-    });
+  const changed = before.declarationsAt(file.basePath).filter((object) => {
+    const counterpart = now.get(before.declarationKey(object));
+    return !counterpart || !extended(body(baseLines, object), body(workingLines, counterpart));
+  });
   // A class changes with its method; name the method.
-  return changed
-    .filter(
-      (object) =>
-        !changed.some(
-          (other) =>
-            other !== object &&
-            object.anchor.start <= other.anchor.start &&
-            other.anchor.end <= object.anchor.end,
-        ),
-    )
+  return mapInnermost(changed)
     .map((object) => before.qualifiedName(object.id))
     .sort();
 }

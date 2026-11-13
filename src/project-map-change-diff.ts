@@ -238,6 +238,12 @@ function addHunk(
   file.lines.push(newCount > 0 ? [newStart, newStart + newCount - 1] : [newStart + 1, newStart]);
 }
 
+/** The changed files, by their path in the working tree (a deleted file's, in the base). */
+export const changedInWorkingTree = (files: readonly MapChangedFile[]) =>
+  new Map(files.map((file) => [file.path, file] as const));
+/** The changed files that existed in the base, by their path there. */
+export const changedInBase = (files: readonly MapChangedFile[]) =>
+  new Map(files.flatMap((file) => (file.basePath ? [[file.basePath, file] as const] : [])));
 export const overlaps = (lines: Lines, start: number, end: number) =>
   lines.some(([from, to]) => from <= end && start <= to);
 /** Where a base line the diff left unchanged is in the working tree; a file outside it keeps it. */
