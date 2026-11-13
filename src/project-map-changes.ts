@@ -2046,7 +2046,7 @@ function routeTests(
         // naming a route's whole path, the test requests it; a stretch of it, it may.
         if (!read) {
           tracer.mentioner(label, candidate);
-          if (fragment === routePath(label) && wholePath(text, fragment)) {
+          if (fragment === mapRouteLabel(label).path && wholePath(text, fragment)) {
             requested.add(label);
             tracer.requester(label, candidate);
           }
@@ -2196,13 +2196,11 @@ function routesIn(graph: MapViewGraph, path: string): Set<string> {
   return routes;
 }
 
-const routePath = (route: string) => route.slice(route.indexOf("/"));
-
 // The longest literal part of a route's path, which code requesting it spells out: "/funds/items"
 // of "GET /funds/items/{id}"; a part too short to tell routes apart is none.
 function routeFragment(label: string): string | undefined {
-  const longest = routePath(label)
-    .split(/\/(?:\{[^}]*\}|:[^/]+|<[^>]*>|\*)(?=\/|$)/u)
+  const longest = mapRouteLabel(label)
+    .path.split(/\/(?:\{[^}]*\}|:[^/]+|<[^>]*>|\*)(?=\/|$)/u)
     .sort((left, right) => right.length - left.length)[0];
   return longest && longest.replace(/\//gu, "").length >= 4 ? longest : undefined;
 }
@@ -2392,7 +2390,7 @@ export async function mapRouteClients(
   const served = (route: string) =>
     registrations.routes.has(route) ||
     [...registrations.routes].some(
-      (other) => !other.startsWith("/") && routePath(other) === routePath(route),
+      (other) => !other.startsWith("/") && mapRouteLabel(other).path === mapRouteLabel(route).path,
     );
   const routes = [
     ...affected.map((entry) => ({ route: entry.label, removed: false })),

@@ -1167,6 +1167,79 @@ def test_item():
   }
 });
 
+test("a Go test naming a route's whole path requests it, so the trace does not climb on to the app's other tests", async () => {
+  const goTest = (name: string, path: string) => `package web
+
+import (
+\t"net/http"
+\t"net/http/httptest"
+\t"testing"
+)
+
+func Test${name}(t *testing.T) {
+\trec := httptest.NewRecorder()
+\tNewServer().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "${path}", nil))
+\tif rec.Code != http.StatusOK {
+\t\tt.Fatal(rec.Code)
+\t}
+}
+`;
+  const store = (items: string) =>
+    `package store\n\nfunc ReadItems() []int {\n\treturn []int{${items}}\n}\n`;
+  const { root, write } = await project({
+    "go.mod": "module example.com/m\n\ngo 1.22\n",
+    "store/store.go": store(""),
+    "web/server.go": `package web
+
+import (
+\t"net/http"
+
+\t"example.com/m/store"
+)
+
+func items(w http.ResponseWriter, r *http.Request) {
+\t_ = store.ReadItems()
+}
+
+func health(w http.ResponseWriter, r *http.Request) {}
+
+type Router struct{ http.ServeMux }
+
+func (r *Router) Get(path string, h func(http.ResponseWriter, *http.Request)) {
+\tr.HandleFunc(path, h)
+}
+
+func NewServer() *Router {
+\trouter := &Router{}
+\trouter.Get("/items", items)
+\trouter.Get("/health", health)
+\treturn router
+}
+`,
+    "web/items_test.go": goTest("Items", "/items"),
+    "web/health_test.go": goTest("Health", "/health"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write("store/store.go", store("1"));
+  const map = await openMap(root);
+  try {
+    const data = JSON.parse(
+      (await map.checkChanges({ format: "json" }, signal())).text,
+    ) as MapChangesData;
+    // The map does not read a Go test's requests: its text naming the route's whole path says it
+    // requests the route. The health test calls NewServer too, which only climbing on to every
+    // test of the app, as for a route no test is found to request, would select it for.
+    assert.deepEqual(
+      data.tests.filter((item) => item.rank < 4).map((item) => [item.path, item.why]),
+      [["web/items_test.go", 'mentions "GET /items"']],
+      JSON.stringify(data.tests),
+    );
+  } finally {
+    map.close();
+  }
+});
+
 // A field or type has no relations in the map; a search for its references links it to its users.
 const SHAPES = (side: string, key: string, unread = "") => ({
   "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src", "test"] }),

@@ -65,6 +65,13 @@ test("a changed route handler names the code that requests its path, not tests o
   assert.doesNotMatch(requested, /feeds\.test\.ts|api\.ts:2|nav\.ts|routes\.ts/u);
 });
 
+test("a route whose path a registration with another method keeps is not named as removed", async () => {
+  const text = await checkAfter(FILES, {
+    "server/routes.ts": routes("/feeds/:id/read", "id").replace("router.put(", "router.get("),
+  });
+  assert.doesNotMatch(text, /removed or renamed/u);
+});
+
 test("a renamed route names the code still requesting its old path", async () => {
   const text = await checkAfter(FILES, { "server/routes.ts": routes("/feeds/:id/seen", "id") });
   assert.match(
