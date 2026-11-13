@@ -323,8 +323,14 @@ export const mapPathAllowed = (relative: string, prefixes: readonly string[]) =>
     (prefix) => prefix === "." || relative === prefix || relative.startsWith(`${prefix}/`),
   );
 export const mapTestPath = (path: string) =>
-  /(?:^|\/)(?:__tests__|tests?|fixtures?|e2e|testdata)(?:\/|$)|\.(?:spec|test)\.|_test\.(?:go|py)$|(?:^|\/)(?:test_[^/]*\.py|conftest\.py)$/iu.test(
+  /(?:^|\/)(?:__tests__|tests?|fixtures?|testFixtures|e2e|testdata)(?:\/|$)|\.(?:spec|test)\.|_test\.(?:go|py)$|(?:^|\/)(?:test_[^/]*\.py|conftest\.py)$/iu.test(
     path,
+  );
+
+/** Test files a test runner runs, by the naming conventions of the mapped languages. */
+export const mapRunnableTest = (file: string) =>
+  /_test\.(?:go|py)$|(?:^|\/)test_[^/]*\.py$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:Test|Tests|IT)\.(?:java|kt)$/u.test(
+    file,
   );
 
 /** Database migrations and schemas: written once and kept as they ran, whatever they repeat. */

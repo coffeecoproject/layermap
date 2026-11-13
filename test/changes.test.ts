@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
@@ -167,6 +167,91 @@ test("a rename that updates its callers removes the old name without saying code
     /^REMOVED OR RENAMED \(no reference found on a line the diff left unchanged\)\n {2}src\/store\.ts: legacy f5-7\n/mu,
   );
   assert.doesNotMatch(text, /STILL USED/u);
+});
+
+test("code using a moved declaration from a line the diff only moved follows it, with lines added just below", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write(
+    "src/store.ts",
+    FILES["src/store.ts"].replace(/\n\nexport function legacy[^]*$/u, "\n"),
+  );
+  await write("src/old.ts", "export function legacy() {\n  return 1;\n}\n");
+  // Lines added right below the line calling it: a hunk that only adds, after that line.
+  await write(
+    "src/routes.ts",
+    FILES["src/routes.ts"]
+      .replace(
+        'import { legacy, markRead } from "./store";',
+        'import { markRead } from "./store"; import { legacy } from "./old";',
+      )
+      .replace("  return legacy();\n", "  return legacy();\n  // Moved to old.ts.\n"),
+  );
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^REMOVED OR RENAMED \(no reference[^\n]*\n {2}src\/store\.ts: legacy f5-7\n/mu,
+  );
+  assert.doesNotMatch(text, /STILL USED/u);
+});
+
+test("an entry point only the base reaches is named where the working tree registers it", async (t) => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  // The route's handler still calls what the diff removed, a line further down.
+  await write(
+    "src/store.ts",
+    FILES["src/store.ts"].replace(/\n\nexport function legacy[^]*$/u, "\n"),
+  );
+  await write("src/routes.ts", `// Feeds.\n${FILES["src/routes.ts"]}`);
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /^ {2}"GET \/old" → oldHandler → legacy \(registered at src\/routes\.ts:8\)$/mu,
+  );
+});
+
+// A removed declaration is traced in the base, whose files and lines the diff may have moved.
+test("the tests a removed declaration's trace finds are named where they are now, and only if they are", async (t) => {
+  const calls = (name: string) =>
+    `import { legacy } from "../src/a";\n\nexport function ${name}() {\n  return legacy();\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/a.ts":
+      "export function keep() {\n  return 1;\n}\n\nexport function legacy() {\n  return 2;\n}\n\nexport function unused() {\n  return 3;\n}\n",
+    "test/moved.test.ts": calls("testMoved"),
+    "test/gone.test.ts": calls("testGone"),
+    "test/kept.test.ts": calls("testKept"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/a.ts", "export function keep() {\n  return 1;\n}\n");
+  await run("git", ["mv", "test/moved.test.ts", "test/renamed.test.ts"], { cwd: root });
+  await rm(path.join(root, "test/gone.test.ts"));
+  const { text, data } = await map.checkChanges({}, signal());
+  // Tests still calling what the diff removed break: they come first, by the call, wherever the
+  // diff moved them; a test the diff deleted runs nothing.
+  assert.deepEqual(
+    data.tests.map((item) => [item.path, item.names, item.why, item.rank]),
+    [
+      ["test/kept.test.ts", ["testKept"], "calls legacy", 0],
+      ["test/renamed.test.ts", ["testMoved"], "calls legacy", 0],
+    ],
+  );
+  // A removed declaration nothing called is no entry point, nor something to check by hand.
+  assert.doesNotMatch(text, /has no callers/u);
+  assert.match(text, /^ {2}src\/a\.ts: unused f9-11$/mu);
 });
 
 test("renaming a type, a class or a component leaves the code using their members, unchanged, following them", async (t) => {

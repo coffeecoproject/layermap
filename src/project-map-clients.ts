@@ -93,6 +93,24 @@ export function mapRouteServes(route: string, request: string): boolean {
 const routeSegments = (label: string) => segments(mapRouteLabel(label).path);
 
 /**
+ * The longest stretch of a route's path that code requesting it spells out, parameters left out:
+ * "/funds/items" of "GET /funds/items/{id}/read"; a path with no parameter whole, as written.
+ */
+export function mapRouteLiteral(label: string): string {
+  const all = routeSegments(label);
+  if (!all.some((segment) => segment.param)) return mapRouteLabel(label).path;
+  let longest = "";
+  let stretch = "";
+  for (const segment of [...all, { text: "", param: true }])
+    if (!segment.param) stretch += `/${segment.text}`;
+    else {
+      if (stretch.length > longest.length) longest = stretch;
+      stretch = "";
+    }
+  return longest;
+}
+
+/**
  * The path a string literal requests, if it is one: at its start, after a leading placeholder for
  * a base URL (`${base}/items`), after a scheme and host, in a Thymeleaf @{...} link, or after
  * Spring's redirect: and forward:. A literal that ends in a slash and is joined with what follows

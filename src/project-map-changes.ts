@@ -11,6 +11,7 @@ import {
   mapIsRouteLabel,
   mapRequestedRoutes,
   mapRouteLabel,
+  mapRouteLiteral,
   mapRouteServes,
   routeClients,
   routeClientsLine,
@@ -40,6 +41,7 @@ import {
   type MapAnchor,
   type MapObject,
   type MapRelation,
+  mapRunnableTest,
   mapTestPath,
 } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
@@ -151,7 +153,7 @@ export async function readMapChanges(
   // changes to check.
   const files = parseMapDiff(diff).filter((file) => !inExcludedDirectory(file.path));
   for (const [index, file] of files.entries())
-    if (file.basePath && file.status !== "ADDED" && !file.binary && testCode(file.basePath))
+    if (file.basePath && file.status !== "ADDED" && !file.binary && mapTestPath(file.basePath))
       files[index] = {
         ...file,
         baseText: (
@@ -254,9 +256,6 @@ export function parseMapDiff(text: string): MapChangedFile[] {
   finish();
   return files;
 }
-
-// Test code, including shared test fixtures that Gradle keeps in src/testFixtures.
-const testCode = (file: string) => mapTestPath(file) || /(?:^|\/)testFixtures\//u.test(file);
 
 const overlaps = (lines: Lines, start: number, end: number) =>
   lines.some(([from, to]) => from <= end && start <= to);
@@ -446,6 +445,8 @@ class Tracer {
   truncated = false;
   private readonly callerCount = new Map<string, number>();
   private readonly owners = new Set<string>();
+  // Declarations the diff removed that the trace starts from.
+  private readonly removed = new Set<string>();
   private readonly known = new Map<string, Caller[]>();
   // Declarations a decorator maps to a route: entry points already, never "top of a chain".
   private readonly routes = new Set<string>();
@@ -508,12 +509,14 @@ class Tracer {
   /**
    * Follows callers up from the given declarations, recording entry points and tests. The code of
    * one in own may flow into its members: the map keeps no reads of its locals, so they may be
-   * affected, unlike what calls it.
+   * affected, unlike what calls it. Declarations the diff removed are no entry point, and nothing
+   * calling one says nothing of how it is reached.
    */
-  async trace(starts: readonly string[], own: readonly string[] = []) {
+  async trace(starts: readonly string[], own: readonly string[] = [], removed = false) {
     const frontier: Reached[] = [];
     for (const ref of starts)
       if (!this.reached.has(ref)) {
+        if (removed) this.removed.add(ref);
         const start = { ref, depth: 0, certain: true, shaped: true };
         this.reached.set(ref, start);
         this.owners.add(this.graph.owner(ref));
@@ -569,7 +572,7 @@ class Tracer {
             // What a local's field or type is used for stays inside the declaration around it.
             return (
               this.graph.isAddressable(object) &&
-              !testCode(object.anchor.path) &&
+              !mapTestPath(object.anchor.path) &&
               (shaped || object.kind === "PROPERTY")
             );
           })
@@ -577,7 +580,7 @@ class Tracer {
       );
       for (const current of frontier) {
         const object = this.graph.object(current.ref);
-        if (testCode(object.anchor.path)) continue;
+        if (mapTestPath(object.anchor.path)) continue;
         this.decoratorRoutes(current);
         const callers = this.callers(current.ref);
         this.callerCount.set(current.ref, callers.length);
@@ -588,7 +591,7 @@ class Tracer {
             caller.argument && mapIsRouteLabel(caller.argument) ? caller.argument : undefined;
           if (route) this.entry(route, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
-          if (testCode(callerObject.anchor.path)) {
+          if (mapTestPath(callerObject.anchor.path)) {
             const entries = testEntries(this.graph, this.graph.owner(caller.ref));
             // Test support no test calls (conftest.py fixtures, setup files, module-level code)
             // reaches its tests by injection, which the map does not see: any test beside it may
@@ -630,7 +633,7 @@ class Tracer {
       const calls = this.memberCalls.get(`${language}\u0000${object.name}`) ?? [];
       if (calls.length > LIMITS.byName) continue;
       for (const call of calls)
-        if (testCode(call.path))
+        if (mapTestPath(call.path))
           this.test(
             call.path,
             this.name(this.graph.owner(call.from)),
@@ -641,9 +644,14 @@ class Tracer {
     // Declarations nothing calls are where the chains start: commands, jobs, framework-wired
     // handlers, or code that is not used. Routes already name the more useful entry points.
     for (const reached of reachedNow) {
-      if (this.callerCount.get(reached.ref) !== 0 || this.shapes.unread.has(reached.ref)) continue;
+      if (
+        this.callerCount.get(reached.ref) !== 0 ||
+        this.shapes.unread.has(reached.ref) ||
+        this.removed.has(reached.ref)
+      )
+        continue;
       const object = this.graph.object(reached.ref);
-      if (testCode(object.anchor.path) || this.routes.has(reached.ref)) continue;
+      if (mapTestPath(object.anchor.path) || this.routes.has(reached.ref)) continue;
       // A page's template that changed is the entry itself: the page shows it.
       if (reached.depth === 0 && !mapMiniprogramTemplate(object.anchor.path)) {
         const uses = this.usesWithoutCalls(reached.ref);
@@ -779,7 +787,7 @@ class Tracer {
     for (const relation of this.graph.relationsTo([ref])) {
       const verb = USED_BY[relation.kind];
       const owner = this.graph.owner(relation.from);
-      if (verb && owner !== ref && !testCode(this.graph.object(owner).anchor.path))
+      if (verb && owner !== ref && !mapTestPath(this.graph.object(owner).anchor.path))
         uses.push(`${verb} by ${this.where(owner)}`);
     }
     for (const relation of this.graph.relationsFrom([ref]))
@@ -941,7 +949,7 @@ class Tracer {
           const only =
             relations.filter(
               (relation) =>
-                relation.kind === "OVERRIDES" && !(local && testCode(relation.anchor.path)),
+                relation.kind === "OVERRIDES" && !(local && mapTestPath(relation.anchor.path)),
             ).length === 1;
           if (local && !only) continue;
           for (const relation of relations)
@@ -956,7 +964,7 @@ class Tracer {
     if (
       parent &&
       local &&
-      callers.every((caller) => testCode(this.graph.object(caller.ref).anchor.path))
+      callers.every((caller) => mapTestPath(this.graph.object(caller.ref).anchor.path))
     ) {
       const route = this.graph
         .relationsFrom([ref])
@@ -1028,12 +1036,21 @@ class Tracer {
   }
 
   private area(ref: string, test: string, name: string | undefined) {
-    const area = areaOf(this.graph.object(ref).anchor.path);
+    this.shareArea(
+      areaOf(this.graph.object(ref).anchor.path),
+      [this.name(ref)],
+      test,
+      name && !name.startsWith("<") ? [name] : [],
+    );
+  }
+
+  /** A test certainly calling the change through these declarations of an area. */
+  shareArea(area: string, through: Iterable<string>, test: string, names: Iterable<string>) {
     const known = this.areas.get(area) ?? { through: new Set<string>(), tests: new Map() };
-    known.through.add(this.name(ref));
-    const names = known.tests.get(test) ?? new Set<string>();
-    if (name && !name.startsWith("<")) names.add(name);
-    known.tests.set(test, names);
+    for (const name of through) known.through.add(name);
+    const into = known.tests.get(test) ?? new Set<string>();
+    for (const name of names) into.add(name);
+    known.tests.set(test, into);
     this.areas.set(area, known);
   }
 
@@ -1058,12 +1075,6 @@ class Tracer {
     this.tests.set(path, known);
   }
 }
-
-/** Test files a test runner runs, by the naming conventions of the mapped languages. */
-export const mapRunnableTest = (file: string) =>
-  /_test\.(?:go|py)$|(?:^|\/)test_[^/]*\.py$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:Test|Tests|IT)\.(?:java|kt)$/u.test(
-    file,
-  );
 
 // A template is named by its path, so a renamed one is removed whichever of its lines changed.
 const renamedTemplate = (file: MapChangedFile) =>
@@ -1119,7 +1130,7 @@ export async function mapChangeImpact(
   };
   for (const file of changes.files) {
     const objects = file.status === "DELETED" || file.binary ? [] : graph.objectsAt(file.path);
-    if (testCode(file.path)) {
+    if (mapTestPath(file.path)) {
       if (file.status !== "DELETED" && !file.binary)
         tracer.test(file.path, undefined, "changed in this diff", 1);
       continue;
@@ -1291,7 +1302,7 @@ export async function mapChangeImpact(
         for (const route of routesIn(before, file.basePath))
           if (!registered.has(route) && !removedRoutes.includes(route)) removedRoutes.push(route);
     for (const file of changes.files)
-      if (file.basePath && file.baseText !== undefined && testCode(file.basePath)) {
+      if (file.basePath && file.baseText !== undefined && mapTestPath(file.basePath)) {
         const names = existingTestsChanged(before, graph, file, project);
         if (names.length) rewrittenTests.push({ path: file.path, names });
       }
@@ -1304,7 +1315,7 @@ export async function mapChangeImpact(
       changes.files.flatMap((file) => (file.basePath ? [[file.basePath, file]] : [])),
     );
     // Where a use in the base is in the working tree, when the diff left its lines alone.
-    const nowAt = (anchor: MapAnchor) => {
+    const nowAt = (anchor: Pick<MapAnchor, "path" | "startLine" | "endLine">) => {
       const file = changedIn.get(anchor.path);
       if (
         file &&
@@ -1364,7 +1375,7 @@ export async function mapChangeImpact(
       usedBy: Set<string>;
     }[] = [];
     for (const file of changes.files) {
-      if (!file.basePath || file.binary || testCode(file.basePath)) continue;
+      if (!file.basePath || file.binary || mapTestPath(file.basePath)) continue;
       const renamed = renamedTemplate(file);
       if (!file.baseLines.length && !renamed) continue;
       const now = new Set(
@@ -1542,7 +1553,7 @@ export async function mapChangeImpact(
     // Top-level code the diff removed: imports, calls and registrations outside any declaration,
     // not the declarations it holds.
     for (const file of changes.files) {
-      if (!file.basePath || file.status === "DELETED" || testCode(file.basePath)) continue;
+      if (!file.basePath || file.status === "DELETED" || mapTestPath(file.basePath)) continue;
       const module = before.objectsAt(file.basePath).find(mapIsModule);
       if (
         module &&
@@ -1558,30 +1569,51 @@ export async function mapChangeImpact(
         topLevelChanged(file.path);
     }
     if (gone.length) {
-      await beforeTracer.trace(gone, gone);
-      for (const entry of beforeTracer.entries.values())
-        if (!tracer.entries.has(entry.label))
-          tracer.entries.set(
-            entry.label,
-            entry.route && removedRoutes.includes(entry.label)
-              ? { ...entry, removed: true }
-              : entry,
-          );
+      await beforeTracer.trace(gone, gone, true);
+      // The base's trace names the base's files and lines. Each is taken to where the working
+      // tree has it: a renamed file by its new path, a line by where the diff moved it, and a test
+      // file the diff deleted runs nothing. A route the diff removed keeps the base's site.
+      const pathNow = (path: string) => changedIn.get(path)?.path ?? path;
+      const testNow = (path: string) =>
+        changedIn.get(path)?.status === "DELETED" ? undefined : pathNow(path);
+      const siteNow = (site: string) => {
+        const at = site.lastIndexOf(":");
+        const line = Number(site.slice(at + 1));
+        const place = nowAt({ path: site.slice(0, at), startLine: line, endLine: line });
+        return place && `${place.path}:${place.startLine}`;
+      };
+      // A declaration's label starts with its file's path: "src/cli.ts: main".
+      const labelNow = (label: string) => {
+        const at = label.indexOf(": ");
+        const path = at < 0 ? label : label.slice(0, at);
+        return `${pathNow(path)}${label.slice(path.length)}`;
+      };
+      for (const entry of beforeTracer.entries.values()) {
+        const label = entry.route ? entry.label : labelNow(entry.label);
+        if (tracer.entries.has(label)) continue;
+        const removed = entry.route && removedRoutes.includes(entry.label);
+        const site = entry.site && (removed ? entry.site : siteNow(entry.site));
+        tracer.entries.set(label, {
+          label,
+          route: entry.route,
+          chain: entry.chain,
+          ...(site ? { site } : {}),
+          certain: entry.certain,
+          ...(removed ? { removed: true } : {}),
+        });
+      }
       for (const [path, test] of beforeTracer.tests) {
-        const known = tracer.tests.get(path);
-        if (known) for (const name of test.names) known.names.add(name);
-        else tracer.tests.set(path, test);
+        const now = testNow(path);
+        if (now === undefined) continue;
+        tracer.test(now, undefined, test.why, test.rank);
+        for (const name of test.names) tracer.test(now, name, test.why, test.rank);
       }
-      for (const [area, known] of beforeTracer.areas) {
-        const now = tracer.areas.get(area);
-        if (!now) tracer.areas.set(area, known);
-        else {
-          for (const name of known.through) now.through.add(name);
-          for (const [path, names] of known.tests)
-            now.tests.set(path, new Set([...(now.tests.get(path) ?? []), ...names]));
+      for (const [area, known] of beforeTracer.areas)
+        for (const [path, names] of known.tests) {
+          const now = testNow(path);
+          if (now !== undefined) tracer.shareArea(pathNow(area), known.through, now, names);
         }
-      }
-      unclear.push(...beforeTracer.unclear.filter((line) => !line.includes("has no callers")));
+      unclear.push(...beforeTracer.unclear);
       if (beforeTracer.truncated) tracer.truncated = true;
     }
 
@@ -1595,7 +1627,7 @@ export async function mapChangeImpact(
     );
     const called = new Set<string>();
     for (const file of changes.files) {
-      if (!file.basePath || !file.baseLines.length || file.binary || testCode(file.basePath))
+      if (!file.basePath || !file.baseLines.length || file.binary || mapTestPath(file.basePath))
         continue;
       for (const relation of before.relationsFrom(
         before.objectsAt(file.basePath).map((object) => object.id),
@@ -1608,11 +1640,11 @@ export async function mapChangeImpact(
           called.add(before.owner(relation.to));
     }
     const outsideTests = (callers: { ref: string }[], g: MapViewGraph) =>
-      callers.filter((caller) => !testCode(g.object(caller.ref).anchor.path));
+      callers.filter((caller) => !mapTestPath(g.object(caller.ref).anchor.path));
     const candidates: { path: string; name: string; now: MapObject; tested: boolean }[] = [];
     for (const ref of called) {
       const object = before.object(ref);
-      if (mapIsModule(object) || testCode(object.anchor.path) || gone.includes(ref)) continue;
+      if (mapIsModule(object) || mapTestPath(object.anchor.path) || gone.includes(ref)) continue;
       const path = moved.has(object.anchor.path)
         ? moved.get(object.anchor.path)
         : object.anchor.path;
@@ -1636,7 +1668,7 @@ export async function mapChangeImpact(
       else if (
         !tracer.shapes.uses
           .get(now.id)
-          ?.some(({ owner, write }) => !write && !testCode(graph.object(owner).anchor.path))
+          ?.some(({ owner, write }) => !write && !mapTestPath(graph.object(owner).anchor.path))
       ) {
         uncalled.push(
           `${path}: ${name} ${mapDeclarationLabel(now)}${tested ? " (only tests call it now)" : ""}`,
@@ -1869,7 +1901,7 @@ function importerTests(
     const next: string[] = [];
     for (const imported of modules)
       for (const { path, module } of importers.get(imported) ?? [])
-        if (testCode(path))
+        if (mapTestPath(path))
           tracer.test(
             path,
             undefined,
@@ -1941,7 +1973,7 @@ class RouteRequests {
       )
       .all(version)) {
       const note = JSON.parse(String(row.note_json)) as { text: string; anchor: { path: string } };
-      if (!testCode(note.anchor.path)) continue;
+      if (!mapTestPath(note.anchor.path)) continue;
       const unknown = mapRouteLabel(note.text).path === MAP_PATH_PARAMETER;
       this.sites.push({
         request: note.text,
@@ -2128,7 +2160,7 @@ function findTestEntries(graph: MapViewGraph, ref: string): [string, string][] {
             .relationsTo([at])
             .filter(runsTarget)
             .map((relation) => graph.owner(relation.from))
-            .filter((caller) => caller !== at && testCode(graph.object(caller).anchor.path));
+            .filter((caller) => caller !== at && mapTestPath(graph.object(caller).anchor.path));
       if (!callers.length || depth === 4) {
         if (runnable) found.push(entry(at));
         continue;
@@ -2195,13 +2227,11 @@ function routesIn(graph: MapViewGraph, path: string): Set<string> {
   return routes;
 }
 
-// The longest literal part of a route's path, which code requesting it spells out: "/funds/items"
-// of "GET /funds/items/{id}"; a part too short to tell routes apart is none.
+// The longest literal part of a route's path, which code requesting it spells out; a part too
+// short to tell routes apart is none.
 function routeFragment(label: string): string | undefined {
-  const longest = mapRouteLabel(label)
-    .path.split(/\/(?:\{[^}]*\}|:[^/]+|<[^>]*>|\*)(?=\/|$)/u)
-    .sort((left, right) => right.length - left.length)[0];
-  return longest && longest.replace(/\//gu, "").length >= 4 ? longest : undefined;
+  const longest = mapRouteLiteral(label);
+  return longest.replace(/\//gu, "").length >= 4 ? longest : undefined;
 }
 
 export type MapChangeCheckInput = Readonly<{

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { mapRouteLiteral } from "../src/project-map-clients";
 import { openMap, project, signal } from "./support";
 
 const run = promisify(execFile);
@@ -48,6 +49,8 @@ const FILES = {
     "{id}/read`, { method: 'PUT' });\nexport const fresh = () => fetch('/api/feeds/new');\n",
   "web/nav.ts": 'export const links = [{ path: "/feeds" }];\n',
   "web/feeds.test.ts": 'export const url = "/api/feeds/1/read";\n',
+  // Shared test fixtures, as Gradle keeps them, are test code too.
+  "web/testFixtures/feeds.ts": "export const read = () => fetch('/api/feeds/2/read');\n",
 };
 const section = (text: string) =>
   text.includes("REQUESTED BY")
@@ -62,7 +65,7 @@ test("a changed route handler names the code that requests its path, not tests o
   const requested = section(text);
   assert.match(requested, /^ {2}"PUT \/feeds\/:id\/read" ← web\/api\.ts:1$/mu);
   // The test is listed among the related tests; /feeds/new is another route's request.
-  assert.doesNotMatch(requested, /feeds\.test\.ts|api\.ts:2|nav\.ts|routes\.ts/u);
+  assert.doesNotMatch(requested, /feeds\.test\.ts|testFixtures|api\.ts:2|nav\.ts|routes\.ts/u);
 });
 
 test("a route whose path a registration with another method keeps is not named as removed", async () => {
@@ -78,4 +81,13 @@ test("a renamed route names the code still requesting its old path", async () =>
     section(text),
     /^ {2}"PUT \/feeds\/:id\/read" \(removed or renamed\) ← web\/api\.ts:1$/mu,
   );
+});
+
+test("a route's literal is its longest stretch without parameters, however a router writes them", () => {
+  assert.equal(mapRouteLiteral("GET /funds/items/{id}/read"), "/funds/items");
+  assert.equal(mapRouteLiteral("/static/**"), "/static");
+  assert.equal(mapRouteLiteral("GET /users/[id]/orders/history"), "/orders/history");
+  assert.equal(mapRouteLiteral("PUT /feeds/:id/read"), "/feeds");
+  // A path with no parameter is whole, as written.
+  assert.equal(mapRouteLiteral("GET /static/"), "/static/");
 });
