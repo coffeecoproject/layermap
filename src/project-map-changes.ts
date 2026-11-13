@@ -8,6 +8,7 @@ import { ProjectEvidenceError } from "./core";
 import { GitRunner } from "./git-runner";
 import {
   type MapRouteClients,
+  mapIsRouteLabel,
   mapRequestedRoutes,
   mapRouteLabel,
   mapRouteServes,
@@ -398,8 +399,6 @@ const USED_BY: Partial<Record<MapRelation["kind"], string>> = {
 // showing that component.
 const runsTarget = (relation: MapRelation) => CALLER_KINDS.has(relation.kind) && !relation.event;
 const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
-// A literal is a route when it is a path, optionally after its methods: "/x", "GET|POST /x".
-const ROUTE = /^(?:[A-Z]+(?:\|[A-Z]+)* +)?\/\S*$/u;
 
 // A declaration the trace reached, and the one below it on the way from the change; used: it was
 // reached by reading or naming a field or type, not by calling; shaped: it was reached from the
@@ -586,7 +585,7 @@ class Tracer {
           const site = `${caller.anchor.path}:${caller.anchor.startLine}`;
           const certain = current.certain && caller.certain;
           const route =
-            caller.argument && ROUTE.test(caller.argument) ? caller.argument : undefined;
+            caller.argument && mapIsRouteLabel(caller.argument) ? caller.argument : undefined;
           if (route) this.entry(route, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
           if (testCode(callerObject.anchor.path)) {
@@ -961,7 +960,7 @@ class Tracer {
     ) {
       const route = this.graph
         .relationsFrom([ref])
-        .find((relation) => relation.argument && ROUTE.test(relation.argument))?.argument;
+        .find((relation) => relation.argument && mapIsRouteLabel(relation.argument))?.argument;
       callers.push({
         ref: parent,
         anchor: object.anchor,
@@ -978,7 +977,7 @@ class Tracer {
     for (const relation of this.graph.relationsFrom([current.ref])) {
       if (relation.kind !== "DECORATED_BY") continue;
       const route = relation.route ?? relation.argument;
-      if (!route || !ROUTE.test(route)) continue;
+      if (!route || !mapIsRouteLabel(route)) continue;
       this.routes.add(current.ref);
       this.entry(
         route,
@@ -1186,7 +1185,7 @@ export async function mapChangeImpact(
     for (const relation of graph.relationsFrom(objects.map((object) => object.id)))
       if (
         relation.argument &&
-        ROUTE.test(relation.argument) &&
+        mapIsRouteLabel(relation.argument) &&
         overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)
       )
         unclear.push(
@@ -2191,7 +2190,7 @@ function routesIn(graph: MapViewGraph, path: string): Set<string> {
   for (const relation of graph.relationsFrom(graph.objectsAt(path).map((object) => object.id))) {
     const route =
       relation.kind === "DECORATED_BY" ? (relation.route ?? relation.argument) : relation.argument;
-    if (route && ROUTE.test(route)) routes.add(route);
+    if (route && mapIsRouteLabel(route)) routes.add(route);
   }
   return routes;
 }

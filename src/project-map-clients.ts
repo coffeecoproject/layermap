@@ -72,6 +72,9 @@ export function mapRouteLabel(label: string): { methods?: readonly string[]; pat
   return match ? { methods: (match[1] ?? "").split("|"), path: match[2] ?? "" } : { path: label };
 }
 
+/** Whether a text is a route's label: its HTTP methods, if named, then its path. */
+export const mapIsRouteLabel = (text: string) => ROUTE.test(text);
+
 /**
  * Whether a route serves a request by their methods: one named for none (all, use, route)
  * serves any, a GET serves a HEAD too, and a request whose method is not known may be any.
@@ -192,7 +195,7 @@ export function routeRegistrations(
       route?: string;
     };
     const route = relation.route ?? relation.argument;
-    if (!route || !ROUTE.test(route)) continue;
+    if (!route || !mapIsRouteLabel(route)) continue;
     routes.add(route);
     for (let line = relation.anchor.startLine; line <= relation.anchor.endLine; line++)
       sites.add(`${relation.anchor.path}:${line}`);
