@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { GitCommandError } from "../src/git-runner";
+import { git } from "../src/project-map-change-diff";
 import { openMap, project, signal } from "./support";
 
 const run = promisify(execFile);
@@ -22,7 +24,7 @@ async function checkAfter(
     for (const [file, content] of Object.entries(changes)) await write(file, content);
     return (await map.checkChanges({}, signal())).text;
   } finally {
-    map.close();
+    await map.close();
   }
 }
 
@@ -139,4 +141,28 @@ test("a name moved to another file, or renamed everywhere, is not reported", asy
     },
   );
   assert.doesNotMatch(text, new RegExp(SECTION, "u"));
+});
+
+test("a search for removed names that git cannot finish is named, not taken for none", async (t) => {
+  const run = git.run.bind(git);
+  t.mock.method(git, "run", (args: string[], options: Parameters<typeof git.run>[1]) =>
+    args[0] === "grep"
+      ? Promise.reject(new GitCommandError("Git command exceeded 60000ms."))
+      : run(args, options),
+  );
+  const settings = (name: string) =>
+    `import os\n\n\ndef url():\n    return os.environ.get("${name}")\n`;
+  const text = await checkAfter(
+    {
+      "app/__init__.py": "",
+      "app/settings.py": settings("DATABASE_URL"),
+      ".env.example": "DATABASE_URL=postgres://localhost/app\n",
+    },
+    { "app/settings.py": settings("DB_URL") },
+  );
+  assert.equal(section(text), "");
+  assert.match(
+    text,
+    /the text search for the environment variables and configuration keys the diff removed did not finish \(Git command exceeded 60000ms\.\)/u,
+  );
 });

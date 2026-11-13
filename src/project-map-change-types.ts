@@ -1,5 +1,5 @@
 import type { MapModuleDependency, MapReuseImport } from "./project-map-dependencies";
-import type { MapStrandedName } from "./project-map-names";
+import type { MapStrandedNames } from "./project-map-names";
 import type { MapSimilarCode } from "./project-map-reuse";
 
 // The diff a change check reads and what the check finds in it: the shapes the reading, the
@@ -26,6 +26,8 @@ export type MapChangedFile = Readonly<{
   baseLines: Lines;
   /** The diff's hunks in order, which place each line it left unchanged in the working tree. */
   hunks: readonly Hunk[];
+  /** The text of the lines removed or changed in the base, in order. */
+  removed: readonly string[];
   binary: boolean;
   /** A changed test file's text in the base, to tell which of its existing tests changed. */
   baseText?: string;
@@ -36,7 +38,7 @@ export type MapChanges = Readonly<{
   commit: string;
   files: readonly MapChangedFile[];
   /** Environment variables and configuration keys the diff removed that other files still use. */
-  stranded: readonly MapStrandedName[];
+  stranded: MapStrandedNames;
 }>;
 
 export type MapChangeEntry = Readonly<{

@@ -1,5 +1,5 @@
 import type { CodeIndexStore } from "./code-index-store";
-import { GitCommandError, type GitRunner, type GitRunOptions } from "./git-runner";
+import { type GitRunner, type GitRunOptions, gitGrep } from "./git-runner";
 import { mapTestPath } from "./project-map-types";
 
 // A route and the code that requests it are linked by a path string, which no compiler follows: a
@@ -12,6 +12,12 @@ export type MapRouteClients = Readonly<{
   route: string;
   removed: boolean;
   clients: readonly string[];
+}>;
+
+/** The routes requested outside the tests, and why the search did not finish when it did not. */
+export type MapRouteClientSearch = Readonly<{
+  routes: readonly MapRouteClients[];
+  failed?: string;
 }>;
 
 type Segment = Readonly<{ text: string; param: boolean }>;
@@ -235,14 +241,14 @@ export function routeRegistrations(
 /**
  * The places outside the tests that request each route's path, found with git grep: code and
  * templates, without the lines that register routes. When git grep cannot finish, none are
- * reported rather than failing the check.
+ * reported and `failed` says why.
  */
 export async function routeClients(
   routes: readonly Readonly<{ route: string; removed: boolean }>[],
   registrations: Readonly<{ routes: ReadonlySet<string>; sites: ReadonlySet<string> }>,
   git: GitRunner,
   options: GitRunOptions,
-): Promise<MapRouteClients[]> {
+): Promise<MapRouteClientSearch> {
   const wanted = routes
     .map((entry) => ({ ...entry, segments: routeSegments(entry.route) }))
     .filter((entry) => entry.segments.some((segment) => !segment.param && segment.text.length >= 3))
@@ -255,37 +261,12 @@ export async function routeClients(
   const needles = new Set<string>();
   for (const entry of wanted)
     for (const segment of entry.segments) if (!segment.param) needles.add(`/${segment.text}`);
-  if (!needles.size) return [];
-  let found: string;
-  try {
-    found = (
-      await git.run(
-        [
-          "grep",
-          "-n",
-          "-I",
-          "-F",
-          "--untracked",
-          "--full-name",
-          "--no-color",
-          ...[...needles].flatMap((needle) => ["-e", needle]),
-          "--",
-          ...CLIENT_FILES,
-        ],
-        options,
-      )
-    ).stdout.toString("utf8");
-  } catch (error) {
-    // git grep exits with 1 when nothing matches.
-    if (error instanceof GitCommandError && !options.signal?.aborted) return [];
-    throw error;
-  }
+  if (!needles.size) return { routes: [] };
+  const search = await gitGrep(git, { strings: [...needles], paths: CLIENT_FILES }, options);
+  if (search.failed) return { routes: [], failed: search.failed };
   // Each route's requests, and whether each one's path starts with a mount prefix (/api, /v1).
   const clients = new Map<string, Map<string, boolean>>();
-  for (const hit of found.split("\n")) {
-    const match = /^(.+?):(\d+):(.*)$/u.exec(hit);
-    if (!match) continue;
-    const [, file = "", line = "", text = ""] = match;
+  for (const { path: file, line, text } of search.hits) {
     if (mapTestPath(file) || registrations.sites.has(`${file}:${line}`)) continue;
     for (const literal of text.matchAll(LITERAL)) {
       if (MOUNTING.test(text.slice(0, literal.index))) continue;
@@ -304,7 +285,7 @@ export async function routeClients(
   }
   // When some requests spell out the mount prefix, the API is requested that way, and paths
   // without it are the frontend's own pages (a link to /items beside fetch("/api/v1/items")).
-  return wanted
+  const requestedRoutes = wanted
     .map(({ route, removed }) => {
       const found = [...(clients.get(route) ?? [])];
       const mounted = found.some(([, prefixed]) => prefixed);
@@ -315,6 +296,7 @@ export async function routeClients(
       };
     })
     .filter((entry) => entry.clients.length);
+  return { routes: requestedRoutes };
 }
 
 /** One line per route: its label, whether it was removed, and the first few places requesting it. */

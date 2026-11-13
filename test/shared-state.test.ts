@@ -22,7 +22,7 @@ async function checkAfter(
     await write(...changed);
     return (await map.checkChanges({}, signal())).text;
   } finally {
-    map.close();
+    await map.close();
   }
 }
 

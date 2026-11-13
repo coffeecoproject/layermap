@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { GitCommandOutputLimitError } from "../src/git-runner";
+import { git } from "../src/project-map-change-diff";
 import { mapRouteLiteral } from "../src/project-map-clients";
 import { openMap, project, signal } from "./support";
 
@@ -23,7 +25,7 @@ async function checkAfter(
     for (const [file, content] of Object.entries(changes)) await write(file, content);
     return (await map.checkChanges({}, signal())).text;
   } finally {
-    map.close();
+    await map.close();
   }
 }
 
@@ -66,6 +68,19 @@ test("a changed route handler names the code that requests its path, not tests o
   assert.match(requested, /^ {2}"PUT \/feeds\/:id\/read" ← web\/api\.ts:1$/mu);
   // The test is listed among the related tests; /feeds/new is another route's request.
   assert.doesNotMatch(requested, /feeds\.test\.ts|testFixtures|api\.ts:2|nav\.ts|routes\.ts/u);
+});
+
+test("a search for a route's requests that git cannot finish is named, not taken for none", async (t) => {
+  const run = git.run.bind(git);
+  t.mock.method(git, "run", (args: string[], options: Parameters<typeof git.run>[1]) =>
+    args[0] === "grep" ? Promise.reject(new GitCommandOutputLimitError()) : run(args, options),
+  );
+  const text = await checkAfter(FILES, { "server/routes.ts": routes("/feeds/:id/read", "id + 1") });
+  assert.equal(section(text), "");
+  assert.match(
+    text,
+    /the text search for code and templates requesting the routes the change reaches did not finish \(Git command exceeded the output limit\.\)/u,
+  );
 });
 
 test("a route whose path a registration with another method keeps is not named as removed", async () => {

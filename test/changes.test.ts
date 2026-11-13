@@ -9,9 +9,12 @@ import { CodeIndex } from "../src/code-index";
 import { CodeIndexStore } from "../src/code-index-store";
 import type { CodeIndexSource } from "../src/code-index-types";
 import { ProjectEvidenceError } from "../src/core";
+import { GitCommandOutputLimitError } from "../src/git-runner";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
-import { parseMapDiff } from "../src/project-map-change-diff";
+import { git, parseMapDiff, readMapChanges } from "../src/project-map-change-diff";
+import { mirroredTests } from "../src/project-map-change-tests";
+import type { Tracer } from "../src/project-map-change-trace";
 import { checkMapChanges, type MapChangesData } from "../src/project-map-changes";
 import { GoMapAnalyzer } from "../src/project-map-language-go";
 import { JavaMapAnalyzer } from "../src/project-map-language-java";
@@ -48,7 +51,7 @@ router.get("/old", oldHandler);
   "tests/billing/test_charge.py": "def test_charge():\n    assert True\n",
 };
 
-test("git diff hunks become changed line ranges on both sides", () => {
+test("git diff hunks become changed line ranges on both sides, with the text they removed", () => {
   const files = parseMapDiff(
     [
       "diff --git a/src/a.ts b/src/a.ts",
@@ -56,15 +59,50 @@ test("git diff hunks become changed line ranges on both sides", () => {
       "--- a/src/a.ts",
       "+++ b/src/a.ts",
       "@@ -3,2 +3,3 @@ x",
+      "-const a = 1;",
+      "--- a/removed SQL comment",
+      "+const a = 2;",
+      "+++ b/added SQL comment",
+      "+",
       "@@ -10 +11,0 @@ y",
+      "-old();",
       "diff --git a/old.ts b/new.ts",
       "similarity index 90%",
       "rename from old.ts",
       "rename to new.ts",
+      "--- a/old.ts",
+      "+++ b/new.ts",
       "@@ -1 +1 @@",
+      "-x",
+      "+y",
       "diff --git a/gone.ts b/gone.ts",
       "deleted file mode 100644",
+      "--- a/gone.ts",
+      "+++ /dev/null",
       "@@ -1,4 +0,0 @@",
+      "-1",
+      "-2",
+      "-3",
+      "-4",
+      // A path holding " b/", and one holding a space, which git ends with a tab in ---/+++.
+      "diff --git a/docs/a b/c.md b/docs/a b/c.md",
+      "--- a/docs/a b/c.md",
+      "+++ b/docs/a b/c.md",
+      "@@ -1 +0,0 @@",
+      "-z",
+      "diff --git a/my notes.md b/my notes.md",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/my notes.md\t",
+      "@@ -0,0 +1 @@",
+      "+n",
+      // A path with a tab, which git quotes: the map cannot hold it.
+      'diff --git "a/t\\tab.ts" "b/t\\tab.ts"',
+      '--- "a/t\\tab.ts"',
+      '+++ "b/t\\tab.ts"',
+      "@@ -1 +1 @@",
+      "-q",
+      "+r",
     ].join("\n"),
   );
   assert.deepEqual(files, [
@@ -85,6 +123,7 @@ test("git diff hunks become changed line ranges on both sides", () => {
         { baseStart: 3, baseCount: 2, start: 3, count: 3 },
         { baseStart: 10, baseCount: 1, start: 11, count: 0 },
       ],
+      removed: ["const a = 1;", "-- a/removed SQL comment", "old();"],
       binary: false,
     },
     {
@@ -94,6 +133,7 @@ test("git diff hunks become changed line ranges on both sides", () => {
       lines: [[1, 1]],
       baseLines: [[1, 1]],
       hunks: [{ baseStart: 1, baseCount: 1, start: 1, count: 1 }],
+      removed: ["x"],
       binary: false,
     },
     {
@@ -103,9 +143,73 @@ test("git diff hunks become changed line ranges on both sides", () => {
       lines: [[1, 0]],
       baseLines: [[1, 4]],
       hunks: [{ baseStart: 1, baseCount: 4, start: 0, count: 0 }],
+      removed: ["1", "2", "3", "4"],
+      binary: false,
+    },
+    {
+      path: "docs/a b/c.md",
+      basePath: "docs/a b/c.md",
+      status: "MODIFIED",
+      lines: [[1, 0]],
+      baseLines: [[1, 1]],
+      hunks: [{ baseStart: 1, baseCount: 1, start: 0, count: 0 }],
+      removed: ["z"],
+      binary: false,
+    },
+    {
+      path: "my notes.md",
+      basePath: undefined,
+      status: "ADDED",
+      lines: [[1, 1]],
+      baseLines: [],
+      hunks: [{ baseStart: 0, baseCount: 0, start: 1, count: 1 }],
+      removed: [],
       binary: false,
     },
   ]);
+});
+
+test("a diff larger than git's output limit is refused by its own code, not checked in part", async (t) => {
+  const { root } = await project({ "a.ts": "export const a = 1;\n" });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const gitRun = git.run.bind(git);
+  t.mock.method(git, "run", (args: string[], options: Parameters<typeof git.run>[1]) =>
+    args.includes("diff")
+      ? Promise.reject(new GitCommandOutputLimitError())
+      : gitRun(args, options),
+  );
+  await assert.rejects(
+    readMapChanges(root, "HEAD", signal()),
+    (error) => error instanceof ProjectEvidenceError && error.code === "LAYERMAP_DIFF_TOO_LARGE",
+  );
+});
+
+test("a mirrored test tree is the module's tests only in the package the module is in", () => {
+  const picked: string[] = [];
+  const tracer = { test: (path: string) => picked.push(path) } as unknown as Tracer;
+  mirroredTests(
+    [
+      "tests/billing/test_charge.py",
+      "server/tests/unit/billing/test_refund.py",
+      "src/test/java/billing/ChargeTest.java",
+      "packages/shop/tests/billing/test_cart.py",
+      "server/billing/tests/test_inline.py",
+    ],
+    "server/billing/service.py",
+    tracer,
+  );
+  assert.deepEqual(picked, [
+    "tests/billing/test_charge.py",
+    "server/tests/unit/billing/test_refund.py",
+  ]);
+  picked.length = 0;
+  mirroredTests(
+    ["src/test/java/billing/ChargeTest.java", "other/src/test/java/billing/X.java"],
+    "src/main/java/billing/Charge.java",
+    tracer,
+  );
+  assert.deepEqual(picked, ["src/test/java/billing/ChargeTest.java"]);
 });
 
 test("a change lists the routes it reaches, removed declarations, unmapped files and related tests", async (t) => {
@@ -1249,7 +1353,7 @@ def test_item():
     assert.deepEqual(data.untested?.throughRoutes, ["app/service.py: read_item f1-2"]);
     assert.deepEqual(data.untested?.routes, ["GET /items/{item_id}"]);
   } finally {
-    map.close();
+    await map.close();
   }
 });
 
@@ -1393,7 +1497,7 @@ func NewServer() *Router {
       JSON.stringify(data.tests),
     );
   } finally {
-    map.close();
+    await map.close();
   }
 });
 

@@ -139,7 +139,7 @@ const check = async (root: string, given?: string[]) => {
         .text,
     ) as MapChangesData;
   } finally {
-    map.close();
+    await map.close();
   }
 };
 const tests = (data: MapChangesData) =>
@@ -266,7 +266,7 @@ test("the entry points of a change the given tests miss go on past its route", a
       JSON.stringify(data.untested),
     );
   } finally {
-    map.close();
+    await map.close();
   }
 });
 
@@ -284,7 +284,7 @@ test("constants referring to each other through imports leave the path unknown",
   try {
     assert.match((await map.explore({ path: "src/routes.ts" }, signal())).text, /register/u);
   } finally {
-    map.close();
+    await map.close();
   }
 });
 

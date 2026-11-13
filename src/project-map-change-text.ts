@@ -7,7 +7,7 @@ import {
   type MapCompileBreaks,
   type MapReusableCode,
 } from "./project-map-change-types";
-import { type MapRouteClients, routeClientsLine } from "./project-map-clients";
+import { type MapRouteClientSearch, routeClientsLine } from "./project-map-clients";
 import type { MapModuleDependency, MapReuseImport } from "./project-map-dependencies";
 import { strandedNameLine } from "./project-map-names";
 
@@ -24,7 +24,7 @@ function testNames(names: readonly string[], limit: number = LIST.names): string
 export function mapChangesText(
   changes: MapChanges,
   impact: MapChangeImpact,
-  clients: readonly MapRouteClients[] = [],
+  clients: MapRouteClientSearch = { routes: [] },
   similar: readonly MapReusableCode[] = [],
   compile: MapCompileBreaks = { errors: [], missing: [], unchecked: [] },
 ): string {
@@ -80,10 +80,10 @@ export function mapChangesText(
       "If the change replaced them, delete them and the tests that only test them; keep them only if something the map cannot see uses them, such as another package, a framework or a dynamic call.",
     );
   // Names read or set by text, which no compiler links: a rename on one side strands the other.
-  if (changes.stranded.length) {
+  if (changes.stranded.names.length) {
     list(
       "NAMES STILL USED ELSEWHERE (environment variables and configuration keys the diff removed from a file, found by text)",
-      changes.stranded.map(strandedNameLine),
+      changes.stranded.names.map(strandedNameLine),
       LIST.stranded,
     );
     lines.push(
@@ -230,10 +230,10 @@ export function mapChangesText(
       );
   }
   // Requests by path, which no compiler links: a frontend, a generated client, a template.
-  if (clients.length) {
+  if (clients.routes.length) {
     list(
       "REQUESTED BY (code and templates outside the tests that request these routes' paths, found by text)",
-      clients.map(routeClientsLine),
+      clients.routes.map(routeClientsLine),
       LIST.clients,
     );
     lines.push(
@@ -244,6 +244,16 @@ export function mapChangesText(
     "CHECK BY HAND (the map cannot see these)",
     [
       ...impact.unclear,
+      ...(changes.stranded.failed
+        ? [
+            `the text search for the environment variables and configuration keys the diff removed did not finish (${changes.stranded.failed}), so the files still using them are not listed`,
+          ]
+        : []),
+      ...(clients.failed
+        ? [
+            `the text search for code and templates requesting the routes the change reaches did not finish (${clients.failed}), so the callers that name their paths are not listed`,
+          ]
+        : []),
       ...(impact.truncated
         ? [
             `the trace stopped at ${LIMITS.depth} levels or ${LIMITS.declarations} declarations; continue with project_explore_map from the last ones`,

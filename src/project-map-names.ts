@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { GitCommandError, type GitRunner, type GitRunOptions } from "./git-runner";
+import { type GitRunner, type GitRunOptions, gitGrep } from "./git-runner";
+import type { MapChangedFile } from "./project-map-change-types";
 import { mapLanguageOf } from "./project-map-language";
 import { mapTestPath } from "./project-map-types";
 
@@ -11,11 +12,8 @@ import { mapTestPath } from "./project-map-types";
 /** A name the diff removed from a file that other files still use, with where (path:line). */
 export type MapStrandedName = Readonly<{ name: string; from: string; mentions: readonly string[] }>;
 
-type ChangedFile = Readonly<{
-  path: string;
-  basePath?: string;
-  status: string;
-}>;
+/** The stranded names found, and why the search for them did not finish when it did not. */
+export type MapStrandedNames = Readonly<{ names: readonly MapStrandedName[]; failed?: string }>;
 
 // A key a configuration line sets: KEY=value (.env, properties), key: value (YAML), key = value
 // (TOML, INI), - KEY=value (a Compose environment list).
@@ -67,57 +65,23 @@ function codeReads(line: string, file: string): Set<string> {
 }
 
 /**
- * The text of the lines `git diff --unified=0` removed, by the file's path in the base, and the
- * numbers of the lines it added, by its path now.
- */
-function diffLines(diff: string) {
-  const removed = new Map<string, string[]>();
-  const added = new Map<string, Set<number>>();
-  let gone: string[] | undefined;
-  let fresh: Set<number> | undefined;
-  let inHunk = false;
-  let line = 0;
-  for (const text of diff.split("\n")) {
-    if (text.startsWith("diff --git ")) {
-      const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(text);
-      gone = [];
-      fresh = new Set();
-      if (match?.[1] && !match[1].startsWith('"')) removed.set(match[1], gone);
-      if (match?.[2] && !match[2].startsWith('"')) added.set(match[2], fresh);
-      inHunk = false;
-    } else if (text.startsWith("rename from ") && gone)
-      removed.set(text.slice("rename from ".length), gone);
-    else if (text.startsWith("rename to ") && fresh)
-      added.set(text.slice("rename to ".length), fresh);
-    else if (text.startsWith("@@ ")) {
-      inHunk = true;
-      line = Number(/\+(\d+)/u.exec(text)?.[1] ?? 0);
-    } else if (inHunk && text.startsWith("-")) gone?.push(text.slice(1));
-    else if (inHunk && text.startsWith("+")) fresh?.add(line++);
-  }
-  return { removed, added };
-}
-
-/**
  * The environment variables and configuration keys the diff removed from a changed file (no longer
  * anywhere in it) that other files still use, found with git grep. A name the diff itself added
  * somewhere is taken as moved, not stranded; a deleted file's names are not looked for. When git
- * grep cannot finish (output or time limit), no names are reported rather than failing the check.
+ * grep cannot finish (output or time limit), no names are reported and `failed` says why.
  */
 export async function strandedNames(
   project: string,
-  diff: string,
-  files: readonly ChangedFile[],
+  files: readonly MapChangedFile[],
   configuration: (file: string) => boolean,
   git: GitRunner,
   options: GitRunOptions,
-): Promise<MapStrandedName[]> {
-  const { removed, added } = diffLines(diff);
+): Promise<MapStrandedNames> {
   // Each name, the file it left, and whether code read it there.
   const from = new Map<string, { path: string; code: boolean }>();
   for (const file of files) {
-    const lines = file.basePath === undefined ? undefined : removed.get(file.basePath);
-    if (!lines?.length || file.status === "DELETED" || mapTestPath(file.path)) continue;
+    const lines = file.removed;
+    if (!lines.length || file.status === "DELETED" || mapTestPath(file.path)) continue;
     const config = configuration(file.path);
     if (!config && !mapLanguageOf(file.path)) continue;
     const names = new Set<string>();
@@ -134,50 +98,19 @@ export async function strandedNames(
         from.set(name, { path: file.path, code: !config });
   }
   const names = [...from.keys()].slice(0, LIMIT.names);
-  if (!names.length) return [];
+  if (!names.length) return { names: [] };
 
   const patterns = new Map(
     names.map((name) => [name, { whole: wholeName(name), quoted: quotedName(name) }]),
   );
-  let found: string;
-  try {
-    found = (
-      await git.run(
-        [
-          "grep",
-          "-n",
-          "-I",
-          "-w",
-          "-F",
-          "--untracked",
-          "--full-name",
-          "--no-color",
-          ...names.flatMap((name) => ["-e", name]),
-          "--",
-          ".",
-        ],
-        options,
-      )
-    ).stdout.toString("utf8");
-  } catch (error) {
-    // git grep exits with 1 when nothing matches.
-    if (error instanceof GitCommandError && !options.signal?.aborted) return [];
-    throw error;
-  }
-  // Untracked files are not in the diff: all their lines are new.
-  const untracked = new Set(
-    files
-      .filter((file) => file.status === "ADDED" && !added.has(file.path))
-      .map((file) => file.path),
-  );
+  const search = await gitGrep(git, { strings: names, paths: ["."], words: true }, options);
+  if (search.failed) return { names: [], failed: search.failed };
+  // The lines the change added or changed, by file; an untracked file is all new lines.
+  const changed = new Map(files.map((file) => [file.path, file.lines]));
   const moved = new Set<string>();
   const mentions = new Map<string, string[]>();
-  for (const hit of found.split("\n")) {
-    const match = /^(.+?):(\d+):(.*)$/u.exec(hit);
-    if (!match) continue;
-    const [, file = "", number = "", line = ""] = match;
+  for (const { path: file, line: at, text: line } of search.hits) {
     if (HISTORY.test(file)) continue;
-    const at = Number(number);
     const code = mapLanguageOf(file) !== undefined;
     const reads = code ? codeReads(line, file) : undefined;
     const key = configuration(file) ? CONFIG_KEY.exec(line)?.[1] : undefined;
@@ -185,7 +118,7 @@ export async function strandedNames(
       const source = from.get(name);
       const pattern = patterns.get(name);
       if (!source || !pattern || file === source.path || !pattern.whole.test(line)) continue;
-      if (untracked.has(file) || added.get(file)?.has(at)) {
+      if (changed.get(file)?.some(([start, end]) => start <= at && at <= end)) {
         moved.add(name);
         continue;
       }
@@ -197,13 +130,15 @@ export async function strandedNames(
       if (uses) mentions.set(name, [...(mentions.get(name) ?? []), `${file}:${at}`]);
     }
   }
-  return names
-    .filter((name) => !moved.has(name) && mentions.has(name))
-    .map((name) => ({
-      name,
-      from: from.get(name)?.path ?? "",
-      mentions: mentions.get(name) ?? [],
-    }));
+  return {
+    names: names
+      .filter((name) => !moved.has(name) && mentions.has(name))
+      .map((name) => ({
+        name,
+        from: from.get(name)?.path ?? "",
+        mentions: mentions.get(name) ?? [],
+      })),
+  };
 }
 
 /** One line per stranded name: where it was removed, and the first few places still using it. */

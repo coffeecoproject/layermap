@@ -73,6 +73,8 @@ const HINTS: Readonly<Record<string, string>> = {
   LAYERMAP_BASE_NOT_FOUND:
     "No such commit, branch or tag. Leave base out to compare with HEAD, or name an existing one such as main.",
   LAYERMAP_BASE_INVALID: "base names a commit, branch or tag, such as HEAD or main.",
+  LAYERMAP_DIFF_TOO_LARGE:
+    "The diff against base is too large for one check. Compare with a closer base, or check the change in parts.",
   LAYERMAP_NOT_A_GIT_REPOSITORY:
     "LayerMap maps Git repositories. Run it in one, or name one with --project.",
 };

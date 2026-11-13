@@ -1,5 +1,5 @@
 import { ProjectEvidenceError } from "./core";
-import { GitRunner } from "./git-runner";
+import { GitCommandOutputLimitError, GitRunner } from "./git-runner";
 import type { Hunk, Lines, MapChangedFile, MapChanges } from "./project-map-change-types";
 import { strandedNames } from "./project-map-names";
 import { MAP_MIGRATION_PATH, mapTestPath } from "./project-map-types";
@@ -50,24 +50,31 @@ export async function readMapChanges(
   signal: AbortSignal,
 ): Promise<MapChanges> {
   const commit = await resolveMapBase(project, base, signal);
+  // A diff cut at the output limit would leave changes out of the check, so it is not checked.
   const diff = (
-    await git.run(
-      [
-        "-c",
-        "core.quotePath=false",
-        "diff",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-color",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-        "--unified=0",
-        "-M",
-        commit,
-        "--",
-      ],
-      gitOptions(project, signal),
-    )
+    await git
+      .run(
+        [
+          "-c",
+          "core.quotePath=false",
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "--unified=0",
+          "-M",
+          commit,
+          "--",
+        ],
+        gitOptions(project, signal),
+      )
+      .catch((error: unknown) => {
+        if (error instanceof GitCommandOutputLimitError)
+          throw new ProjectEvidenceError("LAYERMAP_DIFF_TOO_LARGE", false);
+        throw error;
+      })
   ).stdout.toString("utf8");
   // A map never holds dependencies or coding agents' own directories, so their files are not
   // changes to check.
@@ -93,11 +100,11 @@ export async function readMapChanges(
       lines: [EVERYTHING],
       baseLines: [],
       hunks: [],
+      removed: [],
       binary: false,
     });
   const stranded = await strandedNames(
     project,
-    diff,
     files,
     (file) => nonCodeKind(file) === "configuration",
     git,
@@ -106,7 +113,7 @@ export async function readMapChanges(
   return { base, commit, files, stranded };
 }
 
-/** Files and changed line ranges from `git diff --unified=0 -M`. */
+/** Files, changed line ranges and removed text from `git diff --unified=0 -M`. */
 export function parseMapDiff(text: string): MapChangedFile[] {
   const files: MapChangedFile[] = [];
   type Draft = {
@@ -116,31 +123,50 @@ export function parseMapDiff(text: string): MapChangedFile[] {
     lines: [number, number][];
     baseLines: [number, number][];
     hunks: Hunk[];
+    removed: string[];
     binary: boolean;
   };
   let current: Draft | undefined;
+  // Past the first hunk, a line starting with --- is a removed line, not a header.
+  let inHunk = false;
   const finish = () => {
     if (!current) return;
-    // A path quoted by git (tabs, newlines) cannot be matched to the map; it is left out.
     if (!current.path.startsWith('"')) files.push(current);
     current = undefined;
   };
   for (const line of text.split("\n")) {
     if (line.startsWith("diff --git ")) {
       finish();
-      const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+      inHunk = false;
+      // a/P b/P splits in half, whatever P holds; a renamed file is named again by the lines
+      // below. git quotes a path holding a tab, a newline or a quote: the map cannot hold it, and
+      // the file is left out.
+      const names = line.slice("diff --git ".length);
+      const half = (names.length - 1) / 2;
+      const [from, to] = [names.slice(0, half), names.slice(half + 1)];
+      const same =
+        from.startsWith("a/") && to.startsWith("b/") && from.slice(2) === to.slice(2)
+          ? from.slice(2)
+          : undefined;
+      const match = /^a\/(.+) b\/(.+)$/u.exec(names);
       current = {
-        path: match?.[2] ?? "",
-        basePath: match?.[1] ?? "",
+        path: same ?? match?.[2] ?? names,
+        basePath: same ?? match?.[1] ?? names,
         status: "MODIFIED",
         lines: [],
         baseLines: [],
         hunks: [],
+        removed: [],
         binary: false,
       };
       continue;
     }
     if (!current) continue;
+    if (inHunk) {
+      if (line.startsWith("-")) current.removed.push(line.slice(1));
+      else if (line.startsWith("@@ ")) addHunk(current, line);
+      continue;
+    }
     if (line.startsWith("new file mode")) {
       current.status = "ADDED";
       current.basePath = undefined;
@@ -153,28 +179,29 @@ export function parseMapDiff(text: string): MapChangedFile[] {
     } else if (line.startsWith("rename to ")) current.path = line.slice("rename to ".length);
     else if (line.startsWith("Binary files ")) current.binary = true;
     else if (line.startsWith("@@ ")) {
-      const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
-      if (!hunk) continue;
-      const [oldStart, oldCount, newStart, newCount] = [
-        Number(hunk[1]),
-        hunk[2] === undefined ? 1 : Number(hunk[2]),
-        Number(hunk[3]),
-        hunk[4] === undefined ? 1 : Number(hunk[4]),
-      ];
-      current.hunks.push({
-        baseStart: oldStart,
-        baseCount: oldCount,
-        start: newStart,
-        count: newCount,
-      });
-      if (oldCount > 0) current.baseLines.push([oldStart, oldStart + oldCount - 1]);
-      current.lines.push(
-        newCount > 0 ? [newStart, newStart + newCount - 1] : [newStart + 1, newStart],
-      );
+      inHunk = true;
+      addHunk(current, line);
     }
   }
   finish();
   return files;
+}
+
+function addHunk(
+  file: { lines: [number, number][]; baseLines: [number, number][]; hunks: Hunk[] },
+  line: string,
+) {
+  const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
+  if (!hunk) return;
+  const [oldStart, oldCount, newStart, newCount] = [
+    Number(hunk[1]),
+    hunk[2] === undefined ? 1 : Number(hunk[2]),
+    Number(hunk[3]),
+    hunk[4] === undefined ? 1 : Number(hunk[4]),
+  ];
+  file.hunks.push({ baseStart: oldStart, baseCount: oldCount, start: newStart, count: newCount });
+  if (oldCount > 0) file.baseLines.push([oldStart, oldStart + oldCount - 1]);
+  file.lines.push(newCount > 0 ? [newStart, newStart + newCount - 1] : [newStart + 1, newStart]);
 }
 
 export const overlaps = (lines: Lines, start: number, end: number) =>

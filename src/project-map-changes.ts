@@ -37,7 +37,7 @@ import {
   type MapUntestedChanges,
 } from "./project-map-change-types";
 import {
-  type MapRouteClients,
+  type MapRouteClientSearch,
   mapRegisteredRoute,
   mapRouteLabel,
   routeClients,
@@ -829,7 +829,8 @@ export type MapChangeCheckInput = Readonly<{
   /**
    * The built map version of a commit of the same directory, captured with the same options as the
    * working version; the host builds it, since it decides how versions are kept. Called only when
-   * the diff removes or changes lines that existed in the base.
+   * the base has something to compare: lines the diff removed or changed, a changed test file's
+   * existing tests, a renamed template, or compile errors to tell new from old.
    */
   baseVersion: (commit: string, signal: AbortSignal) => Promise<string>;
   /**
@@ -960,9 +961,11 @@ export async function checkMapChanges(
   };
 }
 
-/** Code the diff adds that reads like existing code, with what using that code would import. */
-// Existing code like the new code, and what one copy would import to use the other; copies in
-// packages neither of which imports the other's cannot share code, so they are no reuse missed.
+/**
+ * Code the diff adds that reads like existing code, with what one copy would import to use the
+ * other; copies in packages neither of which imports the other's cannot share code, so they are
+ * no reuse missed.
+ */
 function reusable(
   store: CodeIndexStore,
   working: string,
@@ -987,11 +990,11 @@ export async function mapRouteClients(
   working: string,
   impact: MapChangeImpact,
   signal: AbortSignal,
-): Promise<MapRouteClients[]> {
+): Promise<MapRouteClientSearch> {
   const affected = impact.entries.filter(
     (entry) => entry.route && entry.certain && entry.chain.length <= 2,
   );
-  if (!affected.length && !impact.removedRoutes.length) return [];
+  if (!affected.length && !impact.removedRoutes.length) return { routes: [] };
   const registrations = routeRegistrations(store, working);
   // A removed route's path is still served when a route with HTTP methods, or the same label,
   // registers it; a class-level prefix with that path alone does not serve it.
@@ -1006,7 +1009,7 @@ export async function mapRouteClients(
       .filter((route) => !served(route))
       .map((route) => ({ route, removed: true })),
   ];
-  if (!routes.length) return [];
+  if (!routes.length) return { routes: [] };
   return routeClients(routes, registrations, git, gitOptions(project, signal));
 }
 

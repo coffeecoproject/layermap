@@ -36,6 +36,14 @@ export class GitCommandStopUnconfirmedError extends GitCommandError {
   }
 }
 
+/** The command printed more than its output limit; its output is cut, so none of it is used. */
+export class GitCommandOutputLimitError extends GitCommandError {
+  constructor() {
+    super("Git command exceeded the output limit.");
+    this.name = "GitCommandOutputLimitError";
+  }
+}
+
 export const isNotGitRepositoryError = (error: GitCommandError): boolean =>
   /fatal: not a git repository(?: \(or any of the parent directories\))?/i.test(error.stderr);
 
@@ -192,7 +200,7 @@ export class GitRunner {
         if (failure || settled) return;
         outputBytes += chunk.length;
         if (maxOutputBytes !== null && outputBytes > maxOutputBytes) {
-          fail(new GitCommandError("Git command exceeded the output limit."));
+          fail(new GitCommandOutputLimitError());
           return;
         }
         target.push(chunk);
@@ -243,4 +251,56 @@ export class GitRunner {
   async text(args: readonly string[], options: GitRunOptions): Promise<string> {
     return (await this.run(args, options)).stdout.toString("utf8").trim();
   }
+}
+
+/** A line `git grep -n --full-name` found: the file from the repository root, and the line. */
+export type GitGrepHit = Readonly<{ path: string; line: number; text: string }>;
+
+/**
+ * The lines of the working tree, untracked files included, holding one of the strings in the
+ * files the pathspecs name; `words` takes only a whole word. No match is no hits. When git cannot
+ * finish the search (a time or output limit, a failure), `failed` says why and there are no hits;
+ * the check being stopped, or a git that would not stop, still throws.
+ */
+export async function gitGrep(
+  git: GitRunner,
+  search: Readonly<{ strings: readonly string[]; paths: readonly string[]; words?: boolean }>,
+  options: GitRunOptions,
+): Promise<Readonly<{ hits: GitGrepHit[]; failed?: string }>> {
+  let found: string;
+  try {
+    found = (
+      await git.run(
+        [
+          "grep",
+          "-n",
+          "-I",
+          ...(search.words ? ["-w"] : []),
+          "-F",
+          "--untracked",
+          "--full-name",
+          "--no-color",
+          ...search.strings.flatMap((text) => ["-e", text]),
+          "--",
+          ...search.paths,
+        ],
+        options,
+      )
+    ).stdout.toString("utf8");
+  } catch (error) {
+    if (
+      !(error instanceof GitCommandError) ||
+      error instanceof GitCommandStopUnconfirmedError ||
+      options.signal?.aborted
+    )
+      throw error;
+    // git grep exits with 1 when nothing matches.
+    return error.exitCode === 1 ? { hits: [] } : { hits: [], failed: error.message };
+  }
+  const hits: GitGrepHit[] = [];
+  for (const text of found.split("\n")) {
+    const match = /^(.+?):(\d+):(.*)$/u.exec(text);
+    if (match) hits.push({ path: match[1] ?? "", line: Number(match[2]), text: match[3] ?? "" });
+  }
+  return { hits };
 }

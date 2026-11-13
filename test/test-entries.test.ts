@@ -23,7 +23,7 @@ async function check(files: Record<string, string>, changed: [string, string]) {
       (await map.checkChanges({ format: "json" }, signal())).text,
     ) as MapChangesData;
   } finally {
-    map.close();
+    await map.close();
   }
 }
 const selected = (data: MapChangesData) =>
@@ -179,7 +179,7 @@ module.exports = function register(router) {
     // Read as module state, as any module variable is, but not as the route's handler.
     assert.doesNotMatch(text, /store v\d+ @\d+ "GET \/state"/u, text);
   } finally {
-    map.close();
+    await map.close();
   }
 });
 
@@ -251,7 +251,7 @@ module.exports = { readConfig };
     const explored = (await map.explore({ path: "src/read.js" }, signal())).text;
     assert.doesNotMatch(explored, /\b(fs|join|store) v\d/u, explored);
   } finally {
-    map.close();
+    await map.close();
   }
 });
 

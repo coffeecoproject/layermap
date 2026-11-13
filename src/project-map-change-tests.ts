@@ -134,18 +134,25 @@ export function supportTests(store: CodeIndexStore, version: string, tracer: Tra
   }
 }
 
-// Tests of the same module in a mirrored test tree: tests/file/ for polar/file/service.py.
+// Tests of the same module in a mirrored test tree: tests/file/ for polar/file/service.py, in the
+// same package: what is above the test tree (server/ of server/tests/) is above the file too.
 export function mirroredTests(paths: readonly string[], file: string, tracer: Tracer) {
   const directories = file.split("/").slice(0, -1);
   const module = directories.at(-1);
-  if (!module || directories.length < 1) return;
+  if (!module) return;
   for (const candidate of paths) {
     if (!candidate.includes(`/${module}/`)) continue;
     const parts = candidate.split("/");
     const at = parts.lastIndexOf(module);
     if (at < 1 || at !== parts.length - 2) continue;
-    if (!parts.slice(0, at).some((part) => /^(?:tests?|__tests__|specs?)$/iu.test(part))) continue;
-    tracer.test(candidate, undefined, `tests the ${module} module`, 3);
+    const tree = parts
+      .slice(0, at)
+      .some(
+        (part, index) =>
+          /^(?:tests?|__tests__|specs?)$/iu.test(part) &&
+          parts.slice(0, index).every((above, depth) => directories[depth] === above),
+      );
+    if (tree) tracer.test(candidate, undefined, `tests the ${module} module`, 3);
   }
 }
 
