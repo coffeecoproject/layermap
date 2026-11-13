@@ -12,7 +12,7 @@ import { inOrder, TypeScriptMapAnalyzer } from "../src/project-map-language-type
 import { ProjectMapStopUnconfirmedError } from "../src/project-map-process";
 import { analyzers, project, sandbox, signal } from "./support";
 
-test("contexts are analyzed at once", {
+test("contexts are analyzed at once, the larger started first and all accepted in discovery order", {
   skip: availableParallelism() < 2,
 }, async (t) => {
   const tsconfig = JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] });
@@ -21,7 +21,10 @@ test("contexts are analyzed at once", {
     "a/tsconfig.json": tsconfig,
     "a/src/a.ts": "export function a() {\n  return 1;\n}\n",
     "b/tsconfig.json": tsconfig,
-    "b/src/b.ts": "export function b() {\n  return 2;\n}\n",
+    // b, discovered after a, has more root files.
+    "b/src/b1.ts": "export function b1() {\n  return 1;\n}\n",
+    "b/src/b2.ts": "export function b2() {\n  return 2;\n}\n",
+    "b/src/b3.ts": "export function b3() {\n  return 3;\n}\n",
   });
   const events: MapAnalyzerEvent[] = [];
   const store = new CodeIndexStore(
@@ -50,18 +53,23 @@ test("contexts are analyzed at once", {
     },
     signal(),
   );
-  const started = events.filter((event) => event.phase === "STARTED").map((e) => e.contextRef);
-  assert.ok(started.length >= 2, "two projects, two contexts");
+  const started = events.filter((event) => event.phase === "STARTED");
+  assert.equal(started.length, 2, "two projects, two contexts");
   const firstFinished = events.findIndex((event) => event.phase === "FINISHED");
-  assert.ok(
-    events.slice(0, firstFinished).filter((event) => event.phase === "STARTED").length >= 2,
-    "a second context starts before the first finishes",
+  assert.equal(
+    events.slice(0, firstFinished).filter((event) => event.phase === "STARTED").length,
+    2,
+    "the second context starts before the first finishes",
   );
+  const [first, second] = started;
+  assert.ok(first && second && first.inputFiles > second.inputFiles, "b, the larger, starts first");
   assert.deepEqual(
     events
-      .filter((event) => event.phase === "STAGED" && started.includes(event.contextRef))
-      .map((e) => e.contextRef),
-    started,
+      .filter((event) => event.phase === "STAGED" && event.contextRef !== undefined)
+      .map((event) => event.contextRef)
+      .filter((ref) => ref === first.contextRef || ref === second.contextRef),
+    [second.contextRef, first.contextRef],
+    "a, discovered first, is accepted first",
   );
 });
 
@@ -108,6 +116,7 @@ test("tasks run a few at a time and are taken in task order", { timeout: 10_000 
     (value) => taken.push(value),
     signal(),
     2,
+    [0, 0, 0],
   );
   await settle();
   assert.deepEqual(
@@ -124,13 +133,33 @@ test("tasks run a few at a time and are taken in task order", { timeout: 10_000 
   assert.deepEqual(taken, ["a", "b", "c"]);
 });
 
+test("larger tasks start first and are still taken in task order", {
+  timeout: 10_000,
+}, async () => {
+  const started: string[] = [];
+  const taken: string[] = [];
+  const task = (value: string) => async () => {
+    started.push(value);
+    return value;
+  };
+  await inOrder(
+    [task("small"), task("large"), task("middle")],
+    (value) => taken.push(value),
+    signal(),
+    1,
+    [1, 3, 2],
+  );
+  assert.deepEqual(started, ["large", "middle", "small"]);
+  assert.deepEqual(taken, ["small", "large", "middle"]);
+});
+
 test("the first failure stops the other tasks and is thrown", { timeout: 10_000 }, async () => {
   const waiting = gate("a");
   const failing = async () => {
     throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
   };
   await assert.rejects(
-    inOrder([waiting.task, failing], () => {}, signal(), 2),
+    inOrder([waiting.task, failing], () => {}, signal(), 2, [0, 0]),
     (error: ProjectEvidenceError) => error.code === "PROJECT_MAP_PROTOCOL_INVALID",
   );
   assert.equal(waiting.stopped, true);
@@ -147,7 +176,7 @@ test("a worker not confirmed stopped outranks the failure that stopped it", {
       signal.addEventListener("abort", () => reject(new ProjectMapStopUnconfirmedError())),
     );
   await assert.rejects(
-    inOrder([unstoppable, failing], () => {}, signal(), 2),
+    inOrder([unstoppable, failing], () => {}, signal(), 2, [0, 0]),
     ProjectMapStopUnconfirmedError,
   );
 });

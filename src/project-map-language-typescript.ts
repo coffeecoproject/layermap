@@ -43,15 +43,17 @@ const CONFIGURATIONS_KEPT = 4;
 const CONTEXTS_AT_ONCE = Math.min(4, availableParallelism());
 
 /**
- * Runs the tasks `atOnce` at a time and takes each result in task order, once those before it are
- * taken. The first failure stops the other tasks and is thrown after they have stopped, unless a
- * worker could not be confirmed stopped: that is thrown instead, since it may still be running.
+ * Runs the tasks `atOnce` at a time, the larger by `sizes` first so the longest does not run alone
+ * at the end, and takes each result in task order, once those before it are taken. The first
+ * failure stops the other tasks and is thrown after they have stopped, unless a worker could not
+ * be confirmed stopped: that is thrown instead, since it may still be running.
  */
 export async function inOrder<T>(
   tasks: readonly ((signal: AbortSignal) => Promise<T>)[],
   take: (result: T) => void,
   signal: AbortSignal,
   atOnce: number,
+  sizes: readonly number[],
 ) {
   const stopping = new AbortController();
   const stop = () => stopping.abort();
@@ -70,14 +72,20 @@ export async function inOrder<T>(
     else running--;
   };
   let failure: { error: unknown } | undefined;
-  const results = tasks.map(async (task) => {
+  const run = async (task: (signal: AbortSignal) => Promise<T>) => {
     await slot();
     try {
       return await task(stopping.signal);
     } finally {
       release();
     }
-  });
+  };
+  // Slots go to tasks in the order they are started; equal sizes keep the task order.
+  const results: Promise<T>[] = [];
+  for (const index of tasks
+    .map((_, index) => index)
+    .sort((left, right) => (sizes[right] ?? 0) - (sizes[left] ?? 0)))
+    results[index] = run(tasks[index] as (signal: AbortSignal) => Promise<T>);
   // The first task to fail is the failure; those it stops fail after it.
   for (const result of results)
     result.catch((error: unknown) => {
@@ -304,7 +312,8 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
       session.configuration(file);
     }
     // Accepted in discovery order, which decides whose copy of an object several contexts stage
-    // is kept, however the analyses finish.
+    // is kept, however the analyses finish. A context's root files are the files it analyzes, so
+    // their count sizes it.
     await inOrder(
       discovered.projects.map(
         (project) => (signal: AbortSignal) =>
@@ -313,6 +322,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
       accept,
       signal,
       CONTEXTS_AT_ONCE,
+      discovered.projects.map((project) => project.rootFiles.length),
     );
     const orphaned = session.readable.filter(
       (entry) =>
