@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import type { MapChangesData } from "../src/project-map-changes";
+import { mapRunnableTest } from "../src/project-map-types";
 import { openMap, project, signal } from "./support";
 
 const run = promisify(execFile);
@@ -292,4 +295,90 @@ export function parsesAValue() {
     JSON.stringify(loaded),
   );
   assert.equal(loaded["test/other.test.ts"]?.why, "may use it through test/setup.ts");
+});
+
+test("the tests a runner runs by its own conventions are selected, not climbed past as helpers", async () => {
+  const sum = (by: string) =>
+    `export function sum(a: number, b: number) {\n  return a + b${by};\n}\n`;
+  const calls = (from: string) =>
+    `import { sum } from "${from}";\n\nexport function check() {\n  return sum(1, 2);\n}\n`;
+  const data = await check(
+    {
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { strict: true },
+        include: ["src", "test"],
+      }),
+      "src/sum.ts": sum(""),
+      // Jest runs every file in a __tests__ directory; Nest's e2e tests end in e2e-spec.
+      "src/__tests__/sum.ts": calls("../sum"),
+      "test/app.e2e-spec.ts": calls("../src/sum"),
+    },
+    ["src/sum.ts", sum(" + 0")],
+  );
+  assert.deepEqual(Object.keys(selected(data)).sort(), [
+    "src/__tests__/sum.ts",
+    "test/app.e2e-spec.ts",
+  ]);
+});
+
+test("Java and Kotlin tests are runnable by the names Surefire and Failsafe run", () => {
+  for (const file of [
+    "src/test/java/a/UserServiceTest.java",
+    "src/test/java/a/UserServiceTests.java",
+    "src/test/java/a/TestUserService.java",
+    "src/test/java/a/UserServiceTestCase.java",
+    "src/test/kotlin/a/UserServiceIT.kt",
+    "src/test/java/a/ITUserService.java",
+    "src/test/java/a/UserServiceITCase.java",
+  ])
+    assert.ok(mapRunnableTest(file), file);
+  for (const file of ["src/test/java/a/Fixtures.java", "src/test/java/a/Testing.java"])
+    assert.ok(!mapRunnableTest(file), file);
+});
+
+test("a search of the tests for a route's path that the deadline stops says how many were left", async (t) => {
+  const items = (by: string) => `export function list() {\n  return [1${by}];\n}\n`;
+  const tests = Object.fromEntries(
+    Array.from({ length: 70 }, (_, at) => [
+      `test/t${String(at).padStart(2, "0")}.test.ts`,
+      `export const url = "/elsewhere/${at}";\n`,
+    ]),
+  );
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/items.ts": items(""),
+    "src/routes.ts":
+      'import { list } from "./items";\n\ndeclare const router: { get(path: string, h: () => unknown): void };\nrouter.get("/items/all", () => list());\n',
+    ...tests,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  await write("src/items.ts", items(", 2"));
+  const map = await openMap(root);
+  t.after(() => map.close());
+  // The clock passes any deadline once the search reads its first test: the first batch is read,
+  // the rest is not.
+  const real = Date.now;
+  let late = false;
+  t.mock.method(Date, "now", () => (late ? real() + 3_600_000 : real()));
+  const read = fs.readFile;
+  t.mock.method(fs, "readFile", (...args: Parameters<typeof read>) => {
+    if (/\/t\d+\.test\.ts$/u.test(String(args[0]))) late = true;
+    return read(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const { text } = await map.checkChanges({}, signal());
+  assert.match(
+    text,
+    /the check ran out of time before searching 6 of the project's runnable tests for the paths of the routes the change reaches/u,
+  );
 });

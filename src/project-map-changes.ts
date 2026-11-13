@@ -38,7 +38,7 @@ import {
 } from "./project-map-change-types";
 import {
   type MapRouteClients,
-  mapIsRouteLabel,
+  mapRegisteredRoute,
   mapRouteLabel,
   routeClients,
   routeRegistrations,
@@ -187,16 +187,14 @@ export async function mapChangeImpact(
       );
       starts.push(tracer.startsAt(ref, file.lines));
     }
-    // Registrations: route literals on changed lines, wherever they are.
-    for (const relation of graph.relationsFrom(objects.map((object) => object.id)))
-      if (
-        relation.argument &&
-        mapIsRouteLabel(relation.argument) &&
-        overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)
-      )
+    // Registrations on changed lines, wherever they are: a call's route literal, a decorator's route.
+    for (const relation of graph.relationsFrom(objects.map((object) => object.id))) {
+      const route = mapRegisteredRoute(relation);
+      if (route && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine))
         unclear.push(
-          `the registration of ${JSON.stringify(relation.argument)} at ${relation.anchor.path}:${relation.anchor.startLine} changed; check that the route still reaches the right handler`,
+          `the registration of ${JSON.stringify(route)} at ${relation.anchor.path}:${relation.anchor.startLine} changed; check that the route still reaches the right handler`,
         );
+    }
     if (analyzed && topLevel && file.status !== "ADDED") topLevelChanged(file.path);
     // A file's importers back up its callers: tests that import it, even without a mapped call.
     importerTests(graph, objects, tracer, importers);
@@ -209,7 +207,7 @@ export async function mapChangeImpact(
   );
   let requests: RouteRequests | undefined;
   const routeRequests = () => {
-    requests ??= new RouteRequests(store, working, graph, project);
+    requests ??= new RouteRequests(store, working, graph, project, until);
     return requests;
   };
   // The tests the code registering a held route reaches, as the trace climbing on would find them:
@@ -268,6 +266,10 @@ export async function mapChangeImpact(
         )}${unfound.length > LIST.names ? ", …" : ""}${unfound.length > 1 ? ")" : ""}: a test requesting ${unfound.length > 1 ? "them" : "it"} in a way the map does not read is not selected`,
     );
   if (tracer.held.size) await unworkedRequests(routeRequests(), tracer, reaching);
+  if (requests?.unsearched)
+    unclear.push(
+      `the check ran out of time before searching ${requests.unsearched} of the project's runnable tests for the paths of the routes the change reaches, so a test naming one of them there is not selected`,
+    );
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(

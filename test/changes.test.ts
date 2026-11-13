@@ -1253,6 +1253,77 @@ def test_item():
   }
 });
 
+test("a changed registration is named by the whole route it registers, by a call or a decorator", async () => {
+  const main = (decorator: string) =>
+    `from fastapi import APIRouter, FastAPI\n\napp = FastAPI()\nrouter = APIRouter(prefix="/api")\n\n\n${decorator}\ndef list_items():\n    return []\n\n\napp.include_router(router)\n`;
+  const routes = (handler: string) =>
+    `declare const router: { get(path: string, h: () => string): void };\nconst health = () => "ok";\nconst ready = () => "ok";\n\nexport function register() {\n  router.get("/health", ${handler});\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["web"] }),
+    "app/__init__.py": "",
+    "app/main.py": main('@router.get("/items")'),
+    "web/routes.ts": routes("health"),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write("app/main.py", main('@router.get("/items", status_code=200)'));
+  await write("web/routes.ts", routes("ready"));
+  const map = await openMap(root);
+  try {
+    const { text } = await map.checkChanges({}, signal());
+    // The decorator's argument is only "/items"; the route it registers is whole.
+    assert.match(text, /the registration of "GET \/api\/items" at app\/main\.py:7 changed/u);
+    assert.match(text, /the registration of "GET \/health" at web\/routes\.ts:6 changed/u);
+  } finally {
+    await map.close();
+  }
+});
+
+test("routes sharing the stretch of path a test names are each run by it", async () => {
+  const { root, write } = await project({
+    "app/__init__.py": "",
+    "app/service.py": "def read_item(item_id):\n    return item_id\n",
+    "app/main.py": `from fastapi import FastAPI
+from app.service import read_item
+
+app = FastAPI()
+
+
+@app.get("/items/{item_id}")
+def get_item(item_id: int):
+    return read_item(item_id)
+
+
+@app.delete("/items/{item_id}")
+def delete_item(item_id: int):
+    return read_item(item_id)
+`,
+    "tests/__init__.py": "",
+    "tests/test_items.py": `from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_item():
+    assert client.get("/items/1").status_code == 200
+`,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write("app/service.py", "def read_item(item_id):\n    return item_id + 1\n");
+  const map = await openMap(root);
+  try {
+    const data = JSON.parse(
+      (await map.checkChanges({ format: "json", tests: ["tests/test_items.py"] }, signal())).text,
+    ) as MapChangesData;
+    // Both routes' path has the stretch /items, which the test names.
+    assert.deepEqual(data.untested?.routes, ["DELETE /items/{item_id}", "GET /items/{item_id}"]);
+  } finally {
+    await map.close();
+  }
+});
+
 test("a Go test naming a route's whole path requests it, so the trace does not climb on to the app's other tests", async () => {
   const goTest = (name: string, path: string) => `package web
 

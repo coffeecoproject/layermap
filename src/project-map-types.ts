@@ -327,9 +327,13 @@ export const mapTestPath = (path: string) =>
     path,
   );
 
-/** Test files a test runner runs, by the naming conventions of the mapped languages. */
+/**
+ * Test files a test runner runs, by the default naming conventions of the mapped languages' runners:
+ * go test, pytest, Jest and Vitest (a __tests__ directory too, and Nest's e2e-spec), and Maven's
+ * Surefire and Failsafe for Java and Kotlin. Case-sensitive, as those are.
+ */
 export const mapRunnableTest = (file: string) =>
-  /_test\.(?:go|py)$|(?:^|\/)test_[^/]*\.py$|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:Test|Tests|IT)\.(?:java|kt)$/u.test(
+  /_test\.(?:go|py)$|(?:^|\/)test_[^/]*\.py$|(?:\.(?:test|spec)|\.e2e-spec|(?:^|\/)__tests__\/.*)\.[cm]?[jt]sx?$|(?:^|\/)(?:Test|IT)[A-Z]\w*\.(?:java|kt)$|(?:Test|Tests|TestCase|IT|ITCase)\.(?:java|kt)$/u.test(
     file,
   );
 

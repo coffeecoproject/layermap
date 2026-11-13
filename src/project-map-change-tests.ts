@@ -4,7 +4,7 @@ import type { CodeIndexStore } from "./code-index-store";
 import { IMPORT_KINDS, type Tracer, testEntries } from "./project-map-change-trace";
 import type { MapChangedFile, MapChangeEntry } from "./project-map-change-types";
 import {
-  mapIsRouteLabel,
+  mapRegisteredRoute,
   mapRequestedRoutes,
   mapRouteLabel,
   mapRouteLiteral,
@@ -164,12 +164,15 @@ export class RouteRequests {
   }[] = [];
   private known?: Set<string>;
   private candidates?: string[];
+  /** The most runnable tests one search left unread when the check's deadline came. */
+  unsearched = 0;
 
   constructor(
     private readonly store: CodeIndexStore,
     private readonly version: string,
     graph: MapViewGraph,
     private readonly project: string | undefined,
+    private readonly until: number,
   ) {
     const closest = mapRequestedRoutes(routeRegistrations(store, version).routes);
     for (const row of store.database
@@ -221,8 +224,9 @@ export class RouteRequests {
   }
 
   /**
-   * The runnable tests and their text, every one of them, read a batch at a time and not kept: a
-   * project's tests may be more text than is worth holding, and each pass reads them again.
+   * The runnable tests and their text, in path order, read a batch at a time and not kept: a
+   * project's tests may be more text than is worth holding, and each pass reads them again. Reading
+   * stops at the check's deadline, and how many were left is kept to be said.
    */
   async *tests(): AsyncGenerator<readonly [string, string]> {
     const project = this.project;
@@ -233,6 +237,10 @@ export class RouteRequests {
       .map((row) => String(row.path))
       .filter(mapRunnableTest);
     for (let at = 0; at < this.candidates.length; at += READ_BATCH) {
+      if (Date.now() > this.until) {
+        this.unsearched = Math.max(this.unsearched, this.candidates.length - at);
+        return;
+      }
       const batch = this.candidates.slice(at, at + READ_BATCH);
       const texts = await Promise.all(
         batch.map((file) => readFile(path.join(project, file), "utf8").catch(() => undefined)),
@@ -264,29 +272,31 @@ export async function routeTests(
       tracer.requester(label, file);
       for (const name of names) tracer.test(file, name, `requests ${JSON.stringify(label)}`, 2);
     }
-  const fragments = new Map<string, string>();
+  // Routes sharing a stretch (GET and DELETE /users/{id}) are each mentioned where it is named.
+  const fragments = new Map<string, string[]>();
   for (const label of affected) {
     const fragment = routeFragment(label);
-    if (fragment) fragments.set(fragment, label);
+    if (fragment) fragments.set(fragment, [...(fragments.get(fragment) ?? []), label]);
   }
   if (!fragments.size) return requested;
   for await (const [candidate, text] of requests.tests()) {
     // A mention alone is weak evidence; with another relation it is the strongest one.
     const rank = tracer.tests.has(candidate) ? 2 : 3.5;
     const read = mapReadsRequests(candidate);
-    for (const [fragment, label] of fragments)
-      if (text.includes(fragment)) {
-        // Where the map does not read a test's requests, its text is what says which it sends:
-        // naming a route's whole path, the test requests it; a stretch of it, it may.
-        if (!read) {
-          tracer.mentioner(label, candidate);
-          if (fragment === mapRouteLabel(label).path && wholePath(text, fragment)) {
-            requested.add(label);
-            tracer.requester(label, candidate);
+    for (const [fragment, labels] of fragments)
+      if (text.includes(fragment))
+        for (const label of labels) {
+          // Where the map does not read a test's requests, its text is what says which it sends:
+          // naming a route's whole path, the test requests it; a stretch of it, it may.
+          if (!read) {
+            tracer.mentioner(label, candidate);
+            if (fragment === mapRouteLabel(label).path && wholePath(text, fragment)) {
+              requested.add(label);
+              tracer.requester(label, candidate);
+            }
           }
+          tracer.test(candidate, undefined, `mentions ${JSON.stringify(label)}`, rank);
         }
-        tracer.test(candidate, undefined, `mentions ${JSON.stringify(label)}`, rank);
-      }
   }
   return requested;
 }
@@ -340,9 +350,8 @@ export function sameDirectoryTests(paths: readonly string[], path: string, trace
 export function routesIn(graph: MapViewGraph, path: string): Set<string> {
   const routes = new Set<string>();
   for (const relation of graph.relationsFrom(graph.objectsAt(path).map((object) => object.id))) {
-    const route =
-      relation.kind === "DECORATED_BY" ? (relation.route ?? relation.argument) : relation.argument;
-    if (route && mapIsRouteLabel(route)) routes.add(route);
+    const route = mapRegisteredRoute(relation);
+    if (route) routes.add(route);
   }
   return routes;
 }

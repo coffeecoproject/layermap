@@ -76,6 +76,17 @@ export function mapRouteLabel(label: string): { methods?: readonly string[]; pat
 export const mapIsRouteLabel = (text: string) => ROUTE.test(text);
 
 /**
+ * The route a relation registers: a decorator's whole route, which says more than its argument
+ * (a controller's prefix, the method), else the route label a registration call is given.
+ */
+export function mapRegisteredRoute(
+  relation: Readonly<{ route?: string; argument?: string }>,
+): string | undefined {
+  const route = relation.route ?? relation.argument;
+  return route && mapIsRouteLabel(route) ? route : undefined;
+}
+
+/**
  * Whether a route serves a request by their methods: one named for none (all, use, route)
  * serves any, a GET serves a HEAD too, and a request whose method is not known may be any.
  */
@@ -212,8 +223,8 @@ export function routeRegistrations(
       argument?: string;
       route?: string;
     };
-    const route = relation.route ?? relation.argument;
-    if (!route || !mapIsRouteLabel(route)) continue;
+    const route = mapRegisteredRoute(relation);
+    if (!route) continue;
     routes.add(route);
     for (let line = relation.anchor.startLine; line <= relation.anchor.endLine; line++)
       sites.add(`${relation.anchor.path}:${line}`);

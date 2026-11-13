@@ -1,5 +1,5 @@
 import { LIMITS, type Lines, type MapChangeEntry } from "./project-map-change-types";
-import { mapIsRouteLabel } from "./project-map-clients";
+import { mapRegisteredRoute } from "./project-map-clients";
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { type MapShapeUses, mapIsShape } from "./project-map-shapes";
@@ -51,7 +51,7 @@ type Reached = {
 type Caller = {
   ref: string;
   anchor: MapAnchor;
-  argument?: string;
+  route?: string;
   certain: boolean;
   uses?: boolean;
   holds?: boolean;
@@ -62,7 +62,7 @@ export type ChangeStart = Readonly<{ refs: readonly string[]; own: readonly stri
 const callerFrom = (ref: string, relation: MapRelation, certain: boolean): Caller => ({
   ref,
   anchor: relation.anchor,
-  ...(relation.argument ? { argument: relation.argument } : {}),
+  ...(mapRegisteredRoute(relation) ? { route: mapRegisteredRoute(relation) } : {}),
   certain,
 });
 
@@ -222,9 +222,7 @@ export class Tracer {
         for (const caller of callers) {
           const site = `${caller.anchor.path}:${caller.anchor.startLine}`;
           const certain = current.certain && caller.certain;
-          const route =
-            caller.argument && mapIsRouteLabel(caller.argument) ? caller.argument : undefined;
-          if (route) this.entry(route, true, current, site, certain);
+          if (caller.route) this.entry(caller.route, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
           if (mapTestPath(callerObject.anchor.path)) {
             const entries = testEntries(this.graph, this.graph.owner(caller.ref));
@@ -246,6 +244,7 @@ export class Tracer {
           }
           // The framework runs a handler when its route is requested: the tests requesting the
           // route run the change, not every test building the app that registers it.
+          const route = caller.route;
           if (route && this.holdsRoutes && !this.released.has(route)) {
             this.held.set(route, [...(this.held.get(route) ?? []), { current, caller }]);
             continue;
@@ -603,13 +602,14 @@ export class Tracer {
     ) {
       const route = this.graph
         .relationsFrom([ref])
-        .find((relation) => relation.argument && mapIsRouteLabel(relation.argument))?.argument;
+        .map(mapRegisteredRoute)
+        .find((found) => found !== undefined);
       callers.push({
         ref: parent,
         anchor: object.anchor,
         certain: callers.length === 0,
         holds: true,
-        ...(route ? { argument: route } : {}),
+        ...(route ? { route } : {}),
       });
     }
     this.known.set(ref, callers);
@@ -619,8 +619,8 @@ export class Tracer {
   private decoratorRoutes(current: Reached) {
     for (const relation of this.graph.relationsFrom([current.ref])) {
       if (relation.kind !== "DECORATED_BY") continue;
-      const route = relation.route ?? relation.argument;
-      if (!route || !mapIsRouteLabel(route)) continue;
+      const route = mapRegisteredRoute(relation);
+      if (!route) continue;
       this.routes.add(current.ref);
       this.entry(
         route,
