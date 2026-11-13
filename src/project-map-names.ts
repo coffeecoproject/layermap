@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { GitCommandError, type GitRunner, type GitRunOptions } from "./git-runner";
 import { mapLanguageOf } from "./project-map-language";
@@ -127,12 +127,8 @@ export async function strandedNames(
         if (key) names.add(key);
         for (const match of line.matchAll(PLACEHOLDER)) if (match[1]) names.add(match[1]);
       } else for (const name of codeReads(line, file.path)) names.add(name);
-    let text: string;
-    try {
-      text = readFileSync(path.join(project, file.path), "utf8");
-    } catch {
-      continue;
-    }
+    const text = await readFile(path.join(project, file.path), "utf8").catch(() => undefined);
+    if (text === undefined) continue;
     for (const name of names)
       if (NAME.test(name) && !PLATFORM.test(name) && !from.has(name) && !wholeName(name).test(text))
         from.set(name, { path: file.path, code: !config });

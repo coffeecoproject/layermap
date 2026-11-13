@@ -65,6 +65,20 @@ test("an environment variable renamed in code is named where configuration still
   assert.match(text, /update them too or keep the old name working/u);
 });
 
+test("a name the changed file still reads elsewhere is not gone from it", async () => {
+  const settings = (first: string) =>
+    `import os\n\n\ndef database_url():\n    return os.environ.get("${first}")\n\n\ndef replica_url():\n    return os.environ.get("DATABASE_URL")\n`;
+  const text = await checkAfter(
+    {
+      "app/__init__.py": "",
+      "app/settings.py": settings("DATABASE_URL"),
+      ".env.example": "DATABASE_URL=postgres://localhost/app\n",
+    },
+    { "app/settings.py": settings("PRIMARY_URL") },
+  );
+  assert.doesNotMatch(section(text), /DATABASE_URL/u);
+});
+
 test("a configuration key renamed in its file is named where code still reads it", async () => {
   const text = await checkAfter(
     {

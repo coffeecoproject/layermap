@@ -11,7 +11,8 @@ import type { CodeIndexSource } from "../src/code-index-types";
 import { ProjectEvidenceError } from "../src/core";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
-import { checkMapChanges, type MapChangesData, parseMapDiff } from "../src/project-map-changes";
+import { parseMapDiff } from "../src/project-map-change-diff";
+import { checkMapChanges, type MapChangesData } from "../src/project-map-changes";
 import { GoMapAnalyzer } from "../src/project-map-language-go";
 import { JavaMapAnalyzer } from "../src/project-map-language-java";
 import { PythonMapAnalyzer } from "../src/project-map-language-python";
@@ -177,7 +178,7 @@ test("code using a moved declaration from a line the diff only moved follows it,
   t.after(() => map.close());
   await write(
     "src/store.ts",
-    FILES["src/store.ts"].replace(/\n\nexport function legacy[^]*$/u, "\n"),
+    FILES["src/store.ts"].replace(/\n\nexport function legacy[\s\S]*$/u, "\n"),
   );
   await write("src/old.ts", "export function legacy() {\n  return 1;\n}\n");
   // Lines added right below the line calling it: a hunk that only adds, after that line.
@@ -207,7 +208,7 @@ test("an entry point only the base reaches is named where the working tree regis
   // The route's handler still calls what the diff removed, a line further down.
   await write(
     "src/store.ts",
-    FILES["src/store.ts"].replace(/\n\nexport function legacy[^]*$/u, "\n"),
+    FILES["src/store.ts"].replace(/\n\nexport function legacy[\s\S]*$/u, "\n"),
   );
   await write("src/routes.ts", `// Feeds.\n${FILES["src/routes.ts"]}`);
   const { text } = await map.checkChanges({}, signal());
