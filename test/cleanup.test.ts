@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "@photostructure/sqlite";
@@ -114,6 +114,37 @@ test("the cache drops maps unused for 30 days and analyzer builds superseded for
   assert.equal(await exists(path.join(builds, "superseded")), false);
   assert.equal(await exists(path.join(builds, "fresh")), true);
   assert.equal(await exists(path.join(builds, "interrupted.123")), false);
+});
+
+test("the cache drops a project's map once its directory is removed", async (t) => {
+  const cache = path.join(await sandbox(), "cache");
+  const projects = path.join(cache, "projects");
+  const worktrees = await sandbox();
+  for (const name of ["removed", "kept", "unreadable"]) {
+    await mkdir(path.join(projects, name), { recursive: true });
+    await writeFile(path.join(projects, name, "last-used"), path.join(worktrees, name, "project"));
+  }
+  await mkdir(path.join(worktrees, "kept", "project"), { recursive: true });
+  // A directory LayerMap may not look into may still hold the project.
+  const locked = process.platform !== "win32";
+  if (locked) {
+    await mkdir(path.join(worktrees, "unreadable", "project"), { recursive: true });
+    await chmod(path.join(worktrees, "unreadable"), 0);
+    t.after(() => chmod(path.join(worktrees, "unreadable"), 0o700));
+  }
+  // A map from before the marker named its directory waits out its 30 days.
+  await mkdir(path.join(projects, "unnamed"));
+  await writeFile(path.join(projects, "unnamed", "last-used"), "");
+  const current = path.join(await sandbox(), "current");
+  await mkdir(current);
+  await pruneCache(cache, current, Date.now());
+  const exists = async (target: string) => !!(await stat(target).catch(() => undefined));
+  assert.equal(await exists(path.join(projects, "removed")), false);
+  assert.equal(await exists(path.join(projects, "kept")), true);
+  if (locked) assert.equal(await exists(path.join(projects, "unreadable")), true);
+  assert.equal(await exists(path.join(projects, "unnamed")), true);
+  const own = path.join(path.dirname(mapDatabasePath(cache, current)), "last-used");
+  assert.equal(await readFile(own, "utf8"), current);
 });
 
 test("a capture empties the write-ahead log that a large write left, while another process holds the map", async (t) => {

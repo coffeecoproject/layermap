@@ -166,10 +166,11 @@ export async function resolveAnalyzers(
 const DAY = 24 * 60 * 60 * 1000;
 
 /**
- * Keeps the cache to what is in use: a project's map goes after 30 days unused, a superseded
- * analyzer build after a day (a server started before an update may still run it), and an
- * interrupted build after an hour. Installed versions of LayerMap, about 100 MB apiece, are kept to
- * those in use too (installed is this package's directory).
+ * Keeps the cache to what is in use: a project's map goes with its directory (a removed worktree's
+ * map is as large as the repository's own) or after 30 days unused, a superseded analyzer build
+ * after a day (a server started before an update may still run it), and an interrupted build after
+ * an hour. Installed versions of LayerMap, about 100 MB apiece, are kept to those in use too
+ * (installed is this package's directory).
  */
 export async function pruneCache(
   cache: string,
@@ -180,7 +181,8 @@ export async function pruneCache(
 ): Promise<void> {
   const used = path.join(path.dirname(mapDatabasePath(cache, project)), "last-used");
   await mkdir(path.dirname(used), { recursive: true, mode: 0o700 });
-  await writeFile(used, "");
+  // The marker names the project directory, which the map's own path only digests.
+  await writeFile(used, project);
   await utimes(used, now / 1000, now / 1000);
   const projects = path.join(cache, "projects");
   for (const name of await readdir(projects).catch(() => [])) {
@@ -188,7 +190,8 @@ export async function pruneCache(
     const marker = path.join(directory, "last-used");
     const last = (await stat(existsSync(marker) ? marker : directory).catch(() => undefined))
       ?.mtimeMs;
-    if (last !== undefined && now - last > 30 * DAY)
+    const owner = await readFile(marker, "utf8").catch(() => "");
+    if ((last !== undefined && now - last > 30 * DAY) || (owner !== "" && (await gone(owner))))
       await rm(directory, { recursive: true, force: true });
   }
   const builds = path.join(cache, "analyzers");
@@ -217,6 +220,13 @@ export async function pruneCache(
   if (path.basename(path.dirname(installed)) === "node_modules" && path.basename(npx) === "_npx")
     await pruneNpxInstalls(npx, installed, now);
 }
+
+// Only a directory known not to exist; one LayerMap may not read is kept.
+const gone = (directory: string) =>
+  stat(directory).then(
+    () => false,
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
 
 // The launcher installs each version agents start as versions/<version>, marking its last-used at
 // each start; another version goes a week after its last start, and an interrupted install, a
