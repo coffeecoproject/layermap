@@ -131,11 +131,12 @@ async function changed(
   return root;
 }
 
-const check = async (root: string) => {
+const check = async (root: string, given?: string[]) => {
   const map = await openMap(root);
   try {
     return JSON.parse(
-      (await map.checkChanges({ format: "json" }, signal())).text,
+      (await map.checkChanges({ format: "json", ...(given ? { tests: given } : {}) }, signal()))
+        .text,
     ) as MapChangesData;
   } finally {
     map.close();
@@ -258,6 +259,12 @@ test("the entry points of a change the given tests miss go on past its route", a
       ["GET /api/v1/items/:itemId", "src/server.ts: main"],
       JSON.stringify(data.untested),
     );
+    // The test requesting that route runs the change, which the given one does not.
+    assert.deepEqual(
+      data.untested?.runByOthers.map((each) => each.tests),
+      [["test/items.test.ts"]],
+      JSON.stringify(data.untested),
+    );
   } finally {
     map.close();
   }
@@ -282,11 +289,10 @@ test("constants referring to each other through imports leave the path unknown",
 });
 
 test("a test requesting a path the map cannot work out is kept for a route other tests request", async () => {
-  const data = await check(
-    await changed("src/service.ts", "return 1;", "return 10;", {
-      ...FILES,
-      // The path comes from a function: it may be any route of the app.
-      "test/item-path.test.ts": `import { buildApp } from "../src/build";
+  const root = await changed("src/service.ts", "return 1;", "return 10;", {
+    ...FILES,
+    // The path comes from a function: it may be any route of the app.
+    "test/item-path.test.ts": `import { buildApp } from "../src/build";
 import { ITEMS_PATH } from "../src/paths";
 
 const itemPath = (id: string) => ITEMS_PATH + "/" + id;
@@ -295,8 +301,8 @@ export function readsAnItemByPath() {
   return buildApp().inject({ method: "GET", url: itemPath("1") });
 }
 `,
-      // A shorthand url the map works out requests its route.
-      "test/shorthand.test.ts": `import { buildApp } from "../src/build";
+    // A shorthand url the map works out requests its route.
+    "test/shorthand.test.ts": `import { buildApp } from "../src/build";
 import { ITEMS_PATH } from "../src/paths";
 
 export function readsAnItemByShorthand() {
@@ -304,8 +310,8 @@ export function readsAnItemByShorthand() {
   return buildApp().inject({ method: "GET", url });
 }
 `,
-      // A lookup by a key is no request.
-      "test/cache.test.ts": `import { buildApp } from "../src/build";
+    // A lookup by a key is no request.
+    "test/cache.test.ts": `import { buildApp } from "../src/build";
 
 const cache = new Map<string, string>();
 
@@ -314,8 +320,8 @@ export function readsTheCache(key: string) {
   return cache.get(key);
 }
 `,
-    }),
-  );
+  });
+  const data = await check(root);
   const selected = tests(data);
   assert.deepEqual(
     Object.keys(selected).sort(),
@@ -328,4 +334,12 @@ export function readsTheCache(key: string) {
   );
   assert.deepEqual(selected["test/item-path.test.ts"]?.names, ["readsAnItemByPath"]);
   assert.equal(selected["test/shorthand.test.ts"]?.why, 'requests "GET /api/v1/items/:itemId"');
+  // Only the tests found to request the route run the change; one that may request it is no
+  // evidence that it is run.
+  const given = await check(root, ["test/mention.test.ts"]);
+  assert.deepEqual(
+    given.untested?.runByOthers.map((each) => each.tests),
+    [["test/items.test.ts", "test/shorthand.test.ts"]],
+    JSON.stringify(given.untested),
+  );
 });

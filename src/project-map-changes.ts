@@ -350,6 +350,11 @@ export type MapChangeImpact = Readonly<{
 export type MapUntestedChanges = Readonly<{
   /** The changed declarations no code in the given files calls, directly or through other code. */
   changed: readonly string[];
+  /**
+   * Of those, the ones the project's other related tests run, by a call or a route they request,
+   * with those test files, closest first.
+   */
+  runByOthers: readonly Readonly<{ declaration: string; tests: readonly string[] }>[];
   /** The entry points above those declarations. */
   entries: readonly MapChangeEntry[];
   /** Changed declarations reached only through a route whose path a given file names. */
@@ -437,6 +442,11 @@ class Tracer {
   private readonly routes = new Set<string>();
   /** The declarations each route entry reaches the change through: its handlers. */
   readonly handlers = new Map<string, Set<string>>();
+  /**
+   * The test files found to request each route, by its label: not those that may request it, as
+   * the path a request of theirs is sent to is not worked out.
+   */
+  readonly requests = new Map<string, Set<string>>();
   /**
    * Test support files that call the changed code and that no test is found to call, as fixtures
    * injected by name are: the tests beside and below them may use it.
@@ -767,14 +777,31 @@ class Tracer {
    * code (their module-scope code counts, and other test code is passed through); "route" when it
    * does not, but one of the handlers is the declaration or calls it. Callers are followed from all
    * the declarations at once, as the trace follows them, and what reaches a caller reaches what it
-   * calls.
+   * calls. `by` names, for each declaration reached, the files that run it: those calling it, and
+   * those requesting a route of a handler it is or that calls it. Steps from a handler up to the
+   * code registering its route are not followed where `heldOnly` is given and the trace held them:
+   * that code runs the route only for tests requesting it.
    */
   reach(
     refs: readonly string[],
     files: ReadonlySet<string>,
-    handlers: ReadonlySet<string>,
-  ): { how: Map<string, "call" | "route">; truncated: boolean } {
+    handlers: ReadonlyMap<string, ReadonlySet<string>>,
+    heldOnly = false,
+  ): {
+    how: Map<string, "call" | "route">;
+    by: Map<string, Set<string>>;
+    truncated: boolean;
+  } {
     const how = new Map<string, "call" | "route">();
+    const by = new Map<string, Set<string>>();
+    const runBy = (ref: string, file: string) => by.set(ref, (by.get(ref) ?? new Set()).add(file));
+    const held = new Set(
+      heldOnly
+        ? [...this.held.values()].flatMap((steps) =>
+            steps.map(({ current, caller }) => `${current.ref}\u0000${caller.ref}`),
+          )
+        : [],
+    );
     const below = new Map<string, string[]>();
     const depths = new Map(refs.map((ref) => [ref, 0]));
     const owners = new Set(refs.map((ref) => this.graph.owner(ref)));
@@ -783,10 +810,17 @@ class Tracer {
     while (frontier.length) {
       const next: string[] = [];
       for (const current of frontier) {
-        if (handlers.has(current)) how.set(current, "route");
+        const requesting = handlers.get(current);
+        if (requesting) {
+          how.set(current, "route");
+          for (const file of requesting) runBy(current, file);
+        }
         for (const caller of this.callers(current)) {
-          if (files.has(this.graph.object(caller.ref).anchor.path)) {
+          if (held.has(`${current}\u0000${caller.ref}`)) continue;
+          const file = this.graph.object(caller.ref).anchor.path;
+          if (files.has(file)) {
             how.set(current, "call");
+            runBy(current, file);
             continue;
           }
           const callees = below.get(caller.ref);
@@ -814,7 +848,20 @@ class Tracer {
             pending.push(callee);
           }
     }
-    return { how, truncated };
+    // What runs a caller runs what it calls.
+    const pending = [...by.keys()];
+    for (let ref = pending.pop(); ref !== undefined; ref = pending.pop()) {
+      const running = by.get(ref) ?? new Set<string>();
+      for (const callee of below.get(ref) ?? []) {
+        const known = by.get(callee) ?? new Set<string>();
+        const before = known.size;
+        for (const file of running) known.add(file);
+        if (known.size === before) continue;
+        by.set(callee, known);
+        pending.push(callee);
+      }
+    }
+    return { how, by, truncated };
   }
 
   callers(ref: string): Caller[] {
@@ -968,6 +1015,11 @@ class Tracer {
     if (name && !name.startsWith("<")) names.add(name);
     known.tests.set(test, names);
     this.areas.set(area, known);
+  }
+
+  /** A test file found to request a route. */
+  requester(route: string, file: string) {
+    this.requests.set(route, (this.requests.get(route) ?? new Set()).add(file));
   }
 
   /** A related test file; the closest relation (lowest rank) explains it. */
@@ -1632,7 +1684,11 @@ async function untestedChanges(
   const given = new Set(tests);
   // A test that requests a route spells out its path, as the related tests are found by it.
   const routes = new Set<string>();
-  const handlers = new Set<string>();
+  const handlers = new Map<string, Set<string>>();
+  const handledBy = (into: Map<string, Set<string>>, label: string, files: Iterable<string>) => {
+    for (const ref of tracer.handlers.get(label) ?? [])
+      for (const file of files) into.set(ref, (into.get(ref) ?? new Set()).add(file));
+  };
   if (project)
     for (const test of given) {
       let text: string;
@@ -1641,11 +1697,11 @@ async function untestedChanges(
       } catch {
         continue;
       }
-      for (const [label, refs] of tracer.handlers) {
+      for (const label of tracer.handlers.keys()) {
         const fragment = routeFragment(label);
         if (!fragment || !text.includes(fragment)) continue;
         routes.add(label);
-        for (const ref of refs) handlers.add(ref);
+        handledBy(handlers, label, [test]);
       }
     }
   const { how, truncated } = tracer.reach(
@@ -1666,8 +1722,41 @@ async function untestedChanges(
     unreached.flatMap((at) => starts[at]?.refs ?? []),
     unreached.flatMap((at) => starts[at]?.own ?? []),
   );
+  // The project's other related tests that run what the given ones do not: by a call, or by
+  // requesting a route above it.
+  const others = new Set([...tracer.tests.keys()].filter((file) => !given.has(file)));
+  const requested = new Map<string, Set<string>>();
+  for (const [label, files] of tracer.requests)
+    handledBy(
+      requested,
+      label,
+      [...files].filter((file) => others.has(file)),
+    );
+  const elsewhere = unreached.length
+    ? tracer.reach(
+        unreached.flatMap((at) => starts[at]?.refs ?? []),
+        others,
+        requested,
+        true,
+      ).by
+    : new Map<string, Set<string>>();
+  const rank = (file: string) => tracer.tests.get(file)?.rank ?? Number.POSITIVE_INFINITY;
+  const runBy = unreached.flatMap((at) => {
+    const files = new Set(
+      (starts[at]?.refs ?? []).flatMap((ref) => [...(elsewhere.get(ref) ?? [])]),
+    );
+    return files.size
+      ? [
+          {
+            declaration: changed[at] ?? "",
+            tests: [...files].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
+          },
+        ]
+      : [];
+  });
   return {
     changed: unreached.map((at) => changed[at] ?? ""),
+    runByOthers: runBy,
     entries: [...above.entries.values()].sort(entryOrder),
     throughRoutes,
     routes: throughRoutes.length ? [...routes].sort() : [],
@@ -1836,6 +1925,7 @@ function routeTests(
     for (const [file, name] of testEntries(graph, graph.owner(String(row.entity_ref))))
       for (const route of routes) {
         requested.add(route);
+        tracer.requester(route, file);
         tracer.test(file, name, `requests ${JSON.stringify(route)}`, 2);
       }
   }
@@ -1862,7 +1952,10 @@ function routeTests(
     if (budget < 0) return requested;
     for (const [fragment, label] of fragments)
       if (text.includes(fragment)) {
-        if (fragment === routePath(label) && wholePath(text, fragment)) requested.add(label);
+        if (fragment === routePath(label) && wholePath(text, fragment)) {
+          requested.add(label);
+          tracer.requester(label, candidate);
+        }
         // A mention alone is weak evidence; with another relation it is the strongest one.
         tracer.test(
           candidate,
@@ -2505,6 +2598,18 @@ export function mapChangesText(
         LIST.entries,
       );
       items(changed, LIST.changed);
+      if (impact.untested.runByOthers.length) {
+        lines.push(
+          `  ${impact.untested.runByOthers.length} of them are run by other tests of the project, closest first:`,
+        );
+        items(
+          impact.untested.runByOthers.map(
+            ({ declaration, tests }) =>
+              `${declaration} ← ${tests.slice(0, LIST.names).join(", ")}${tests.length > LIST.names ? `, +${tests.length - LIST.names} more` : ""}`,
+          ),
+          LIST.changed,
+        );
+      }
     } else
       lines.push(
         impact.changed.length
