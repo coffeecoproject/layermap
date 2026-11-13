@@ -222,11 +222,15 @@ const directoryOf = (file: string) => {
 };
 const within = (directory: string, file: string) => !directory || inside(directory, file);
 
+type Candidate = { sources: ReadonlySet<string>; spans: boolean; tests: boolean };
+const TEST_CONFIG = /(?:test|spec|vitest|jest)[^/]*$/iu;
+
 // The configurations that may hold a file no tsconfig.json takes in. One that also takes in files a
 // tsconfig.json in a deeper directory governs spans other projects, as a base every package
 // extends, one for a linter, or one the test runner of a monorepo uses for every package's tests
-// does: it holds only the tests the packages leave out, rather than open a program of the whole
-// project for a script.
+// does. Only the test runner's, named for tests, holds any of them, and only the tests the packages
+// leave out: a base or a linter's would open a program of the whole project for a script or a test
+// under options its own files were never checked with.
 function holders(
   members: ReadonlyMap<string, ReadonlySet<string>>,
   selected: ReadonlyMap<string, { rootFiles: readonly string[] }>,
@@ -236,7 +240,7 @@ function holders(
   const governed = new Map<string, string>();
   for (const [key, entry] of selected)
     if (key !== "INFERRED") for (const file of entry.rootFiles) governed.set(file, key);
-  const candidates = new Map<string, { sources: ReadonlySet<string>; spans: boolean }>();
+  const candidates = new Map<string, Candidate>();
   for (const [configPath, sources] of members) {
     const directory = directoryOf(configPath);
     const deeper = [...governing].filter((own) => own !== directory && within(directory, own));
@@ -246,23 +250,20 @@ function holders(
         const owner = governed.get(source);
         return owner !== undefined && deeper.includes(directoryOf(owner));
       });
-    candidates.set(configPath, { sources, spans });
+    const tests = TEST_CONFIG.test(configPath);
+    if (!spans || tests) candidates.set(configPath, { sources, spans, tests });
   }
   return candidates;
 }
 
 // The configuration taking in a file that is nearest to it: the one in the deepest directory that
 // holds the file, then one named for tests, then the first by path.
-function holder(
-  candidates: ReadonlyMap<string, { sources: ReadonlySet<string>; spans: boolean }>,
-  file: string,
-) {
+function holder(candidates: ReadonlyMap<string, Candidate>, file: string) {
   let best: { configPath: string; depth: number; tests: boolean } | undefined;
-  for (const [configPath, { sources, spans }] of candidates) {
+  for (const [configPath, { sources, spans, tests }] of candidates) {
     if (!sources.has(file) || (spans && !mapTestPath(file))) continue;
     const directory = directoryOf(configPath);
     const depth = !directory ? 0 : inside(directory, file) ? directory.split("/").length : -1;
-    const tests = /(?:test|spec|vitest|jest)[^/]*$/iu.test(configPath);
     if (!best || depth > best.depth || (depth === best.depth && tests && !best.tests))
       best = { configPath, depth, tests };
   }

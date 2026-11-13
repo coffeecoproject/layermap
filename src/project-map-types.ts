@@ -142,7 +142,8 @@ export const MAP_RELATION_PRIORITY: Readonly<Record<MapRelation["kind"], number>
 export const MapNoteSchema = z
   .object({
     entityRef: z.string().min(1),
-    // ROUTE_REQUEST: a path a test requests, as code computes it; unknown parts are "{}".
+    // ROUTE_REQUEST: a request a test sends, written as a route is ("POST /items/{}"), its path
+    // as code computes it; unknown parts are "{}", and a path not worked out is "{}" alone.
     kind: z.enum(["SOURCE_DOCUMENTATION", "STATE_WRITE", "CONTRACT_DECLARATION", "ROUTE_REQUEST"]),
     text: z.string(),
     anchor: MapAnchorSchema,

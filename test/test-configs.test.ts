@@ -57,11 +57,19 @@ test("a base tsconfig that every package extends does not take in the files outs
     }),
     "packages/a/src/target.ts": FILES["src/target.ts"],
     "scripts/tool.ts": "export const tool = 1;\n",
+    // A test beside the scripts imports a JavaScript module, which only inferred settings read.
+    "scripts/guard.mjs": "export function guard(value) {\n  return value > 0;\n}\n",
+    "scripts/guard.test.ts":
+      'import { guard } from "./guard.mjs";\n\nexport function positive() {\n  return guard(1);\n}\n',
   });
   const map = await openMap(root);
   t.after(() => map.close());
-  // The script stays under inferred settings rather than open a program of the whole project.
+  // The script and the test stay under inferred settings rather than open a program of the whole
+  // project under the base's options.
   assert.match((await map.explore({ path: "." }, signal())).text, INFERRED);
+  const guard = (await map.explore({ path: "scripts/guard.test.ts" }, signal())).text;
+  assert.doesNotMatch(guard, /UNRESOLVED IMPORTS/u, guard);
+  assert.match(guard, /scripts\/guard\.mjs/u, guard);
 });
 
 test("a test tsconfig at the root of a monorepo holds the tests every package leaves out", async (t) => {

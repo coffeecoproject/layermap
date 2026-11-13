@@ -71,6 +71,11 @@ export type MapLanguageClaim = Readonly<{
   claims(path: string): boolean;
   /** Further files the language reads as configuration when it runs. */
   reads(path: string): boolean;
+  /**
+   * Whether the map reads the requests this language's tests send (ROUTE_REQUEST notes): where it
+   * does not, a test's text naming a route's path is all that says it requests the route.
+   */
+  readsRequests?: boolean;
   /** The package an unresolved import specifier names, for dependency listings. */
   importName?(specifier: string): string;
   /** What an import of this file imports, when that is more than the file (such as a package). */
@@ -118,6 +123,9 @@ export const mapCodePath = (path: string) =>
   MAP_LANGUAGES.some((language) => language.claims(path));
 
 const languageOf = (path: string) => MAP_LANGUAGES.find((language) => language.claims(path));
+
+/** Whether the map reads the requests a test file of this path sends. */
+export const mapReadsRequests = (path: string) => languageOf(path)?.readsRequests === true;
 
 /** The id of the language that claims a path, if any. */
 export const mapLanguageOf = (path: string) => languageOf(path)?.id;

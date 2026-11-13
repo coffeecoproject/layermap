@@ -63,8 +63,31 @@ const segments = (path: string): Segment[] =>
     .filter(Boolean)
     .map((text) => ({ text, param: PARAM.test(text) || /[{}$<>%]/u.test(text) }));
 
+/**
+ * A route's label, or a request's written as one: its HTTP methods, if named, then its path, as
+ * "GET|POST /items/{id}", "/items" and "POST {}" are.
+ */
+export function mapRouteLabel(label: string): { methods?: readonly string[]; path: string } {
+  const match = /^([A-Z]+(?:\|[A-Z]+)*) +(\S.*)$/u.exec(label);
+  return match ? { methods: (match[1] ?? "").split("|"), path: match[2] ?? "" } : { path: label };
+}
+
+/**
+ * Whether a route serves a request by their methods: one named for none (all, use, route)
+ * serves any, a GET serves a HEAD too, and a request whose method is not known may be any.
+ */
+export function mapRouteServes(route: string, request: string): boolean {
+  const served = mapRouteLabel(route).methods;
+  const sent = mapRouteLabel(request).methods;
+  return (
+    !served ||
+    !sent ||
+    sent.some((method) => served.includes(method) || (method === "HEAD" && served.includes("GET")))
+  );
+}
+
 /** A route's path segments from its label ("GET|POST /items/{id}"). */
-const routeSegments = (label: string) => segments(label.slice(label.indexOf("/")));
+const routeSegments = (label: string) => segments(mapRouteLabel(label).path);
 
 /**
  * The path a string literal requests, if it is one: at its start, after a leading placeholder for
@@ -132,14 +155,19 @@ function closestRoutes(
 }
 
 /**
- * The routes among these that a requested path is closest to, as a test computes the path: its
- * unknown parts are parameters.
+ * The routes among these that a request is closest to, as a test computes it ("POST /items/{}"):
+ * of those serving its method, the ones its path fits most closely, its unknown parts parameters.
  */
-export function mapRequestedRoutes(routes: Iterable<string>): (path: string) => string[] {
+export function mapRequestedRoutes(routes: Iterable<string>): (request: string) => string[] {
   const known = [...new Set(routes)].map((route) => ({ route, segments: routeSegments(route) }));
-  return (path) => {
-    const requested = segments(path);
-    return requested.length ? closestRoutes(known, requested) : [];
+  return (request) => {
+    const requested = segments(mapRouteLabel(request).path);
+    return requested.length
+      ? closestRoutes(
+          known.filter(({ route }) => mapRouteServes(route, request)),
+          requested,
+        )
+      : [];
   };
 }
 

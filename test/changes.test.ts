@@ -11,7 +11,7 @@ import type { CodeIndexSource } from "../src/code-index-types";
 import { ProjectEvidenceError } from "../src/core";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
-import { checkMapChanges, parseMapDiff } from "../src/project-map-changes";
+import { checkMapChanges, type MapChangesData, parseMapDiff } from "../src/project-map-changes";
 import { GoMapAnalyzer } from "../src/project-map-language-go";
 import { JavaMapAnalyzer } from "../src/project-map-language-java";
 import { PythonMapAnalyzer } from "../src/project-map-language-python";
@@ -1091,14 +1091,14 @@ test("given test files, the check names the changed code none of them runs and t
     /^NOT REACHED BY THE GIVEN TESTS\n {2}none: the given tests reach all 2 changed declarations\nReach is followed[^\n]*\n$/u,
   );
 
-  // A test that requests the route by its path runs what its handler calls, as far as text tells;
-  // code another given test calls, even through other code, counts as called.
+  // A test that requests the route runs what its handler calls; code another given test calls,
+  // even through other code, counts as called.
   const requested = (
     await map.checkChanges({ tests: ["test/http.test.ts", "test/summary.test.ts"] }, signal())
   ).text;
   assert.match(
     section(requested),
-    /^NOT REACHED BY THE GIVEN TESTS\n {2}none: the given tests reach all 2 changed declarations\n {2}1 changed declarations are reached only through a route whose path a given test names, found by text \("GET \/funds\/receivables"\):\n {2}src\/funds\.ts: readReceivableOverdueIds f1-3\nReach is followed/u,
+    /^NOT REACHED BY THE GIVEN TESTS\n {2}none: the given tests reach all 2 changed declarations\n {2}1 changed declarations are reached only through a route a given test requests \("GET \/funds\/receivables"\):\n {2}src\/funds\.ts: readReceivableOverdueIds f1-3\nReach is followed/u,
   );
 
   const none = (await map.checkChanges({ tests: [] }, signal())).text;
@@ -1119,6 +1119,52 @@ test("given test files, the check names the changed code none of them runs and t
   assert.match(handler, /none: the given tests reach all 3 changed declarations/u);
   assert.match(handler, /^ {2}3 changed declarations are reached only through a route/mu);
   assert.match(handler, /^ {2}src\/funds\.ts: FundsService\.listReceivables m14-16$/mu);
+});
+
+test("a given Python test naming a stretch of a route's path runs the route, as it is related to it", async () => {
+  const { root, write } = await project({
+    "app/__init__.py": "",
+    "app/service.py": "def read_item(item_id):\n    return item_id\n",
+    "app/main.py": `from fastapi import FastAPI
+from app.service import read_item
+
+app = FastAPI()
+
+
+@app.get("/items/{item_id}")
+def get_item(item_id: int):
+    return read_item(item_id)
+`,
+    "tests/__init__.py": "",
+    "tests/test_items.py": `from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_item():
+    assert client.get("/items/1").status_code == 200
+`,
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  await write("app/service.py", "def read_item(item_id):\n    return item_id + 1\n");
+  const map = await openMap(root);
+  try {
+    const data = JSON.parse(
+      (await map.checkChanges({ format: "json", tests: ["tests/test_items.py"] }, signal())).text,
+    ) as MapChangesData;
+    assert.deepEqual(
+      data.tests.map((item) => [item.path, item.rank]),
+      [["tests/test_items.py", 2]],
+    );
+    // The map does not read a Python test's requests: its text naming the path is what relates it.
+    assert.deepEqual(data.untested?.changed, [], JSON.stringify(data.untested));
+    assert.deepEqual(data.untested?.throughRoutes, ["app/service.py: read_item f1-2"]);
+    assert.deepEqual(data.untested?.routes, ["GET /items/{item_id}"]);
+  } finally {
+    map.close();
+  }
 });
 
 // A field or type has no relations in the map; a search for its references links it to its users.

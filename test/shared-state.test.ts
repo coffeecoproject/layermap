@@ -96,6 +96,29 @@ test("a changed TypeScript module constant reaches the functions that read it", 
   assert.match(text, /^ {2}src\/feedRss\.ts \(read\): test\/feedRss\.test\.ts: testRead$/mu);
 });
 
+test("a CommonJS module.exports value reaches the functions that read it through a require", async () => {
+  const logger = (level: string) =>
+    `function create(options) {\n  return { write: (message) => options.level + message };\n}\n\nconst logger = create({ level: "${level}" });\n\nmodule.exports = logger;\n`;
+  const text = await checkAfter(
+    {
+      "src/logger.js": logger("info"),
+      "src/feed.js":
+        'const logger = require("./logger");\n\nfunction read(value) {\n  return logger.write(value);\n}\n\nmodule.exports = { read };\n',
+      "test/feed.test.js":
+        'const { read } = require("../src/feed");\n\nfunction testRead() {\n  return read("x");\n}\n\nmodule.exports = { testRead };\n',
+      // The whole value read by its name, not a member of it.
+      "src/sink.js":
+        'const logger = require("./logger");\n\nfunction pass(value) {\n  return [logger, value];\n}\n\nmodule.exports = { pass };\n',
+      "test/sink.test.js":
+        'const { pass } = require("../src/sink");\n\nfunction testPass() {\n  return pass("x");\n}\n\nmodule.exports = { testPass };\n',
+    },
+    ["src/logger.js", logger("debug")],
+  );
+  assert.match(text, /src\/logger\.js: logger/u);
+  assert.match(text, /^ {2}test\/feed\.test\.js: testRead \(calls read\)$/mu);
+  assert.match(text, /^ {2}test\/sink\.test\.js: testPass \(calls pass\)$/mu);
+});
+
 test("a TypeScript function that returns a module variable or passes it on reads it", async (t) => {
   const { root } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),

@@ -17,7 +17,6 @@ import {
   isPropertyAccessExpression,
   isShorthandPropertyAssignment,
   isStringLiteral,
-  isVariableDeclaration,
   isVariableStatement,
   type Node,
   type SourceFile,
@@ -125,16 +124,18 @@ const NOT_STATE_READS = new Set<SyntaxKind>([
 
 // The names a file can read module state by: its own top-level variables, and the names it imports
 // (namespace imports apart), a CommonJS require's among them. A read of another name cannot reach a
-// module-level variable.
+// module-level variable. A whole require binding, const logger = require("./logger"), is what the
+// module exports, as a default import is, and its members are read as a namespace import's are.
 function moduleStateNames(file: SourceFile): { names: Set<string>; namespaces: Set<string> } {
   const names = new Set<string>();
   const namespaces = new Set<string>();
   for (const statement of file.statements) {
     if (isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations)
-        if (isIdentifier(declaration.name))
-          (mapRequireBinding(declaration) ? namespaces : names).add(declaration.name.text);
-        else if (mapRequireBinding(declaration) && isObjectBindingPattern(declaration.name))
+        if (isIdentifier(declaration.name)) {
+          names.add(declaration.name.text);
+          if (mapRequireBinding(declaration)) namespaces.add(declaration.name.text);
+        } else if (mapRequireBinding(declaration) && isObjectBindingPattern(declaration.name))
           for (const element of declaration.name.elements)
             if (element.name && isIdentifier(element.name)) names.add(element.name.text);
     } else if (isImportDeclaration(statement) && statement.importClause) {
@@ -525,16 +526,11 @@ export async function extractProjectMap(
       // A CommonJS require binds what an import does: const users = require("./users") a module,
       // whose members are then looked up as a namespace import's are, and
       // const { getUser } = require("./users") the names it takes.
-      if (
-        isVariableDeclaration(node) &&
-        node.initializer &&
-        isCallExpression(node.initializer) &&
-        isIdentifier(node.initializer.expression) &&
-        node.initializer.expression.text === "require"
-      ) {
-        if (isIdentifier(node.name)) namespaces.add(node.name.text);
-        else if (isObjectBindingPattern(node.name))
-          for (const element of node.name.elements)
+      if (mapRequireBinding(node)) {
+        const binding = (node as Node & { name: Node }).name;
+        if (isIdentifier(binding)) namespaces.add(binding.text);
+        else if (isObjectBindingPattern(binding))
+          for (const element of binding.elements)
             if (element.name && isIdentifier(element.name)) valueNames.add(element.name.text);
       }
       if (reference && owned.has(path)) {

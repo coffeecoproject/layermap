@@ -9,6 +9,8 @@ import { GitRunner } from "./git-runner";
 import {
   type MapRouteClients,
   mapRequestedRoutes,
+  mapRouteLabel,
+  mapRouteServes,
   routeClients,
   routeClientsLine,
   routeRegistrations,
@@ -20,7 +22,7 @@ import {
   newModuleDependencies,
 } from "./project-map-dependencies";
 import { mapPackageOf } from "./project-map-installed";
-import { mapLanguageOf } from "./project-map-language";
+import { mapLanguageOf, mapReadsRequests } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
 import { type MapStrandedName, strandedNameLine, strandedNames } from "./project-map-names";
 import { MAP_REFERENCES_MAX, type MapDiagnostic } from "./project-map-reference-types";
@@ -355,11 +357,19 @@ export type MapUntestedChanges = Readonly<{
    * with those test files, closest first.
    */
   runByOthers: readonly Readonly<{ declaration: string; tests: readonly string[] }>[];
+  /**
+   * Of those, the ones the given tests may run, by sending a request whose path the map does not
+   * work out to a route above them, with those given test files.
+   */
+  mayRun: readonly Readonly<{ declaration: string; tests: readonly string[] }>[];
   /** The entry points above those declarations. */
   entries: readonly MapChangeEntry[];
-  /** Changed declarations reached only through a route whose path a given file names. */
+  /**
+   * Changed declarations reached only through a route a given test requests or, where the map
+   * does not read its requests, names a stretch of the path of.
+   */
   throughRoutes: readonly string[];
-  /** The routes above the change whose paths the given files name. */
+  /** The routes above the change the given tests request. */
   routes: readonly string[];
   /** The given files the map has no code for. */
   missing: readonly string[];
@@ -447,6 +457,17 @@ class Tracer {
    * the path a request of theirs is sent to is not worked out.
    */
   readonly requests = new Map<string, Set<string>>();
+  /**
+   * The test files that may request each route, by its label: they reach the code registering it
+   * and send a request whose path is not worked out, by a method the route serves.
+   */
+  readonly mayRequest = new Map<string, Set<string>>();
+  /**
+   * The test files whose requests the map does not read, their language's, naming a stretch of
+   * each route's path: as far as their text tells, they request it. Unlike a request found, a
+   * mention does not hold the route; the trace still climbs on to the app's tests.
+   */
+  readonly mentions = new Map<string, Set<string>>();
   /**
    * Test support files that call the changed code and that no test is found to call, as fixtures
    * injected by name are: the tests beside and below them may use it.
@@ -1017,9 +1038,15 @@ class Tracer {
     this.areas.set(area, known);
   }
 
-  /** A test file found to request a route. */
-  requester(route: string, file: string) {
-    this.requests.set(route, (this.requests.get(route) ?? new Set()).add(file));
+  /** A test file found to request a route, or that may: its request's path is not worked out. */
+  requester(route: string, file: string, maybe = false) {
+    const into = maybe ? this.mayRequest : this.requests;
+    into.set(route, (into.get(route) ?? new Set()).add(file));
+  }
+
+  /** A test file whose requests the map does not read naming a stretch of a route's path. */
+  mentioner(route: string, file: string) {
+    this.mentions.set(route, (this.mentions.get(route) ?? new Set()).add(file));
   }
 
   /** A related test file; the closest relation (lowest rank) explains it. */
@@ -1175,21 +1202,26 @@ export async function mapChangeImpact(
     starts.flatMap((start) => start.refs),
     starts.flatMap((start) => start.own),
   );
-  let requesters: ReadonlySet<string> | undefined;
-  // The tests the code registering a held route reaches, as the trace climbing on would find them.
+  let requests: RouteRequests | undefined;
+  const routeRequests = () => {
+    requests ??= new RouteRequests(store, working, graph, project);
+    return requests;
+  };
+  // The tests the code registering a held route reaches, as the trace climbing on would find them:
+  // by that code, which the routes one function registers share.
   const reached = new Map<string, Promise<ReadonlySet<string>>>();
   const reaching = (route: string) => {
-    let tests = reached.get(route);
+    const callers = [...new Set((tracer.held.get(route) ?? []).map(({ caller }) => caller.ref))];
+    const key = callers.sort().join("\u0000");
+    let tests = reached.get(key);
     if (!tests) {
       tests = (async () => {
         const above = new Tracer(graph, memberCalls, tracer.shapes);
-        await above.trace([
-          ...new Set((tracer.held.get(route) ?? []).map(({ caller }) => caller.ref)),
-        ]);
+        await above.trace(callers);
         supportTests(store, working, above);
         return new Set(above.tests.keys());
       })();
-      reached.set(route, tests);
+      reached.set(key, tests);
     }
     return tests;
   };
@@ -1204,7 +1236,7 @@ export async function mapChangeImpact(
     );
     if (!fresh.length) break;
     for (const entry of fresh) asked.add(entry.label);
-    const requested = routeTests(project, store, working, graph, fresh, tracer);
+    const requested = routeTests(routeRequests(), fresh, tracer);
     const unrequested = fresh
       .map((entry) => entry.label)
       .filter((label) => tracer.held.has(label) && !requested.has(label));
@@ -1214,8 +1246,7 @@ export async function mapChangeImpact(
     const climbing: string[] = [];
     for (const label of unrequested) {
       const tests = await reaching(label);
-      requesters ??= routeRequesters(store, working, graph);
-      const reads = requesters;
+      const reads = routeRequests().reading;
       if ([...tests].some((file) => reads.has(file))) unfound.push(label);
       else climbing.push(label);
     }
@@ -1231,7 +1262,7 @@ export async function mapChangeImpact(
           ", ",
         )}${unfound.length > LIST.names ? ", …" : ""}${unfound.length > 1 ? ")" : ""}: a test requesting ${unfound.length > 1 ? "them" : "it"} in a way the map does not read is not selected`,
     );
-  await unworkedRequests(store, working, graph, tracer, reaching);
+  if (tracer.held.size) await unworkedRequests(routeRequests(), tracer, reaching);
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
@@ -1243,7 +1274,7 @@ export async function mapChangeImpact(
         )}${unread.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
     );
   const untested =
-    tests && (await untestedChanges(project, graph, tracer, memberCalls, starts, changed, tests));
+    tests && (await untestedChanges(graph, tracer, memberCalls, starts, changed, tests));
   supportTests(store, working, tracer);
 
   // Declarations the diff removed or renamed, and the code it left unchanged that still uses them.
@@ -1670,10 +1701,13 @@ const entryOrder = (left: MapChangeEntry, right: MapChangeEntry) =>
   (left.label < right.label ? -1 : left.label > right.label ? 1 : 0);
 
 // The changed declarations the given test files do not run as far as the map follows: none of
-// their code calls them, and they name the path of no route above them. The entry points above
-// those are traced apart, so they are found exactly as the affected entry points are.
+// their code calls them, and they request no route above them. The entry points above those are
+// traced apart, so they are found exactly as the affected entry points are. Whether a test runs a
+// declaration is judged as the related tests are found: by its calls, and by the routes it is
+// found to request, not by the code registering a route the trace held, which runs the route only
+// for the tests requesting it. Where the map does not read a test's requests, its text naming a
+// stretch of a route's path is what says it requests the route, as it relates the test.
 async function untestedChanges(
-  project: string | undefined,
   graph: MapViewGraph,
   tracer: Tracer,
   memberCalls: ReturnType<MapViewCache["memberCalls"]>,
@@ -1682,32 +1716,29 @@ async function untestedChanges(
   tests: readonly string[],
 ): Promise<MapUntestedChanges> {
   const given = new Set(tests);
-  // A test that requests a route spells out its path, as the related tests are found by it.
-  const routes = new Set<string>();
-  const handlers = new Map<string, Set<string>>();
-  const handledBy = (into: Map<string, Set<string>>, label: string, files: Iterable<string>) => {
-    for (const ref of tracer.handlers.get(label) ?? [])
-      for (const file of files) into.set(ref, (into.get(ref) ?? new Set()).add(file));
+  // The handlers of the routes these files request, with the files requesting each.
+  const handlers = (requests: ReadonlyMap<string, ReadonlySet<string>>, files: Set<string>) => {
+    const into = new Map<string, Set<string>>();
+    for (const [label, requesting] of requests)
+      for (const file of requesting)
+        if (files.has(file))
+          for (const ref of tracer.handlers.get(label) ?? [])
+            into.set(ref, (into.get(ref) ?? new Set()).add(file));
+    return into;
   };
-  if (project)
-    for (const test of given) {
-      let text: string;
-      try {
-        text = readFileSync(path.join(project, test), "utf8");
-      } catch {
-        continue;
-      }
-      for (const label of tracer.handlers.keys()) {
-        const fragment = routeFragment(label);
-        if (!fragment || !text.includes(fragment)) continue;
-        routes.add(label);
-        handledBy(handlers, label, [test]);
-      }
-    }
+  // The routes each test file requests: found, or named by one whose requests the map does not read.
+  const requested = new Map<string, Set<string>>();
+  for (const found of [tracer.requests, tracer.mentions])
+    for (const [label, files] of found)
+      requested.set(label, new Set([...(requested.get(label) ?? []), ...files]));
+  const routes = [...requested]
+    .filter(([, files]) => [...files].some((file) => given.has(file)))
+    .map(([label]) => label);
   const { how, truncated } = tracer.reach(
     starts.flatMap((start) => start.refs),
     given,
-    handlers,
+    handlers(requested, given),
+    true,
   );
   const unreached: number[] = [];
   const throughRoutes: string[] = [];
@@ -1718,48 +1749,39 @@ async function untestedChanges(
     else unreached.push(at);
   }
   const above = new Tracer(graph, memberCalls, tracer.shapes);
+  const refs = unreached.flatMap((at) => starts[at]?.refs ?? []);
   await above.trace(
-    unreached.flatMap((at) => starts[at]?.refs ?? []),
+    refs,
     unreached.flatMap((at) => starts[at]?.own ?? []),
   );
+  // The test files running each unreached declaration, of these files, by these requests.
+  const runBy = (files: Set<string>, requests: ReadonlyMap<string, ReadonlySet<string>>) => {
+    const by = unreached.length
+      ? tracer.reach(refs, files, handlers(requests, files), true).by
+      : new Map<string, Set<string>>();
+    return unreached.flatMap((at) => {
+      const running = new Set((starts[at]?.refs ?? []).flatMap((ref) => [...(by.get(ref) ?? [])]));
+      return running.size
+        ? [
+            {
+              declaration: changed[at] ?? "",
+              tests: [...running].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
+            },
+          ]
+        : [];
+    });
+  };
+  const rank = (file: string) => tracer.tests.get(file)?.rank ?? Number.POSITIVE_INFINITY;
   // The project's other related tests that run what the given ones do not: by a call, or by
   // requesting a route above it.
   const others = new Set([...tracer.tests.keys()].filter((file) => !given.has(file)));
-  const requested = new Map<string, Set<string>>();
-  for (const [label, files] of tracer.requests)
-    handledBy(
-      requested,
-      label,
-      [...files].filter((file) => others.has(file)),
-    );
-  const elsewhere = unreached.length
-    ? tracer.reach(
-        unreached.flatMap((at) => starts[at]?.refs ?? []),
-        others,
-        requested,
-        true,
-      ).by
-    : new Map<string, Set<string>>();
-  const rank = (file: string) => tracer.tests.get(file)?.rank ?? Number.POSITIVE_INFINITY;
-  const runBy = unreached.flatMap((at) => {
-    const files = new Set(
-      (starts[at]?.refs ?? []).flatMap((ref) => [...(elsewhere.get(ref) ?? [])]),
-    );
-    return files.size
-      ? [
-          {
-            declaration: changed[at] ?? "",
-            tests: [...files].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
-          },
-        ]
-      : [];
-  });
   return {
     changed: unreached.map((at) => changed[at] ?? ""),
-    runByOthers: runBy,
+    runByOthers: runBy(others, requested),
+    mayRun: runBy(given, tracer.mayRequest),
     entries: [...above.entries.values()].sort(entryOrder),
     throughRoutes,
-    routes: throughRoutes.length ? [...routes].sort() : [],
+    routes: throughRoutes.length ? routes.sort() : [],
     missing: tests.filter((test) => !graph.objectsAt(test).length),
     truncated: unreached.length > 0 && (truncated || above.truncated),
   };
@@ -1894,76 +1916,142 @@ function mirroredTests(paths: readonly string[], file: string, tracer: Tracer) {
   }
 }
 
+// The requests the tests send as the map read them, each with the tests sending it (through a
+// test helper, the tests calling it), and the text of the runnable tests: read once per check.
+class RouteRequests {
+  private readonly sites: {
+    request: string;
+    tests: [string, string][];
+    // The routes its path is closest to, or none when the path is not worked out (`unknown`).
+    routes: string[];
+    unknown: boolean;
+  }[] = [];
+  private known?: Set<string>;
+  private texts?: [string, string][];
+
+  constructor(
+    private readonly store: CodeIndexStore,
+    private readonly version: string,
+    graph: MapViewGraph,
+    private readonly project: string | undefined,
+  ) {
+    const closest = mapRequestedRoutes(routeRegistrations(store, version).routes);
+    for (const row of store.database
+      .prepare(
+        "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST'",
+      )
+      .all(version)) {
+      const note = JSON.parse(String(row.note_json)) as { text: string; anchor: { path: string } };
+      if (!testCode(note.anchor.path)) continue;
+      const unknown = mapRouteLabel(note.text).path === MAP_PATH_PARAMETER;
+      this.sites.push({
+        request: note.text,
+        tests: testEntries(graph, graph.owner(String(row.entity_ref))),
+        routes: unknown ? [] : closest(note.text),
+        unknown,
+      });
+    }
+  }
+
+  /** The tests requesting a route: their files, with the tests in each sending the request. */
+  requesting(route: string): Map<string, Set<string>> {
+    const found = new Map<string, Set<string>>();
+    for (const site of this.sites)
+      if (site.routes.includes(route))
+        for (const [file, name] of site.tests)
+          found.set(file, (found.get(file) ?? new Set()).add(name));
+    return found;
+  }
+
+  /**
+   * The tests that may request a route: those sending a request whose path is not worked out, by
+   * a method the route serves.
+   */
+  unknown(route: string): Map<string, Set<string>> {
+    const found = new Map<string, Set<string>>();
+    for (const site of this.sites)
+      if (site.unknown && mapRouteServes(route, site.request))
+        for (const [file, name] of site.tests)
+          found.set(file, (found.get(file) ?? new Set()).add(name));
+    return found;
+  }
+
+  /** The test files requesting some route of the project: tests whose requests the map reads. */
+  get reading(): ReadonlySet<string> {
+    this.known ??= new Set(
+      this.sites.flatMap((site) => (site.routes.length ? site.tests.map(([file]) => file) : [])),
+    );
+    return this.known;
+  }
+
+  /** The runnable tests and their text, as far as a budget of text read allows. */
+  tests(): readonly [string, string][] {
+    if (this.texts) return this.texts;
+    this.texts = [];
+    if (!this.project) return this.texts;
+    let budget = 32 * 1024 * 1024;
+    for (const row of this.store.database
+      .prepare("SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ?")
+      .all(this.version)) {
+      const candidate = String(row.path);
+      if (!mapRunnableTest(candidate)) continue;
+      let text: string;
+      try {
+        text = readFileSync(path.join(this.project, candidate), "utf8");
+      } catch {
+        continue;
+      }
+      budget -= text.length;
+      if (budget < 0) break;
+      this.texts.push([candidate, text]);
+    }
+    return this.texts;
+  }
+}
+
 // Tests that request an affected route over HTTP: no call links them, but they request its path.
-// The paths tests compute from constants are in the map, matched as code requesting routes is;
-// a test spelling the path out is found by the longest literal stretch of the route, so
-// parameters and prefixes added where the router is mounted do not hide it. Returns the routes
-// some test requests: a mention of a stretch alone does not say the test requests that route,
-// only one of its whole path does.
+// The requests tests send are in the map, matched to routes as code requesting them is, by method
+// and path. A test naming a stretch of a route's path, the longest literal one, mentions it, so
+// parameters and prefixes added where the router is mounted do not hide it; where the map does not
+// read requests, a test naming the whole path requests the route, and one naming a stretch of it
+// may. Returns the routes some test requests: a mention of a stretch alone does not say the test
+// requests that route, so it does not hold the route.
 function routeTests(
-  project: string | undefined,
-  store: CodeIndexStore,
-  version: string,
-  graph: MapViewGraph,
+  requests: RouteRequests,
   entries: readonly MapChangeEntry[],
   tracer: Tracer,
 ): Set<string> {
   const requested = new Set<string>();
   const affected = new Set(entries.filter((entry) => entry.route).map((entry) => entry.label));
   if (!affected.size) return requested;
-  const closest = mapRequestedRoutes([...routeRegistrations(store, version).routes, ...affected]);
-  for (const row of store.database
-    .prepare(
-      "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST'",
-    )
-    .all(version)) {
-    const note = JSON.parse(String(row.note_json)) as { text: string; anchor: { path: string } };
-    if (!testCode(note.anchor.path)) continue;
-    const routes = closest(note.text).filter((route) => affected.has(route));
-    if (!routes.length) continue;
-    // A request made in test support (a helper sending it) is made by the tests calling it.
-    for (const [file, name] of testEntries(graph, graph.owner(String(row.entity_ref))))
-      for (const route of routes) {
-        requested.add(route);
-        tracer.requester(route, file);
-        tracer.test(file, name, `requests ${JSON.stringify(route)}`, 2);
-      }
-  }
-  if (!project) return requested;
+  for (const label of affected)
+    for (const [file, names] of requests.requesting(label)) {
+      requested.add(label);
+      tracer.requester(label, file);
+      for (const name of names) tracer.test(file, name, `requests ${JSON.stringify(label)}`, 2);
+    }
   const fragments = new Map<string, string>();
   for (const label of affected) {
     const fragment = routeFragment(label);
     if (fragment) fragments.set(fragment, label);
   }
   if (!fragments.size) return requested;
-  let budget = 32 * 1024 * 1024;
-  for (const row of store.database
-    .prepare("SELECT DISTINCT path FROM project_map_objects WHERE version_ref = ?")
-    .all(version)) {
-    const candidate = String(row.path);
-    if (!mapRunnableTest(candidate)) continue;
-    let text: string;
-    try {
-      text = readFileSync(path.join(project, candidate), "utf8");
-    } catch {
-      continue;
-    }
-    budget -= text.length;
-    if (budget < 0) return requested;
+  for (const [candidate, text] of requests.tests()) {
+    // A mention alone is weak evidence; with another relation it is the strongest one.
+    const rank = tracer.tests.has(candidate) ? 2 : 3.5;
+    const read = mapReadsRequests(candidate);
     for (const [fragment, label] of fragments)
       if (text.includes(fragment)) {
-        if (fragment === routePath(label) && wholePath(text, fragment)) {
-          requested.add(label);
-          tracer.requester(label, candidate);
+        // Where the map does not read a test's requests, its text is what says which it sends:
+        // naming a route's whole path, the test requests it; a stretch of it, it may.
+        if (!read) {
+          tracer.mentioner(label, candidate);
+          if (fragment === routePath(label) && wholePath(text, fragment)) {
+            requested.add(label);
+            tracer.requester(label, candidate);
+          }
         }
-        // A mention alone is weak evidence; with another relation it is the strongest one.
-        tracer.test(
-          candidate,
-          undefined,
-          `mentions ${JSON.stringify(label)}`,
-          tracer.tests.has(candidate) ? 2 : 3.5,
-        );
-        break;
+        tracer.test(candidate, undefined, `mentions ${JSON.stringify(label)}`, rank);
       }
   }
   return requested;
@@ -1977,62 +2065,51 @@ function wholePath(text: string, path: string): boolean {
 }
 
 // Tests sending a request whose path the map cannot work out, as path(id) gives it, may request
-// a route other tests are found to request. Of the tests the code registering such a route
-// reaches, as the trace climbing on would find them, those are kept: the map not reading a
-// request selects more tests rather than fewer.
+// a route the trace held. Of the tests the code registering such a route reaches, as the trace
+// climbing on would find them, those are kept: the map not reading a request selects more tests
+// rather than fewer.
 async function unworkedRequests(
-  store: CodeIndexStore,
-  version: string,
-  graph: MapViewGraph,
+  requests: RouteRequests,
   tracer: Tracer,
   reaching: (route: string) => Promise<ReadonlySet<string>>,
 ) {
-  if (!tracer.held.size) return;
-  const unworked = new Map<string, Set<string | undefined>>();
-  for (const row of store.database
-    .prepare(
-      "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST' AND json_extract(note_json, '$.text') = ?",
-    )
-    .all(version, MAP_PATH_PARAMETER)) {
-    const note = JSON.parse(String(row.note_json)) as { anchor: { path: string } };
-    if (!testCode(note.anchor.path)) continue;
-    for (const [file, name] of testEntries(graph, graph.owner(String(row.entity_ref))))
-      unworked.set(file, (unworked.get(file) ?? new Set()).add(name));
-  }
-  if (!unworked.size) return;
-  for (const route of tracer.held.keys())
-    for (const file of await reaching(route))
-      for (const name of unworked.get(file) ?? [])
+  for (const route of tracer.held.keys()) {
+    const unknown = requests.unknown(route);
+    if (!unknown.size) continue;
+    for (const file of await reaching(route)) {
+      const names = unknown.get(file);
+      if (!names) continue;
+      tracer.requester(route, file, true);
+      for (const name of names)
         tracer.test(
           file,
           name,
           `may request ${JSON.stringify(route)}: the path a request of it is sent to is not worked out`,
           3,
         );
-}
-
-// The test files requesting some route of the project by a path the map works out: tests whose
-// requests it reads.
-function routeRequesters(store: CodeIndexStore, version: string, graph: MapViewGraph) {
-  const files = new Set<string>();
-  const closest = mapRequestedRoutes(routeRegistrations(store, version).routes);
-  for (const row of store.database
-    .prepare(
-      "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST' AND json_extract(note_json, '$.text') != ?",
-    )
-    .all(version, MAP_PATH_PARAMETER)) {
-    const note = JSON.parse(String(row.note_json)) as { text: string; anchor: { path: string } };
-    if (!testCode(note.anchor.path) || !closest(note.text).length) continue;
-    for (const [file] of testEntries(graph, graph.owner(String(row.entity_ref)))) files.add(file);
+    }
   }
-  return files;
 }
 
 // The runnable tests that run a declaration of test code: the tests themselves, which the runner
 // calls and no test code does, and for a helper, even one in a test file (Go's setupRouter, a
 // Python _client()), the tests calling it, a few calls up. A helper no test is found to call is
 // kept as it is, in its file.
+const entriesOf = new WeakMap<MapViewGraph, Map<string, [string, string][]>>();
 function testEntries(graph: MapViewGraph, ref: string): [string, string][] {
+  let known = entriesOf.get(graph);
+  if (!known) {
+    known = new Map();
+    entriesOf.set(graph, known);
+  }
+  let entries = known.get(ref);
+  if (!entries) {
+    entries = findTestEntries(graph, ref);
+    known.set(ref, entries);
+  }
+  return entries;
+}
+function findTestEntries(graph: MapViewGraph, ref: string): [string, string][] {
   const found: [string, string][] = [];
   const kept: [string, string][] = [];
   const entry = (at: string): [string, string] => [
@@ -2598,18 +2675,26 @@ export function mapChangesText(
         LIST.entries,
       );
       items(changed, LIST.changed);
-      if (impact.untested.runByOthers.length) {
-        lines.push(
-          `  ${impact.untested.runByOthers.length} of them are run by other tests of the project, closest first:`,
-        );
+      // Each declaration with the tests running it, closest first.
+      const runners = (
+        heading: string,
+        found: readonly Readonly<{ declaration: string; tests: readonly string[] }>[],
+      ) => {
+        if (!found.length) return;
+        lines.push(`  ${found.length} of them ${heading}:`);
         items(
-          impact.untested.runByOthers.map(
+          found.map(
             ({ declaration, tests }) =>
               `${declaration} ← ${tests.slice(0, LIST.names).join(", ")}${tests.length > LIST.names ? `, +${tests.length - LIST.names} more` : ""}`,
           ),
           LIST.changed,
         );
-      }
+      };
+      runners("are run by other tests of the project, closest first", impact.untested.runByOthers);
+      runners(
+        "may be run by the given tests, which send a request whose path the map does not work out to a route above them",
+        impact.untested.mayRun,
+      );
     } else
       lines.push(
         impact.changed.length
@@ -2618,7 +2703,7 @@ export function mapChangesText(
       );
     if (throughRoutes.length) {
       lines.push(
-        `  ${throughRoutes.length} changed declarations are reached only through a route whose path a given test names, found by text (${routes.map((route) => JSON.stringify(route)).join(", ")}):`,
+        `  ${throughRoutes.length} changed declarations are reached only through a route a given test requests (${routes.map((route) => JSON.stringify(route)).join(", ")}):`,
       );
       items(throughRoutes, LIST.changed);
     }
@@ -2628,7 +2713,7 @@ export function mapChangesText(
       );
     if (impact.changed.length)
       lines.push(
-        "Reach is followed through resolved calls from the given files and the routes whose paths they name. Reached means a given test calls code that leads to it, not that the test takes that path or checks what it does; a call through dependency injection, reflection or a receiver of unknown type, or a path built at run time, may run code the map does not see.",
+        "Reach is followed through resolved calls from the given files and the routes they request. Reached means a given test calls code that leads to it, not that the test takes that path or checks what it does; a call through dependency injection, reflection or a receiver of unknown type, or a path built at run time, may run code the map does not see.",
       );
   }
   // Requests by path, which no compiler links: a frontend, a generated client, a template.
