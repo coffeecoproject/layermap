@@ -35,8 +35,8 @@ import { mapParsingContext } from "./project-map-context";
 import {
   mapNodeLabel as label,
   mapDeclarationKind,
-  mapDeclarationName as named,
   mapRequireBinding,
+  mapDeclarationName as named,
 } from "./project-map-declarations";
 import {
   mapCallableCarrier,

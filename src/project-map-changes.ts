@@ -437,14 +437,19 @@ class Tracer {
   private readonly routes = new Set<string>();
   /** The declarations each route entry reaches the change through: its handlers. */
   readonly handlers = new Map<string, Set<string>>();
-  /** Test support files that call the changed code; the tests beside and below them may use it. */
+  /**
+   * Test support files that call the changed code and that no test is found to call, as fixtures
+   * injected by name are: the tests beside and below them may use it.
+   */
   readonly support = new Set<string>();
   /**
    * The steps from route handlers to the code registering them, by route, held until the tests
-   * requesting each route are looked for: the trace climbs on only for a route none requests.
+   * requesting each route are looked for: the trace climbs on only for a route none is found to
+   * request, where the map cannot tell whether a test requests it.
    */
   readonly held = new Map<string, { current: Reached; caller: Caller }[]>();
-  // Routes the trace climbs on from: no test requests them.
+  // Routes the trace climbs on from: none is found to request them, and the map cannot tell
+  // that none does.
   private readonly released = new Set<string>();
   // The reached declarations whose tests by name and entry points were recorded.
   private readonly finished = new Set<string>();
@@ -554,10 +559,12 @@ class Tracer {
           if (route) this.entry(route, true, current, site, certain);
           const callerObject = this.graph.object(caller.ref);
           if (testCode(callerObject.anchor.path)) {
-            // Test support (conftest.py, fixtures, helpers) reaches tests by injection or import.
-            if (!mapRunnableTest(callerObject.anchor.path))
-              this.support.add(callerObject.anchor.path);
-            for (const [file, name] of testEntries(this.graph, this.graph.owner(caller.ref))) {
+            const entries = testEntries(this.graph, this.graph.owner(caller.ref));
+            // Test support no test calls (conftest.py fixtures, setup files, module-level code)
+            // reaches its tests by injection, which the map does not see: any test beside it may
+            // use it. A helper tests call stands for those tests alone.
+            if (!entries.length) this.support.add(callerObject.anchor.path);
+            for (const [file, name] of entries) {
               this.test(
                 file,
                 name,
@@ -1116,9 +1123,29 @@ export async function mapChangeImpact(
     starts.flatMap((start) => start.refs),
     starts.flatMap((start) => start.own),
   );
-  // The tests requesting the routes the change reaches run it; for a route none is found to
-  // request, the trace climbs on to the code registering it, as for a call, until no route is left.
+  let requesters: ReadonlySet<string> | undefined;
+  // The tests the code registering a held route reaches, as the trace climbing on would find them.
+  const reached = new Map<string, Promise<ReadonlySet<string>>>();
+  const reaching = (route: string) => {
+    let tests = reached.get(route);
+    if (!tests) {
+      tests = (async () => {
+        const above = new Tracer(graph, memberCalls, tracer.shapes);
+        await above.trace([
+          ...new Set((tracer.held.get(route) ?? []).map(({ caller }) => caller.ref)),
+        ]);
+        supportTests(store, working, above);
+        return new Set(above.tests.keys());
+      })();
+      reached.set(route, tests);
+    }
+    return tests;
+  };
+  // The tests requesting the routes the change reaches run it. For a route none is found to
+  // request, the trace climbs on to the code registering it, as for a call, unless the tests of
+  // that app request its routes in ways the map reads; until no route is left.
   const asked = new Set<string>();
+  const unfound: string[] = [];
   for (;;) {
     const fresh = [...tracer.entries.values()].filter(
       (entry) => entry.route && !asked.has(entry.label),
@@ -1129,10 +1156,30 @@ export async function mapChangeImpact(
     const unrequested = fresh
       .map((entry) => entry.label)
       .filter((label) => tracer.held.has(label) && !requested.has(label));
-    if (!unrequested.length) break;
-    await tracer.release(unrequested);
+    // Where the tests of the app registering a route request its routes in ways the map reads,
+    // none requesting this one says no test runs it, but for those whose request is not worked
+    // out; elsewhere the map cannot tell, and the trace climbs on to every test of the app.
+    const climbing: string[] = [];
+    for (const label of unrequested) {
+      const tests = await reaching(label);
+      requesters ??= routeRequesters(store, working, graph);
+      const reads = requesters;
+      if ([...tests].some((file) => reads.has(file))) unfound.push(label);
+      else climbing.push(label);
+    }
+    if (!climbing.length) break;
+    await tracer.release(climbing);
   }
-  await unworkedRequests(store, working, graph, memberCalls, tracer);
+  if (unfound.length)
+    unclear.push(
+      `no test is found to request ${unfound.length > 1 ? `${unfound.length} routes the change reaches (` : ""}${unfound
+        .slice(0, LIST.names)
+        .map((label) => JSON.stringify(label))
+        .join(
+          ", ",
+        )}${unfound.length > LIST.names ? ", …" : ""}${unfound.length > 1 ? ")" : ""}: a test requesting ${unfound.length > 1 ? "them" : "it"} in a way the map does not read is not selected`,
+    );
+  await unworkedRequests(store, working, graph, tracer, reaching);
   const unread = [...tracer.shapes.unread];
   if (unread.length)
     unclear.push(
@@ -1727,8 +1774,9 @@ function importerTests(
   }
 }
 
-// Tests that may use the change through test support (pytest's conftest.py, shared fixtures and
-// helpers): fixtures are injected by name, so the tests beside and below the support file count.
+// Tests that may use the change through test support no test is found to call (pytest's
+// conftest.py, shared fixtures, setup files): fixtures are injected by name, so the tests beside
+// and below the support file count.
 function supportTests(store: CodeIndexStore, version: string, tracer: Tracer) {
   for (const file of tracer.support) {
     const slash = file.lastIndexOf("/");
@@ -1843,8 +1891,8 @@ async function unworkedRequests(
   store: CodeIndexStore,
   version: string,
   graph: MapViewGraph,
-  memberCalls: ReturnType<MapViewCache["memberCalls"]>,
   tracer: Tracer,
+  reaching: (route: string) => Promise<ReadonlySet<string>>,
 ) {
   if (!tracer.held.size) return;
   const unworked = new Map<string, Set<string | undefined>>();
@@ -1859,11 +1907,8 @@ async function unworkedRequests(
       unworked.set(file, (unworked.get(file) ?? new Set()).add(name));
   }
   if (!unworked.size) return;
-  for (const [route, steps] of tracer.held) {
-    const above = new Tracer(graph, memberCalls, tracer.shapes);
-    await above.trace([...new Set(steps.map(({ caller }) => caller.ref))]);
-    supportTests(store, version, above);
-    for (const file of above.tests.keys())
+  for (const route of tracer.held.keys())
+    for (const file of await reaching(route))
       for (const name of unworked.get(file) ?? [])
         tracer.test(
           file,
@@ -1871,7 +1916,23 @@ async function unworkedRequests(
           `may request ${JSON.stringify(route)}: the path a request of it is sent to is not worked out`,
           3,
         );
+}
+
+// The test files requesting some route of the project by a path the map works out: tests whose
+// requests it reads.
+function routeRequesters(store: CodeIndexStore, version: string, graph: MapViewGraph) {
+  const files = new Set<string>();
+  const closest = mapRequestedRoutes(routeRegistrations(store, version).routes);
+  for (const row of store.database
+    .prepare(
+      "SELECT entity_ref, note_json FROM project_map_notes WHERE version_ref = ? AND json_extract(note_json, '$.kind') = 'ROUTE_REQUEST' AND json_extract(note_json, '$.text') != ?",
+    )
+    .all(version, MAP_PATH_PARAMETER)) {
+    const note = JSON.parse(String(row.note_json)) as { text: string; anchor: { path: string } };
+    if (!testCode(note.anchor.path) || !closest(note.text).length) continue;
+    for (const [file] of testEntries(graph, graph.owner(String(row.entity_ref)))) files.add(file);
   }
+  return files;
 }
 
 // The runnable tests that run a declaration of test code: the tests themselves, which the runner

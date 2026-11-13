@@ -171,13 +171,23 @@ test("a test requesting a route under a base URL it computes is found too", asyn
   assert.equal(selected["test/stock.test.ts"]?.why, 'requests "GET /api/v1/stock"');
 });
 
-test("for a route no test requests, the tests of the app that registers it are kept, a helper no test calls aside", async () => {
+test("for a route no test requests, where the app's tests request its routes in ways the map reads, no test is selected and the check says so", async () => {
   const data = await check(await changed("src/service.ts", "return 3;", "return 30;"));
-  assert.deepEqual(
-    Object.keys(tests(data)).sort(),
-    ["test/health.test.ts", "test/history.test.ts", "test/items.test.ts", "test/stock.test.ts"],
-    JSON.stringify(data.tests),
+  assert.deepEqual(Object.keys(tests(data)), [], JSON.stringify(data.tests));
+  assert.ok(
+    data.checkByHand.includes(
+      'no test is found to request "GET /api/v1/hidden": a test requesting it in a way the map does not read is not selected',
+    ),
+    JSON.stringify(data.checkByHand),
   );
+});
+
+test("for a route no test requests, where the map reads no request of the app's tests, the tests of the app are kept, a helper no test calls aside", async () => {
+  const files: Record<string, string> = { ...FILES };
+  for (const file of ["test/items.test.ts", "test/stock.test.ts", "test/history.test.ts"])
+    delete files[file];
+  const data = await check(await changed("src/service.ts", "return 3;", "return 30;", files));
+  assert.deepEqual(Object.keys(tests(data)), ["test/health.test.ts"], JSON.stringify(data.tests));
   assert.ok(
     data.tests.every((item) => item.why === "calls buildApp"),
     JSON.stringify(data.tests),
@@ -204,16 +214,36 @@ test("a test naming only a stretch of a route's path does not stand for the test
   const selected = tests(data);
   assert.deepEqual(
     Object.keys(selected).sort(),
-    [
-      "test/health.test.ts",
-      "test/history.test.ts",
-      "test/items.test.ts",
-      "test/mention.test.ts",
-      "test/stock.test.ts",
-    ],
+    ["test/mention.test.ts"],
     JSON.stringify(data.tests),
   );
   assert.equal(selected["test/mention.test.ts"]?.why, 'mentions "GET /api/v1/orders/:orderId"');
+  // Not taken for a request of the route: the check says none is found.
+  assert.ok(
+    data.checkByHand.includes(
+      'no test is found to request "GET /api/v1/orders/:orderId": a test requesting it in a way the map does not read is not selected',
+    ),
+    JSON.stringify(data.checkByHand),
+  );
+});
+
+test("the routes no test is found to request are named in one line", async () => {
+  const from = FILES["src/service.ts"].slice(
+    FILES["src/service.ts"].indexOf("return 3;"),
+    FILES["src/service.ts"].indexOf("return 5;") + "return 5;".length,
+  );
+  const data = await check(
+    await changed("src/service.ts", from, from.replaceAll(/return (\d);/gu, "return $1$1;")),
+  );
+  const lines = data.checkByHand.filter((line) => line.startsWith("no test is found"));
+  assert.equal(lines.length, 1, JSON.stringify(data.checkByHand));
+  assert.match(lines[0] ?? "", /^no test is found to request 2 routes the change reaches \(/u);
+  assert.ok(
+    ['"GET /api/v1/hidden"', '"GET /api/v1/orders/:orderId"'].every((label) =>
+      lines[0]?.includes(label),
+    ),
+    JSON.stringify(lines),
+  );
 });
 
 test("the entry points of a change the given tests miss go on past its route", async () => {

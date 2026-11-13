@@ -251,3 +251,45 @@ module.exports = { readConfig };
     map.close();
   }
 });
+
+test("a test helper file stands for the tests calling it, and for every test beside it only when none does", async () => {
+  const files = {
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/parse.ts": "export function parse(value: string) {\n  return value;\n}\n",
+    "src/load.ts": "export function load() {\n  return 1;\n}\n",
+    "test/support.ts": `import { parse } from "../src/parse";
+
+export function setup() {
+  return parse("x");
+}
+`,
+    // Run before the tests by the runner's configuration: no test calls it.
+    "test/setup.ts": 'import { load } from "../src/load";\n\nload();\n',
+    "test/parse.test.ts": `import { setup } from "./support";
+
+export function parsesAValue() {
+  return setup();
+}
+`,
+    "test/other.test.ts": "export function addsUp() {\n  return 1 + 1;\n}\n",
+  };
+  const parsed = selected(
+    await check(files, [
+      "src/parse.ts",
+      "export function parse(value: string) {\n  return value.trim();\n}\n",
+    ]),
+  );
+  assert.deepEqual(Object.keys(parsed), ["test/parse.test.ts"], JSON.stringify(parsed));
+  const loaded = selected(
+    await check(files, ["src/load.ts", "export function load() {\n  return 2;\n}\n"]),
+  );
+  assert.deepEqual(
+    Object.keys(loaded).sort(),
+    ["test/other.test.ts", "test/parse.test.ts"],
+    JSON.stringify(loaded),
+  );
+  assert.equal(loaded["test/other.test.ts"]?.why, "may use it through test/setup.ts");
+});
