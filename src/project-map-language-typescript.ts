@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import type { ZodType } from "zod";
 import { ProjectEvidenceError } from "./core";
 import { digestValue } from "./digest";
@@ -17,6 +18,7 @@ import { miniprogramConfiguration, miniprogramTemplateOf } from "./project-map-m
 import {
   installedMapParserResources,
   type MapParserResources,
+  ProjectMapStopUnconfirmedError,
   runMapOperation,
 } from "./project-map-process";
 import {
@@ -37,6 +39,63 @@ export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
 
 // Discovered configurations kept, one per recently mapped revision of the language's files.
 const CONFIGURATIONS_KEPT = 4;
+// Contexts analyzed at once, each by its own compiler worker.
+const CONTEXTS_AT_ONCE = Math.min(4, availableParallelism());
+
+/**
+ * Runs the tasks `atOnce` at a time and takes each result in task order, once those before it are
+ * taken. The first failure stops the other tasks and is thrown after they have stopped, unless a
+ * worker could not be confirmed stopped: that is thrown instead, since it may still be running.
+ */
+export async function inOrder<T>(
+  tasks: readonly ((signal: AbortSignal) => Promise<T>)[],
+  take: (result: T) => void,
+  signal: AbortSignal,
+  atOnce: number,
+) {
+  const stopping = new AbortController();
+  const stop = () => stopping.abort();
+  signal.addEventListener("abort", stop, { once: true });
+  if (signal.aborted) stop();
+  // A finishing task hands its slot to the next waiting one.
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  const slot = async () => {
+    if (running < atOnce) running++;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+  };
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();
+    else running--;
+  };
+  let failure: { error: unknown } | undefined;
+  const results = tasks.map(async (task) => {
+    await slot();
+    try {
+      return await task(stopping.signal);
+    } finally {
+      release();
+    }
+  });
+  // The first task to fail is the failure; those it stops fail after it.
+  for (const result of results)
+    result.catch((error: unknown) => {
+      failure ??= { error };
+      stop();
+    });
+  try {
+    for (const result of results) take(await result);
+  } catch (error) {
+    stop();
+    const unconfirmed = (await Promise.allSettled(results))
+      .flatMap((settled) => (settled.status === "rejected" ? [settled.reason] : []))
+      .find((reason) => reason instanceof ProjectMapStopUnconfirmedError);
+    throw unconfirmed ?? (failure ? failure.error : error);
+  } finally {
+    signal.removeEventListener("abort", stop);
+  }
+}
 
 /**
  * TypeScript and JavaScript through the native compiler worker: one context per discovered
@@ -116,11 +175,13 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
       session.accept(analysis);
     };
     let workspace: MapWorkspacePlan | undefined;
+    // A context's analysis, replayed or made by a compiler worker; the caller accepts it.
     const context = async (
+      signal: AbortSignal,
       configPath?: string,
       rootFiles?: readonly string[],
       inputFiles?: readonly string[],
-    ) => {
+    ): Promise<MapAnalysis> => {
       const texts: Record<string, string> = Object.create(null);
       for (const file of [
         ...(workspace?.configurationFiles ?? []),
@@ -173,10 +234,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           ...(rootFiles ?? inventory),
         ],
       );
-      if (reused) {
-        accept(reused);
-        return;
-      }
+      if (reused) return reused;
       for (;;) {
         if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
         const input: Omit<MapWorkerInput, "compilerPath"> = {
@@ -196,10 +254,7 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           observe,
         );
         validateMapAnalysis(analysis, input);
-        if (!analysis.requiredFiles.length) {
-          accept(analysis);
-          return;
-        }
+        if (!analysis.requiredFiles.length) return analysis;
         const required = analysis.requiredFiles.map((path) => {
           const entry = byPath.get(path);
           if (!entry || Object.hasOwn(texts, path))
@@ -248,16 +303,28 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
       if (!byPath.has(file)) throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
       session.configuration(file);
     }
-    for (const project of discovered.projects)
-      await context(project.configPath, project.rootFiles, project.inputFiles);
+    // Accepted in discovery order, which decides whose copy of an object several contexts stage
+    // is kept, however the analyses finish.
+    await inOrder(
+      discovered.projects.map(
+        (project) => (signal: AbortSignal) =>
+          context(signal, project.configPath, project.rootFiles, project.inputFiles),
+      ),
+      accept,
+      signal,
+      CONTEXTS_AT_ONCE,
+    );
     const orphaned = session.readable.filter(
       (entry) =>
         this.claims(entry.path) && !parsed.has(entry.path) && !syntaxFailed.has(entry.path),
     );
     if (orphaned.length)
-      await context(
-        undefined,
-        orphaned.map((entry) => entry.path),
+      accept(
+        await context(
+          signal,
+          undefined,
+          orphaned.map((entry) => entry.path),
+        ),
       );
   }
 }
