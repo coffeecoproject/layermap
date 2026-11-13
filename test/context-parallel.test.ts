@@ -8,7 +8,7 @@ import { ProjectEvidenceError } from "../src/core";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { ProjectMapAnalyzer } from "../src/project-map-analyzer";
 import type { MapAnalyzerEvent } from "../src/project-map-language";
-import { inOrder, TypeScriptMapAnalyzer } from "../src/project-map-language-typescript";
+import { inOrder, limit, TypeScriptMapAnalyzer } from "../src/project-map-language-typescript";
 import { ProjectMapStopUnconfirmedError } from "../src/project-map-process";
 import { analyzers, project, sandbox, signal } from "./support";
 
@@ -108,14 +108,16 @@ function gate<T>(value: T) {
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test("tasks run a few at a time and are taken in task order", { timeout: 10_000 }, async () => {
+test("work runs a few at a time and tasks are taken in task order", {
+  timeout: 10_000,
+}, async () => {
   const gates = [gate("a"), gate("b"), gate("c")];
   const taken: string[] = [];
+  const workers = limit(2);
   const done = inOrder(
-    gates.map((g) => g.task),
+    gates.map((g) => (signal: AbortSignal) => workers(() => g.task(signal))),
     (value) => taken.push(value),
     signal(),
-    2,
     [0, 0, 0],
   );
   await settle();
@@ -138,15 +140,16 @@ test("larger tasks start first and are still taken in task order", {
 }, async () => {
   const started: string[] = [];
   const taken: string[] = [];
-  const task = (value: string) => async () => {
-    started.push(value);
-    return value;
-  };
+  const workers = limit(1);
+  const task = (value: string) => () =>
+    workers(async () => {
+      started.push(value);
+      return value;
+    });
   await inOrder(
     [task("small"), task("large"), task("middle")],
     (value) => taken.push(value),
     signal(),
-    1,
     [1, 3, 2],
   );
   assert.deepEqual(started, ["large", "middle", "small"]);
@@ -159,7 +162,7 @@ test("the first failure stops the other tasks and is thrown", { timeout: 10_000 
     throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
   };
   await assert.rejects(
-    inOrder([waiting.task, failing], () => {}, signal(), 2, [0, 0]),
+    inOrder([waiting.task, failing], () => {}, signal(), [0, 0]),
     (error: ProjectEvidenceError) => error.code === "PROJECT_MAP_PROTOCOL_INVALID",
   );
   assert.equal(waiting.stopped, true);
@@ -176,7 +179,7 @@ test("a worker not confirmed stopped outranks the failure that stopped it", {
       signal.addEventListener("abort", () => reject(new ProjectMapStopUnconfirmedError())),
     );
   await assert.rejects(
-    inOrder([unstoppable, failing], () => {}, signal(), 2, [0, 0]),
+    inOrder([unstoppable, failing], () => {}, signal(), [0, 0]),
     ProjectMapStopUnconfirmedError,
   );
 });

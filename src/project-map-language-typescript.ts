@@ -39,53 +39,75 @@ export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
 
 // Discovered configurations kept, one per recently mapped revision of the language's files.
 const CONFIGURATIONS_KEPT = 4;
-// Contexts analyzed at once, each by its own compiler worker.
-const CONTEXTS_AT_ONCE = Math.min(4, availableParallelism());
+// Compiler workers run at once for one analysis, besides the one discovering its configuration.
+const WORKERS_AT_ONCE = Math.min(4, availableParallelism());
+
+/** Runs work `atOnce` at a time, in the order it is asked for. */
+export function limit(atOnce: number) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(work: () => Promise<T>): Promise<T> => {
+    if (running < atOnce) running++;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      return await work();
+    } finally {
+      // A finishing run hands its place to the next waiting one.
+      const next = waiting.shift();
+      if (next) next();
+      else running--;
+    }
+  };
+}
+
+// Where a code file names a module: from, import and require with a literal, and reference
+// directives. Only whether to begin builds before discovery rests on it, never what is stored.
+const MODULE_NAMES =
+  /\b(?:from|import|require)\s*\(?\s*(["'`])([^"'`\n]+)\1|\/\/\/\s*<reference\s+(?:path|types|lib)\s*=\s*(["'])([^"'\n]+)\3/gu;
+const moduleNames = (text: string) =>
+  digestValue([...text.matchAll(MODULE_NAMES)].map((match) => match[2] ?? match[4] ?? ""));
+
+/** What discovery read of a revision, as far as an edit to a code file's body leaves it alone. */
+type MapCodeShape = Readonly<{
+  installed: string;
+  // Each readable file's content digest, and what of it discovery depends on: the module names
+  // of a code file, all of another.
+  files: ReadonlyMap<string, Readonly<{ digest: string | null; shape: string | null }>>;
+}>;
+
+const sameShape = (left: MapCodeShape, right: MapCodeShape) =>
+  left.installed === right.installed &&
+  left.files.size === right.files.size &&
+  [...left.files].every(([path, { shape }]) => right.files.get(path)?.shape === shape);
+
+const stopUnconfirmed = async (runs: readonly Promise<unknown>[]) =>
+  (await Promise.allSettled(runs))
+    .flatMap((settled) => (settled.status === "rejected" ? [settled.reason] : []))
+    .find((reason) => reason instanceof ProjectMapStopUnconfirmedError);
 
 /**
- * Runs the tasks `atOnce` at a time, the larger by `sizes` first so the longest does not run alone
- * at the end, and takes each result in task order, once those before it are taken. The first
- * failure stops the other tasks and is thrown after they have stopped, unless a worker could not
- * be confirmed stopped: that is thrown instead, since it may still be running.
+ * Starts the tasks, the larger by `sizes` first so that work they queue for goes to the longest
+ * first, and takes each result in task order, once those before it are taken. The first failure
+ * stops the other tasks and is thrown after they have stopped, unless a worker could not be
+ * confirmed stopped: that is thrown instead, since it may still be running.
  */
 export async function inOrder<T>(
   tasks: readonly ((signal: AbortSignal) => Promise<T>)[],
   take: (result: T) => void,
   signal: AbortSignal,
-  atOnce: number,
   sizes: readonly number[],
 ) {
   const stopping = new AbortController();
   const stop = () => stopping.abort();
   signal.addEventListener("abort", stop, { once: true });
   if (signal.aborted) stop();
-  // A finishing task hands its slot to the next waiting one.
-  let running = 0;
-  const waiting: (() => void)[] = [];
-  const slot = async () => {
-    if (running < atOnce) running++;
-    else await new Promise<void>((resolve) => waiting.push(resolve));
-  };
-  const release = () => {
-    const next = waiting.shift();
-    if (next) next();
-    else running--;
-  };
   let failure: { error: unknown } | undefined;
-  const run = async (task: (signal: AbortSignal) => Promise<T>) => {
-    await slot();
-    try {
-      return await task(stopping.signal);
-    } finally {
-      release();
-    }
-  };
-  // Slots go to tasks in the order they are started; equal sizes keep the task order.
+  // Equal sizes keep the task order.
   const results: Promise<T>[] = [];
   for (const index of tasks
     .map((_, index) => index)
     .sort((left, right) => (sizes[right] ?? 0) - (sizes[left] ?? 0)))
-    results[index] = run(tasks[index] as (signal: AbortSignal) => Promise<T>);
+    results[index] = (tasks[index] as (signal: AbortSignal) => Promise<T>)(stopping.signal);
   // The first task to fail is the failure; those it stops fail after it.
   for (const result of results)
     result.catch((error: unknown) => {
@@ -96,10 +118,7 @@ export async function inOrder<T>(
     for (const result of results) take(await result);
   } catch (error) {
     stop();
-    const unconfirmed = (await Promise.allSettled(results))
-      .flatMap((settled) => (settled.status === "rejected" ? [settled.reason] : []))
-      .find((reason) => reason instanceof ProjectMapStopUnconfirmedError);
-    throw unconfirmed ?? (failure ? failure.error : error);
+    throw (await stopUnconfirmed(results)) ?? (failure ? failure.error : error);
   } finally {
     signal.removeEventListener("abort", stop);
   }
@@ -116,6 +135,8 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
   // Discovery reads the texts of the files the language reads and what is installed, nothing else,
   // so a result stands while they are the same, as they are when only other languages' files changed.
   private readonly configurations = new Map<string, MapConfigurationResult>();
+  // The last configuration discovered, and the shape of the code it was discovered from.
+  private last?: Readonly<{ shape: MapCodeShape; discovered: MapConfigurationResult }>;
 
   constructor(private readonly resources: MapParserResources = installedMapParserResources()) {}
 
@@ -182,26 +203,24 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
         if (gap.code === "SYNTAX_ERROR" && gap.path) syntaxFailed.add(gap.path);
       session.accept(analysis);
     };
-    let workspace: MapWorkspacePlan | undefined;
-    // A context's analysis, replayed or made by a compiler worker; the caller accepts it.
-    const context = async (
-      signal: AbortSignal,
+    const workers = limit(WORKERS_AT_ONCE);
+    // What a context is given and asked: its ref, the request and files that decide whether the
+    // previous map's analysis of it stands, and the compiler's input.
+    const plan = (
+      workspace: MapWorkspacePlan,
       configPath?: string,
       rootFiles?: readonly string[],
       inputFiles?: readonly string[],
-    ): Promise<MapAnalysis> => {
+    ) => {
       const texts: Record<string, string> = Object.create(null);
-      for (const file of [
-        ...(workspace?.configurationFiles ?? []),
-        ...(configPath ? [configPath] : []),
-      ]) {
+      for (const file of [...workspace.configurationFiles, ...(configPath ? [configPath] : [])]) {
         const text = unitTexts[file];
         if (text === undefined)
           throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
         texts[file] = text;
       }
       // Reuse captured text, while keeping each compiler context's discovered input set.
-      // Placeholder reads below extend that set until every dependency is available.
+      // Placeholder reads extend that set until every dependency is available.
       for (const file of inputFiles ?? rootFiles ?? inventory) {
         const text = unitTexts[file];
         if (text !== undefined) texts[file] = text;
@@ -224,43 +243,67 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
         configPath: configPath ?? null,
         rootFiles: rootFiles ?? null,
       });
-      // What the context is. What it read is the previous analysis's input files, which replaying
-      // requires to be unchanged; the files given to it may be more than it reads, since discovery
-      // opens the inferred project under options other than its own.
-      const reused = session.reuse(
+      const input: Omit<MapWorkerInput, "compilerPath"> = {
         contextRef,
-        {
+        ...(configPath ? { configPath } : {}),
+        ...(rootFiles ? { rootFiles } : {}),
+        files: texts,
+        inventory,
+        syntaxOnly: false,
+        workspace,
+        dependencies: installed.directory,
+      };
+      return {
+        contextRef,
+        // What the context is. What it read is the previous analysis's input files, which
+        // replaying requires to be unchanged; the files given to it may be more than it reads,
+        // since discovery opens the inferred project under options other than its own.
+        request: {
           configPath: configPath ?? null,
           rootFiles: rootFiles ?? null,
           inventory,
-          workspace: workspace ?? null,
+          workspace,
           installed: installed.digest,
         },
-        [
-          ...(workspace?.configurationFiles ?? []),
+        files: [
+          ...workspace.configurationFiles,
           ...(configPath ? [configPath] : []),
           ...(rootFiles ?? inventory),
         ],
+        texts,
+        input,
+        // The texts are the captured ones of these paths, so the paths stand for them.
+        key: digestValue({ ...input, files: Object.keys(texts) }),
+      };
+    };
+    type Plan = ReturnType<typeof plan>;
+    type Build = Readonly<{ analysis: Promise<MapAnalysis>; controller: AbortController }>;
+    const build = (input: Plan["input"], signal: AbortSignal) =>
+      workers(() =>
+        this.operation({ ...input, operation: "BUILD" }, MapAnalysisSchema, signal, observe),
       );
-      if (reused) return reused;
+    // A context's analysis, replayed or made by compiler workers; `started` is a build begun on the
+    // same input before discovery confirmed it. The caller accepts the analysis.
+    const context = async (
+      signal: AbortSignal,
+      { contextRef, request, files, texts, input }: Plan,
+      started?: Build,
+    ) => {
+      const reused = session.reuse(contextRef, request, files);
+      if (reused) {
+        started?.controller.abort();
+        return reused;
+      }
+      if (started) {
+        const stop = () => started.controller.abort();
+        signal.addEventListener("abort", stop, { once: true });
+        if (signal.aborted) stop();
+      }
+      let first = started?.analysis;
       for (;;) {
         if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
-        const input: Omit<MapWorkerInput, "compilerPath"> = {
-          contextRef,
-          ...(configPath ? { configPath } : {}),
-          ...(rootFiles ? { rootFiles } : {}),
-          files: texts,
-          inventory,
-          syntaxOnly: false,
-          ...(workspace ? { workspace } : {}),
-          dependencies: installed.directory,
-        };
-        const analysis = await this.operation(
-          { ...input, operation: "BUILD" },
-          MapAnalysisSchema,
-          signal,
-          observe,
-        );
+        const analysis = await (first ?? build(input, signal));
+        first = undefined;
         validateMapAnalysis(analysis, input);
         if (!analysis.requiredFiles.length) return analysis;
         const required = analysis.requiredFiles.map((path) => {
@@ -275,66 +318,123 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           texts[entry.path] = unitTexts[entry.path] ?? (await session.read(entry));
       }
     };
+    const admitted = (discovered: MapConfigurationResult) =>
+      discovered.projects.every(
+        (project) =>
+          (!project.configPath || byPath.has(project.configPath)) &&
+          project.rootFiles.every((file) => byPath.has(file)) &&
+          project.inputFiles.every((file) => byPath.has(file)),
+      ) && discovered.workspace.configurationFiles.every((file) => byPath.has(file));
     const configurationKey = digestValue({
       files: session.readable.map((entry) => [entry.path, entry.contentDigest ?? null]),
       installed: installed.digest,
     });
-    const discovered =
-      this.configurations.get(configurationKey) ??
-      (await this.operation(
-        {
-          operation: "CONFIGURE",
-          contextRef: digestValue({ entries, purpose: "CONFIGURE" }),
-          files: unitTexts,
-          inventory,
-          syntaxOnly: false,
-          dependencies: installed.directory,
-        },
-        MapConfigurationResultSchema,
-        signal,
-        observe,
-      ));
-    this.configurations.delete(configurationKey);
-    this.configurations.set(configurationKey, discovered);
-    for (const key of this.configurations.keys())
-      if (this.configurations.size > CONFIGURATIONS_KEPT) this.configurations.delete(key);
-    for (const project of discovered.projects) {
-      if (
-        (project.configPath && !byPath.has(project.configPath)) ||
-        project.rootFiles.some((file) => !byPath.has(file)) ||
-        project.inputFiles.some((file) => !byPath.has(file))
-      )
-        throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
-    }
-    workspace = discovered.workspace;
-    for (const file of workspace.configurationFiles) {
-      if (!byPath.has(file)) throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
-      session.configuration(file);
-    }
-    // Accepted in discovery order, which decides whose copy of an object several contexts stage
-    // is kept, however the analyses finish. A context's root files are the files it analyzes, so
-    // their count sizes it.
-    await inOrder(
-      discovered.projects.map(
-        (project) => (signal: AbortSignal) =>
-          context(signal, project.configPath, project.rootFiles, project.inputFiles),
+    const known = this.configurations.get(configurationKey);
+    const shape: MapCodeShape = {
+      installed: installed.digest,
+      files: new Map(
+        session.readable.map((entry) => {
+          const digest = entry.contentDigest ?? null;
+          const before = this.last?.shape.files.get(entry.path);
+          return [
+            entry.path,
+            {
+              digest,
+              shape: !this.claims(entry.path)
+                ? digest
+                : before && before.digest === digest
+                  ? before.shape
+                  : moduleNames(unitTexts[entry.path] ?? ""),
+            },
+          ];
+        }),
       ),
-      accept,
-      signal,
-      CONTEXTS_AT_ONCE,
-      discovered.projects.map((project) => project.rootFiles.length),
-    );
-    const orphaned = session.readable.filter(
-      (entry) =>
-        this.claims(entry.path) && !parsed.has(entry.path) && !syntaxFailed.has(entry.path),
-    );
-    if (orphaned.length)
-      accept(
-        await context(
+    };
+    // Where only the bodies of code changed, discovery most likely finds the configuration it
+    // found last: while it runs, that configuration's contexts are built as it had them, except
+    // those the previous map holds as they are, and discovery decides which builds stand.
+    const guess =
+      !known && this.last && sameShape(this.last.shape, shape) ? this.last.discovered : undefined;
+    const speculative = new Map<string, Build>();
+    try {
+      if (guess && admitted(guess))
+        for (const project of [...guess.projects].sort(
+          (left, right) => right.rootFiles.length - left.rootFiles.length,
+        )) {
+          const guessed = plan(
+            guess.workspace,
+            project.configPath,
+            project.rootFiles,
+            project.inputFiles,
+          );
+          if (session.replays(guessed.contextRef, guessed.request, guessed.files)) continue;
+          const controller = new AbortController();
+          const analysis = build(guessed.input, AbortSignal.any([signal, controller.signal]));
+          analysis.catch(() => {});
+          speculative.set(guessed.key, { analysis, controller });
+        }
+      const discovered =
+        known ??
+        (await this.operation(
+          {
+            operation: "CONFIGURE",
+            contextRef: digestValue({ entries, purpose: "CONFIGURE" }),
+            files: unitTexts,
+            inventory,
+            syntaxOnly: false,
+            dependencies: installed.directory,
+          },
+          MapConfigurationResultSchema,
           signal,
-          undefined,
-          orphaned.map((entry) => entry.path),
-        ),
+          observe,
+        ));
+      this.configurations.delete(configurationKey);
+      this.configurations.set(configurationKey, discovered);
+      this.last = { shape, discovered };
+      for (const key of this.configurations.keys())
+        if (this.configurations.size > CONFIGURATIONS_KEPT) this.configurations.delete(key);
+      if (!admitted(discovered))
+        throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
+      const { workspace } = discovered;
+      for (const file of workspace.configurationFiles) session.configuration(file);
+      const plans = discovered.projects.map((project) =>
+        plan(workspace, project.configPath, project.rootFiles, project.inputFiles),
       );
+      const started = plans.map((planned) => speculative.get(planned.key));
+      for (const [key, unused] of speculative)
+        if (!plans.some((planned) => planned.key === key)) unused.controller.abort();
+      // Accepted in discovery order, which decides whose copy of an object several contexts stage
+      // is kept, however the analyses finish. A context's root files are the files it analyzes, so
+      // their count sizes it.
+      await inOrder(
+        plans.map(
+          (planned, index) => (signal: AbortSignal) => context(signal, planned, started[index]),
+        ),
+        accept,
+        signal,
+        discovered.projects.map((project) => project.rootFiles.length),
+      );
+      const orphaned = session.readable.filter(
+        (entry) =>
+          this.claims(entry.path) && !parsed.has(entry.path) && !syntaxFailed.has(entry.path),
+      );
+      if (orphaned.length)
+        accept(
+          await context(
+            signal,
+            plan(
+              workspace,
+              undefined,
+              orphaned.map((entry) => entry.path),
+            ),
+          ),
+        );
+    } catch (error) {
+      for (const unused of speculative.values()) unused.controller.abort();
+      throw (await stopUnconfirmed([...speculative.values()].map((run) => run.analysis))) ?? error;
+    }
+    // A build discovery left unused may not have stopped.
+    const unconfirmed = await stopUnconfirmed([...speculative.values()].map((run) => run.analysis));
+    if (unconfirmed) throw unconfirmed;
   }
 }

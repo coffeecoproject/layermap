@@ -59,6 +59,8 @@ export type MapLanguageSession = Readonly<{
    * result.
    */
   reuse(contextRef: string, request: unknown, files: readonly string[]): MapAnalysis | undefined;
+  /** Whether `reuse` would return the previous map's analysis, without recording anything. */
+  replays(contextRef: string, request: unknown, files: readonly string[]): boolean;
   /** Marks a readable file as configuration input rather than an unanalyzed file. */
   configuration(path: string): void;
   observe?: MapAnalyzerObserver;

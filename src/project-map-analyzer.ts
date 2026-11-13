@@ -211,14 +211,18 @@ export class ProjectMapAnalyzer {
     // and every file with facts staged.
     const analyzedFiles = new Set<string>();
     const stagedPaths = new Set<string>();
+    const requestDigest = (request: unknown, files: readonly string[]) =>
+      digestValue({ request, files: files.map((path) => [path, digests.get(path) ?? null]) });
+    const replaysDigest = (contextRef: string, digest: string) =>
+      parent !== undefined &&
+      replayable.has(contextRef) &&
+      parent.contexts.get(contextRef)?.requestDigest === digest;
+    const replays = (contextRef: string, request: unknown, files: readonly string[]) =>
+      replaysDigest(contextRef, requestDigest(request, files));
     const reuse = (contextRef: string, request: unknown, files: readonly string[]) => {
-      const digest = digestValue({
-        request,
-        files: files.map((path) => [path, digests.get(path) ?? null]),
-      });
+      const digest = requestDigest(request, files);
       requests.set(contextRef, digest);
-      if (!parent || !replayable.has(contextRef)) return undefined;
-      if (parent.contexts.get(contextRef)?.requestDigest !== digest) return undefined;
+      if (!parent || !replaysDigest(contextRef, digest)) return undefined;
       const { analysis, state, paths } = parent.shell(contextRef);
       if (!paths) return invalidParent();
       if (state !== undefined) states.set(contextRef, state);
@@ -316,6 +320,7 @@ export class ProjectMapAnalyzer {
           read,
           accept,
           reuse,
+          replays,
           previous,
           configuration: (path) => configurationInputs.add(path),
           observe: this.observe,
