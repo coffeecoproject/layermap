@@ -368,7 +368,7 @@ test("a search of the tests for a route's path that the deadline stops says how 
   t.mock.method(Date, "now", () => (late ? real() + 3_600_000 : real()));
   const read = fs.readFile;
   t.mock.method(fs, "readFile", (...args: Parameters<typeof read>) => {
-    if (/\/t\d+\.test\.ts$/u.test(String(args[0]))) late = true;
+    if (/[\\/]t\d+\.test\.ts$/u.test(String(args[0]))) late = true;
     return read(...args);
   });
   syncBuiltinESMExports();

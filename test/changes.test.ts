@@ -259,13 +259,12 @@ test("an entry point in a file the diff deleted is not named as reached", async 
   assert.doesNotMatch(text, /AFFECTED ENTRY POINTS/u);
 });
 
-test("an untracked binary is named as one, and a path git quotes as not checked", async (t) => {
-  const { root, write } = await project({ "a.ts": "export const a = 1;\n", "odd\tname.ts": "x\n" });
+test("an untracked binary is named as one", async (t) => {
+  const { root, write } = await project({ "a.ts": "export const a = 1;\n" });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
   const map = await openMap(root);
   t.after(() => map.close());
-  await write("odd\tname.ts", "y\n");
   await write("logo.png", "\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR");
   await write("notes.xyz", "plain text\n");
   const { data } = await map.checkChanges({ format: "json" }, signal());
@@ -273,6 +272,19 @@ test("an untracked binary is named as one, and a path git quotes as not checked"
     { path: "logo.png", kind: "binary file" },
     { path: "notes.xyz", kind: "unanalyzed file" },
   ]);
+});
+
+// A Windows file name cannot hold a tab.
+const tabNames = { skip: process.platform === "win32" };
+test("a path git quotes is named as not checked", tabNames, async (t) => {
+  const { root, write } = await project({ "a.ts": "export const a = 1;\n", "odd\tname.ts": "x\n" });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("odd\tname.ts", "y\n");
+  const { data } = await map.checkChanges({ format: "json" }, signal());
+  assert.deepEqual(data.unmapped, []);
   assert.deepEqual(data.incomplete, [
     '1 changed file has a tab, a newline or a quote in its path, which the map cannot hold, and was not checked: "a/odd\\tname.ts" "b/odd\\tname.ts"',
   ]);
