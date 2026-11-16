@@ -161,7 +161,9 @@ export function runMapOperation<T>(
   }
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [...(resources.execArgv ?? []), resources.workerPath], {
-      detached: true,
+      // POSIX stops the worker by its process group. A detached Windows process has no console, so
+      // the console compilers it starts, which TypeScript's API does not hide, would open a window.
+      detached: process.platform !== "win32",
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
       env: childEnvironment({
