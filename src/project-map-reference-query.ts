@@ -4,6 +4,7 @@ import { normalizeProjectEvidencePath, ProjectEvidenceError } from "./core";
 import { decodeQueryCursor, encodeQueryCursor } from "./cursor";
 import { canonicalJson, digestValue } from "./digest";
 import type { ProjectMapAnalyzer } from "./project-map-analyzer";
+import { mapInstalledDigest } from "./project-map-installed";
 import { mapReferenceNavigation } from "./project-map-navigation";
 import { requireMapObject } from "./project-map-object-query";
 import { MAP_QUERY_GUIDANCE, ProjectMapQuery } from "./project-map-query";
@@ -11,10 +12,15 @@ import { mapQueryPage } from "./project-map-query-page";
 import { mapQueryPathMatches, mapQuerySelection } from "./project-map-query-selection";
 import {
   type MapDiagnostic,
+  type MapDiagnostics,
   type MapDiagnosticsInput,
+  MapDiagnosticsSchema,
   type MapReference,
   type MapReferenceInput,
   MapReferenceKindSchema,
+  type MapReferencePage,
+  MapReferencePageSchema,
+  type MapReferenceRequest,
   type MapReferenceResult,
   type MapUses,
   type MapUsesInput,
@@ -76,6 +82,110 @@ export class ProjectMapReferenceQuery {
       .map((value) => MapContextSchema.parse(JSON.parse(String(value.context_json))));
   }
 
+  // A context's files as the version captured them.
+  private entries(version: string, context: MapContext) {
+    return context.inputFiles.map((file) => {
+      const entry = this.store.getEntry(version, file);
+      if (entry?.state !== "TEXT")
+        throw new ProjectEvidenceError("PROJECT_EVIDENCE_STORE_CORRUPT", false);
+      return entry;
+    });
+  }
+
+  /**
+   * The digest of everything a compile of a context reads: the analyzers, the context, its files'
+   * contents and the packages installed now where they resolve them. A compile of equal inputs says
+   * the same, so its stored result stands for it.
+   */
+  private compileInputs(version: string, source: CodeIndexSource, context: MapContext) {
+    const { ref, configPath, rootFiles, workspace, inputFiles } = context;
+    return digestValue({
+      analyzer: this.analyzer.id,
+      context: {
+        ref,
+        configPath: configPath ?? null,
+        rootFiles: rootFiles ?? null,
+        workspace: workspace ?? null,
+        inputFiles,
+      },
+      contents: this.entries(version, context).map((entry) => [entry.path, entry.contentDigest]),
+      installed: mapInstalledDigest(source.directory.canonicalPath, inputFiles),
+    });
+  }
+
+  /**
+   * A context's compiler diagnostics: the stored result of a compile of the same inputs, or a
+   * compile's, stored for the next. Undefined for a language without a compiler to ask.
+   */
+  private async compileDiagnostics(
+    version: string,
+    source: CodeIndexSource,
+    context: MapContext,
+    path: string,
+    signal: AbortSignal,
+  ): Promise<MapDiagnostics | undefined> {
+    const key = digestValue({
+      operation: "DIAGNOSTICS",
+      inputs: this.compileInputs(version, source, context),
+    });
+    const stored = this.store.compileResults(version, [key]);
+    if (stored.has(key)) return MapDiagnosticsSchema.parse(stored.get(key));
+    const { reader, request } = await this.open(version, source, context, signal);
+    const result = await this.analyzer.diagnostics(request, path, signal);
+    await reader.assertStable();
+    if (!result) return undefined;
+    if (result.requiredFiles.length)
+      throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
+    this.store.keepCompileResult(version, key, result);
+    return result;
+  }
+
+  /**
+   * A page for each request of one context, in order: stored pages of compiles of the same inputs,
+   * and one compile for the rest, whose pages are stored for the next. A request the deadline left
+   * unread has no page.
+   */
+  private async referencePages(
+    version: string,
+    source: CodeIndexSource,
+    context: MapContext,
+    requests: readonly MapReferenceRequest[],
+    signal: AbortSignal,
+    until?: number,
+  ): Promise<(MapReferencePage | null | undefined)[]> {
+    const inputs = this.compileInputs(version, source, context);
+    const keys = requests.map((request) =>
+      digestValue({ operation: "REFERENCES", inputs, request }),
+    );
+    const stored = this.store.compileResults(version, keys);
+    const pages = keys.map((key) =>
+      stored.has(key) ? MapReferencePageSchema.nullable().parse(stored.get(key)) : undefined,
+    );
+    const unread = keys.flatMap((_, at) => (pages[at] === undefined ? [at] : []));
+    if (!unread.length) return pages;
+    const { reader, files, request } = await this.open(version, source, context, signal);
+    const { pages: read, requiredFiles } = await this.analyzer.references(
+      request,
+      unread.map((at) => requests[at] as MapReferenceRequest),
+      signal,
+      until,
+    );
+    if (requiredFiles.length)
+      throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
+    if (
+      read.length > unread.length ||
+      read.some((page) => page?.references.some((reference) => !anchored(reference, files)))
+    )
+      throw invalidProtocol();
+    await reader.assertStable();
+    for (const [index, page] of read.entries()) {
+      const at = unread[index] as number;
+      pages[at] = page;
+      this.store.keepCompileResult(version, keys[at] as string, page);
+    }
+    return pages;
+  }
+
   // A context's sources, and the request for its compile.
   private async open(
     version: string,
@@ -83,12 +193,7 @@ export class ProjectMapReferenceQuery {
     context: MapContext,
     signal: AbortSignal,
   ) {
-    const entries = context.inputFiles.map((file) => {
-      const entry = this.store.getEntry(version, file);
-      if (entry?.state !== "TEXT")
-        throw new ProjectEvidenceError("PROJECT_EVIDENCE_STORE_CORRUPT", false);
-      return entry;
-    });
+    const entries = this.entries(version, context);
     const reader = await ProjectMapSourceReader.open(source, signal, false);
     const files: Record<string, string> = Object.create(null);
     const contents = await reader.readAll(entries);
@@ -148,13 +253,11 @@ export class ProjectMapReferenceQuery {
         continue;
       }
       const [path] = context.rootFiles ?? context.inputFiles;
-      const { reader, request } = await this.open(input.version, source, context, signal);
       const result =
-        path === undefined ? undefined : await this.analyzer.diagnostics(request, path, signal);
-      await reader.assertStable();
+        path === undefined
+          ? undefined
+          : await this.compileDiagnostics(input.version, source, context, path, signal);
       if (!result) continue;
-      if (result.requiredFiles.length)
-        throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
       const found = new Map(
         result.diagnostics.map((item) => [
           `${item.path}:${item.line}:${item.code}:${item.text}`,
@@ -213,9 +316,10 @@ export class ProjectMapReferenceQuery {
     }
     for (const { context, targets } of compiles.values()) {
       if (Date.now() > input.until) break;
-      const { reader, files, request } = await this.open(input.version, source, context, signal);
-      const { pages, requiredFiles } = await this.analyzer.references(
-        request,
+      const pages = await this.referencePages(
+        input.version,
+        source,
+        context,
         targets.map((object) => ({
           targetPath: object.anchor.path,
           symbolStart: object.symbolStart as number,
@@ -225,24 +329,19 @@ export class ProjectMapReferenceQuery {
         signal,
         input.until,
       );
-      if (requiredFiles.length)
-        throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
-      if (pages.length > targets.length)
-        throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
       for (const [at, page] of pages.entries()) {
+        if (page === undefined) continue;
         const read = found.get(targets[at]?.id ?? "") as Read;
         read.waiting--;
         if (!page || page.nextOffset !== undefined) read.complete = false;
         for (const reference of page?.references ?? []) {
           const location = canonicalJson(reference.anchor);
-          if (!anchored(reference, files)) throw invalidProtocol();
           if (read.locations.has(location)) continue;
           read.locations.add(location);
           const owner = this.owner(input.version, reference.anchor);
           read.uses.push({ ...reference, ...(owner ? { owner } : {}) });
         }
       }
-      await reader.assertStable();
       if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
     }
     return new Map(
@@ -329,12 +428,10 @@ export class ProjectMapReferenceQuery {
     }
     const context = contexts[cursor.context];
     if (!context) throw new ProjectEvidenceError("PROJECT_CONTINUATION_INVALID", false);
-    const { reader, files, request } = await this.open(input.version, source, context, signal);
-    const {
-      pages: [page],
-      requiredFiles,
-    } = await this.analyzer.references(
-      request,
+    const [page] = await this.referencePages(
+      input.version,
+      source,
+      context,
       [
         {
           targetPath: object.anchor.path,
@@ -346,8 +443,6 @@ export class ProjectMapReferenceQuery {
       ],
       signal,
     );
-    if (requiredFiles.length)
-      throw new ProjectEvidenceError("PROJECT_MAP_CONTEXT_INCOMPLETE", false);
     if (page === undefined) throw invalidProtocol();
     if (page === null)
       throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", false);
@@ -361,7 +456,6 @@ export class ProjectMapReferenceQuery {
     for (const reference of page.references) {
       const location = canonicalJson(reference.anchor);
       if (
-        !anchored(reference, files) ||
         !mapPathAllowed(reference.anchor.path, prefixes) ||
         !mapQueryPathMatches(reference.anchor.path, query.within) ||
         !query.kinds.includes(reference.kind) ||
@@ -373,7 +467,6 @@ export class ProjectMapReferenceQuery {
       const item = { ...reference, contextRef: context.ref, ...(owner ? { owner } : {}) };
       references.push(item);
     }
-    await reader.assertStable();
     if (signal.aborted) throw new ProjectEvidenceError("PROJECT_READ_CANCELLED", true);
     return mapQueryPage(
       references.length,

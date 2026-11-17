@@ -9,7 +9,9 @@ import { FILES, openMap, project, sandbox, signal } from "./support";
 
 const DAY = 24 * 60 * 60 * 1000;
 // A map as schema 2 left it, before LayerMap recorded the versions processes hold.
-const BEFORE_HOLDS = "DROP TABLE layermap_version_holds; DROP TABLE layermap_commit_versions;";
+// A database from before schema 3, which had neither the holds nor the stored compiles.
+const BEFORE_HOLDS =
+  "DROP TABLE layermap_version_holds; DROP TABLE layermap_commit_versions; DROP TABLE project_map_compile_results; DROP TABLE project_map_language_states;";
 
 test("a project keeps its three most recent map versions as its files change", async (t) => {
   const { root, write } = await project(FILES);
@@ -58,7 +60,7 @@ test("a database from before versions were pruned is rewritten to return freed s
   old.close();
   const upgraded = openMapDatabase(file);
   try {
-    assert.equal(Number(upgraded.prepare("PRAGMA user_version").get()?.user_version), 3);
+    assert.equal(Number(upgraded.prepare("PRAGMA user_version").get()?.user_version), 4);
     assert.equal(Number(upgraded.prepare("PRAGMA auto_vacuum").get()?.auto_vacuum), 2);
   } finally {
     upgraded.close();

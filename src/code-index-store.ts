@@ -213,6 +213,28 @@ CREATE VIEW project_map_navigation AS
 `;
 
 /**
+ * What a compiler said of a context's files, by the digest of everything the compile read, so a
+ * later check of the same inputs reads it rather than compiling again; and what a language kept of
+ * a build for the next build that starts from its map. Each version holds its own copies, which go
+ * with it.
+ */
+export const CODE_INDEX_COMPILE_RESULTS_MIGRATION = `
+CREATE TABLE project_map_compile_results (
+  version_ref TEXT NOT NULL REFERENCES project_code_versions(version_ref) ON DELETE CASCADE,
+  result_key TEXT NOT NULL,
+  result_json TEXT NOT NULL CHECK (json_valid(result_json)),
+  PRIMARY KEY (version_ref, result_key)
+);
+CREATE INDEX project_map_compile_result_key ON project_map_compile_results(result_key);
+CREATE TABLE project_map_language_states (
+  version_ref TEXT NOT NULL REFERENCES project_code_versions(version_ref) ON DELETE CASCADE,
+  language TEXT NOT NULL,
+  state_json TEXT NOT NULL CHECK (json_valid(state_json)),
+  PRIMARY KEY (version_ref, language)
+);
+`;
+
+/**
  * A file whose previous units a build links also has facts the build staged, or links to an
  * object the build no longer has, or the linked units do not fit the analysis, so a unit would
  * be wrong: the build is repeated without a parent.
@@ -307,6 +329,17 @@ export class CodeIndexStore {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** Stages what a language keeps of the build for the next one, stored with the version. */
+  appendMapLanguageState(
+    buildRef: string,
+    language: string,
+    state: Readonly<Record<string, unknown>>,
+  ): void {
+    this.database
+      .prepare("INSERT INTO project_map_staging (build_ref, kind, value_json) VALUES (?, ?, ?)")
+      .run(buildRef, "states", canonicalJson({ language, state }));
   }
 
   discardMapStage(buildRef: string): void {
@@ -420,6 +453,11 @@ export class CodeIndexStore {
           SELECT ?, json_extract(value_json, '$.ref'), json_extract(value_json, '$.requestDigest'),
             value_json FROM project_map_staging
           WHERE build_ref = ? AND kind = 'results' ORDER BY position`)
+          .run(version.version, buildRef);
+        this.database
+          .prepare(`INSERT INTO project_map_language_states
+          SELECT ?, value_json ->> '$.language', value_json -> '$.state'
+          FROM project_map_staging WHERE build_ref = ? AND kind = 'states' ORDER BY position`)
           .run(version.version, buildRef);
         this.commitUnits(version.version, staged);
         const member = this.database.prepare(
@@ -672,6 +710,50 @@ export class CodeIndexStore {
         WHERE version_ref = ? AND context_ref = ? AND json_type(result_json, '$.state') = 'object'`)
       .get(version, contextRef);
     return row ? JSON.parse(String(row.state)) : undefined;
+  }
+
+  /** What a language kept of a version's build, if anything. */
+  mapLanguageState(version: string, language: string): unknown {
+    const row = this.database
+      .prepare(
+        "SELECT state_json FROM project_map_language_states WHERE version_ref = ? AND language = ?",
+      )
+      .get(version, language);
+    return row ? JSON.parse(String(row.state_json)) : undefined;
+  }
+
+  /**
+   * The stored compile results of the given keys, whichever version stored them; a version reading
+   * another's keeps a copy, so the result stays while either does.
+   */
+  compileResults(version: string, keys: readonly string[]): Map<string, unknown> {
+    const own = this.database.prepare(
+      "SELECT result_json FROM project_map_compile_results WHERE version_ref = ? AND result_key = ?",
+    );
+    const other = this.database.prepare(
+      "SELECT result_json FROM project_map_compile_results WHERE result_key = ? LIMIT 1",
+    );
+    // Another process reading the same result may have copied it first: the copies are equal.
+    const copy = this.database.prepare(
+      "INSERT OR IGNORE INTO project_map_compile_results VALUES (?, ?, ?)",
+    );
+    const found = new Map<string, unknown>();
+    for (const key of new Set(keys)) {
+      let row = own.get(version, key);
+      if (!row) {
+        row = other.get(key);
+        if (row) copy.run(version, key, String(row.result_json));
+      }
+      if (row) found.set(key, JSON.parse(String(row.result_json)));
+    }
+    return found;
+  }
+
+  /** Keeps a compile result of a version, by the digest of what the compile read. */
+  keepCompileResult(version: string, key: string, result: unknown): void {
+    this.database
+      .prepare("INSERT OR REPLACE INTO project_map_compile_results VALUES (?, ?, ?)")
+      .run(version, key, canonicalJson(result));
   }
 
   getVersion(version: string): CodeIndexVersion | undefined {

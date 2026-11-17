@@ -63,11 +63,18 @@ export type MapLanguageSession = Readonly<{
   replays(contextRef: string, request: unknown, files: readonly string[]): boolean;
   /** Marks a readable file as configuration input rather than an unanalyzed file. */
   configuration(path: string): void;
+  /** What the language kept of the build of the previous map, if it kept anything. */
+  kept: unknown;
+  /** Keeps a JSON object of this build for the next build that starts from this map. */
+  keep(state: Readonly<Record<string, unknown>>): void;
   observe?: MapAnalyzerObserver;
 }>;
 
 export type MapLanguageClaim = Readonly<{
-  /** Analyzer identity; changing what the analyzer produces changes the id. */
+  /**
+   * Analyzer identity; changing what the analyzer produces changes the id. That includes its
+   * compiler diagnostics and references, whose results are stored by the id.
+   */
   id: string;
   /** Code files this language analyzes. */
   claims(path: string): boolean;

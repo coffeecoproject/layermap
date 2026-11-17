@@ -1,5 +1,5 @@
 import { availableParallelism } from "node:os";
-import type { ZodType } from "zod";
+import { type ZodType, z } from "zod";
 import { ProjectEvidenceError } from "./core";
 import { digestValue } from "./digest";
 import { validateMapAnalysis } from "./project-map-analysis-validation";
@@ -37,8 +37,6 @@ export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
   create: () => new TypeScriptMapAnalyzer(),
 });
 
-// Discovered configurations kept, one per recently mapped revision of the language's files.
-const CONFIGURATIONS_KEPT = 4;
 // Compiler workers run at once for one analysis, besides the one discovering its configuration.
 const WORKERS_AT_ONCE = Math.min(4, availableParallelism());
 
@@ -74,6 +72,20 @@ type MapCodeShape = Readonly<{
   // of a code file, all of another.
   files: ReadonlyMap<string, Readonly<{ digest: string | null; shape: string | null }>>;
 }>;
+
+/**
+ * What a build keeps for the next: the key of the files and packages discovery read, the
+ * configuration it discovered, and the shape of the code it discovered it from, each readable file
+ * by path with its content digest and its shape.
+ */
+const KeptDiscoverySchema = z
+  .object({
+    key: z.string(),
+    discovered: MapConfigurationResultSchema,
+    installed: z.string(),
+    files: z.array(z.tuple([z.string(), z.string().nullable(), z.string().nullable()])),
+  })
+  .strict();
 
 const sameShape = (left: MapCodeShape, right: MapCodeShape) =>
   left.installed === right.installed &&
@@ -132,11 +144,6 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
   readonly id = TYPESCRIPT_MAP_LANGUAGE.id;
   readonly claims = TYPESCRIPT_MAP_LANGUAGE.claims;
   readonly reads = TYPESCRIPT_MAP_LANGUAGE.reads;
-  // Discovery reads the texts of the files the language reads and what is installed, nothing else,
-  // so a result stands while they are the same, as they are when only other languages' files changed.
-  private readonly configurations = new Map<string, MapConfigurationResult>();
-  // The last configuration discovered, and the shape of the code it was discovered from.
-  private last?: Readonly<{ shape: MapCodeShape; discovered: MapConfigurationResult }>;
 
   constructor(private readonly resources: MapParserResources = installedMapParserResources()) {}
 
@@ -326,17 +333,28 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           project.rootFiles.every((file) => byPath.has(file)) &&
           project.inputFiles.every((file) => byPath.has(file)),
       ) && discovered.workspace.configurationFiles.every((file) => byPath.has(file));
+    // Discovery reads the texts of the files the language reads and what is installed, nothing
+    // else, so the previous map's result stands while they are the same, as they are when only
+    // other languages' files changed.
     const configurationKey = digestValue({
       files: session.readable.map((entry) => [entry.path, entry.contentDigest ?? null]),
       installed: installed.digest,
     });
-    const known = this.configurations.get(configurationKey);
+    const kept = session.kept === undefined ? undefined : KeptDiscoverySchema.parse(session.kept);
+    const last = kept && {
+      discovered: kept.discovered,
+      shape: {
+        installed: kept.installed,
+        files: new Map(kept.files.map(([path, digest, shape]) => [path, { digest, shape }])),
+      } satisfies MapCodeShape,
+    };
+    const known = kept?.key === configurationKey ? kept.discovered : undefined;
     const shape: MapCodeShape = {
       installed: installed.digest,
       files: new Map(
         session.readable.map((entry) => {
           const digest = entry.contentDigest ?? null;
-          const before = this.last?.shape.files.get(entry.path);
+          const before = last?.shape.files.get(entry.path);
           return [
             entry.path,
             {
@@ -351,11 +369,10 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
         }),
       ),
     };
-    // Where only the bodies of code changed, discovery most likely finds the configuration it
-    // found last: while it runs, that configuration's contexts are built as it had them, except
-    // those the previous map holds as they are, and discovery decides which builds stand.
-    const guess =
-      !known && this.last && sameShape(this.last.shape, shape) ? this.last.discovered : undefined;
+    // Where only the bodies of code changed, discovery most likely finds the configuration the
+    // previous map's did: while it runs, that configuration's contexts are built as it had them,
+    // except those the previous map holds as they are, and discovery decides which builds stand.
+    const guess = !known && last && sameShape(last.shape, shape) ? last.discovered : undefined;
     const speculative = new Map<string, Build>();
     try {
       if (guess && admitted(guess))
@@ -389,11 +406,12 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
           signal,
           observe,
         ));
-      this.configurations.delete(configurationKey);
-      this.configurations.set(configurationKey, discovered);
-      this.last = { shape, discovered };
-      for (const key of this.configurations.keys())
-        if (this.configurations.size > CONFIGURATIONS_KEPT) this.configurations.delete(key);
+      session.keep({
+        key: configurationKey,
+        discovered,
+        installed: installed.digest,
+        files: [...shape.files].map(([path, file]) => [path, file.digest, file.shape]),
+      } satisfies z.infer<typeof KeptDiscoverySchema>);
       if (!admitted(discovered))
         throw new ProjectEvidenceError("PROJECT_MAP_PROTOCOL_INVALID", false);
       const { workspace } = discovered;

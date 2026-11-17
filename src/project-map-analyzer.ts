@@ -42,6 +42,8 @@ export type MapParent = Readonly<{
   ): Readonly<{ analysis: MapAnalysis; state?: unknown; paths?: readonly string[] }>;
   /** The state a context's language kept, if any. */
   state(contextRef: string): unknown;
+  /** What a language kept of the whole build, if anything. */
+  kept(language: string): unknown;
   /** Receives the files whose units the analysis links, once it is complete and consistent. */
   link(paths: readonly string[]): void;
 }>;
@@ -167,6 +169,7 @@ export class ProjectMapAnalyzer {
     installed: MapInstalled,
     signal: AbortSignal,
     consume: (unit: MapAnalysis, record: MapContextRecord) => void,
+    keep: (language: string, state: Readonly<Record<string, unknown>>) => void,
     parent?: MapParent,
   ): Promise<MapBuildCoverage> {
     const result: MapBuildCoverage = {
@@ -323,6 +326,8 @@ export class ProjectMapAnalyzer {
           replays,
           previous,
           configuration: (path) => configurationInputs.add(path),
+          kept: parent?.kept(language.id),
+          keep: (state) => keep(language.id, state),
           observe: this.observe,
         },
         signal,

@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync, type DatabaseSyncInstance } from "@photostructure/sqlite";
 import { CodeIndex } from "./code-index";
 import {
+  CODE_INDEX_COMPILE_RESULTS_MIGRATION,
   CODE_INDEX_CONTEXT_RESULTS_MIGRATION,
   CODE_INDEX_SCHEMA,
   CODE_INDEX_SHARED_NAVIGATION_MIGRATION,
@@ -43,8 +44,9 @@ export type LayerMapAnalyzers = Readonly<{
 }>;
 
 // 1: the map schema. 2: free pages are returned to the file system after old versions go. 3: the
-// versions each process is reading, and the version each commit was captured as.
-const SCHEMA_VERSION = 3;
+// versions each process is reading, and the version each commit was captured as. 4: compile
+// results by what the compile read, and what a language keeps of a build for the next.
+const SCHEMA_VERSION = 4;
 /** Versions kept per project: the current one and recent ones a rebuild can replay from. */
 const KEEP_VERSIONS = 3;
 /** Versions of commits kept as well: the bases the next change checks compare with. */
@@ -123,8 +125,10 @@ export function openMapDatabase(file: string): DatabaseSyncInstance {
             CODE_INDEX_UNITS_MIGRATION,
             CODE_INDEX_CONTEXT_RESULTS_MIGRATION,
             CODE_INDEX_SHARED_NAVIGATION_MIGRATION,
+            CODE_INDEX_COMPILE_RESULTS_MIGRATION,
           ])
             database.exec(sql);
+        else if (current < 4) database.exec(CODE_INDEX_COMPILE_RESULTS_MIGRATION);
         if (current < 3) database.exec(LAYERMAP_TABLES);
         if (database.prepare("PRAGMA foreign_key_check").get())
           throw new ProjectEvidenceError("PROJECT_EVIDENCE_STORE_CORRUPT", false);

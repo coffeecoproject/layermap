@@ -131,6 +131,7 @@ export class CodeIndex {
             { directory: source.directory.canonicalPath, digest: result.installedDigest },
             controller.signal,
             (unit, record) => this.store.appendMapStage(stage, unit, record),
+            (language, state) => this.store.appendMapLanguageState(stage, language, state),
             parent && { ...parent, link: (paths) => linked.push(...paths) },
           );
           // Every captured file still has the content the analysis read.
@@ -205,6 +206,7 @@ export class CodeIndex {
       contexts: this.store.mapContexts(version),
       shell: (contextRef) => this.store.mapContextShell(version, contextRef),
       state: (contextRef) => this.store.mapContextState(version, contextRef),
+      kept: (language) => this.store.mapLanguageState(version, language),
     };
   }
 
