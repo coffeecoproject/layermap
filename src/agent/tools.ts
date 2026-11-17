@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ProjectEvidenceError } from "../core";
 import type { LayerMap } from "../layermap";
+import type { MapCheckPhase } from "../project-map-changes";
 import {
   AGENT_MAP_TOOL_HOST,
   MAP_TOOL_NAMES,
@@ -114,6 +115,7 @@ export async function runMapTool(
   map: LayerMap,
   { name, args }: MapToolCall,
   signal: AbortSignal,
+  phase?: (phase: MapCheckPhase) => void,
 ): Promise<MapToolResult> {
   try {
     if (name === MAP_TOOL_NAMES.explore) {
@@ -139,7 +141,11 @@ export async function runMapTool(
       return {
         text: (
           await map.checkChanges(
-            { base: input.base, ...(input.tests ? { tests: input.tests } : {}) },
+            {
+              base: input.base,
+              ...(input.tests ? { tests: input.tests } : {}),
+              ...(phase ? { phase } : {}),
+            },
             signal,
           )
         ).text,

@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { mapCallLog } from "./agent/call-log";
 import {
   cacheDirectory,
   packageVersion,
@@ -129,7 +130,13 @@ async function main(argv: string[]): Promise<number> {
     return done ? 0 : 1;
   }
   if (command === "mcp") {
-    await serveMcp({ version, start: { directory: project, git }, open, log });
+    await serveMcp({
+      version,
+      start: { directory: project, git },
+      open,
+      log,
+      record: mapCallLog(cache),
+    });
     return 0;
   }
 

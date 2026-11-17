@@ -13,6 +13,10 @@ LayerMap collects no personal data and makes no network requests.
   digest of what is installed to know when the map is out of date, in your
   user cache: `~/Library/Caches/layermap` on macOS, `$XDG_CACHE_HOME/layermap` or
   `~/.cache/layermap` on Linux, `%LOCALAPPDATA%\layermap\Cache` on Windows, or `LAYERMAP_CACHE`. Nothing is written into the repository.
+- **What it logs:** for each tool call its MCP server answers, a line in `logs/calls.jsonl` in the
+  same cache: the tool, its arguments, the repository, how long each step took and the first line
+  of the answer, with no source. Past 2 MB the log is moved to `calls.1.jsonl`, replacing the one
+  there, so it keeps at most about 4 MB.
 - **How long:** each project keeps its three latest map versions, and a map unused for 30 days is
   deleted; an installed version of LayerMap that nothing started for a week is deleted too. You can
   delete the cache directory at any time.

@@ -183,6 +183,9 @@ setup 只配置当前这台机器；整个团队要用，请每人各装一次�
 [隐私说明](https://github.com/coffeecoproject/layermap/blob/main/PRIVACY.md)、
 [安全说明](https://github.com/coffeecoproject/layermap/blob/main/SECURITY.md)）。
 
+MCP 服务会把耗时较长的检查正在做哪一步，以进度通知告诉要求进度的客户端；每次工具调用还会在缓存的
+`logs/calls.jsonl` 里记一行：工具、参数、仓库、每一步的耗时和回答的第一行，用来回顾工具怎么被使用、时间花在哪里。
+
 | 工具 | 用法 |
 |---|---|
 | `project_explore_map` | 查看目录、文件，或一个声明的调用方和被调用方（`direction` 为 INCOMING 或 OUTGOING，`depth` 最多 8）。 |

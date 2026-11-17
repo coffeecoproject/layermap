@@ -18,7 +18,7 @@ import { digestValue } from "./digest";
 import { GitRunner } from "./git-runner";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
 import { resolveMapBase } from "./project-map-change-diff";
-import { checkMapChanges, type MapChangesData } from "./project-map-changes";
+import { checkMapChanges, type MapChangesData, type MapCheckPhase } from "./project-map-changes";
 import { loadMapImports, type MapProjectImports, mapProjectImports } from "./project-map-imports";
 import { mapInstalledDigest } from "./project-map-installed";
 import { GoMapAnalyzer } from "./project-map-language-go";
@@ -506,11 +506,17 @@ export class LayerMap {
    * The base commit's map is built only when the diff removes or changes lines there.
    */
   checkChanges(
-    input: { base?: string; tests?: readonly string[]; format?: "text" | "json" },
+    input: {
+      base?: string;
+      tests?: readonly string[];
+      format?: "text" | "json";
+      phase?: (phase: MapCheckPhase) => void;
+    },
     signal: AbortSignal,
   ): Promise<{ text: string; data: MapChangesData }> {
-    return this.using(async (hold) =>
-      checkMapChanges(
+    return this.using(async (hold) => {
+      input.phase?.("MAP");
+      return checkMapChanges(
         {
           index: this.index,
           project: this.project,
@@ -520,10 +526,11 @@ export class LayerMap {
           baseVersion: (commit, baseSignal) => this.versionAt(commit, baseSignal, hold),
           ...(input.tests ? { tests: input.tests } : {}),
           ...(input.format ? { format: input.format } : {}),
+          ...(input.phase ? { phase: input.phase } : {}),
         },
         signal,
-      ),
-    );
+      );
+    });
   }
 
   /**

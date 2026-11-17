@@ -2,6 +2,9 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { LayerMap } from "../layermap";
+import type { MapCheckPhase } from "../project-map-changes";
+import { MAP_TOOL_NAMES } from "../tools";
+import type { MapCallRecord } from "./call-log";
 import { projectDirectory } from "./environment";
 import { projectHeading } from "./notes";
 import { routeMapCall, type SessionStart } from "./projects";
@@ -24,6 +27,23 @@ type Message = {
 
 // How long the session's start waits for the client to list its roots.
 const ROOTS_WAIT_MS = 5_000;
+// A client that asked for progress hears it at least this often during a long step, so it can tell
+// a slow call from a stuck one.
+const PROGRESS_EVERY_MS = 15_000;
+
+// The steps of a call, as a client shows them: waiting for a first build, a check's own steps, and
+// the other tools reading the map.
+type CallPhase = "WAIT" | "READ" | MapCheckPhase;
+const PHASE_TEXT: Readonly<Record<CallPhase, string>> = {
+  WAIT: "Waiting for the first build of the project's map",
+  READ: "Reading the map",
+  MAP: "Updating the map of the working tree",
+  DIFF: "Reading the diff",
+  BASE: "Building the map of the base commit",
+  TRACE: "Tracing what the change reaches",
+  REPORT: "Finding the code the report names",
+  COMPILE: "Compiling the changed code",
+};
 
 export type McpServerOptions = Readonly<{
   version: string;
@@ -39,6 +59,8 @@ export type McpServerOptions = Readonly<{
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
   log?: (line: string) => void;
+  /** Keeps each answered or cancelled tool call, with the time each step took. */
+  record?: (record: MapCallRecord) => unknown;
 }>;
 
 /**
@@ -115,9 +137,61 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
     calls.set(id, controller);
     const name = String(params.name);
     let project: string | undefined;
+    // Each step's time, and progress for a client that asked for it with a token.
+    const token = (params._meta as { progressToken?: unknown } | undefined)?.progressToken;
+    const started = performance.now();
+    const phases: Record<string, number> = {};
+    let current: CallPhase = "WAIT";
+    let since = started;
+    let progress = 0;
+    const notify = (message: string) => {
+      if (typeof token !== "string" && typeof token !== "number") return;
+      send({
+        method: "notifications/progress",
+        params: { progressToken: token, progress: ++progress, message },
+      });
+    };
+    const tally = () => {
+      const now = performance.now();
+      phases[current] = (phases[current] ?? 0) + now - since;
+      since = now;
+    };
+    const enter = (next: CallPhase) => {
+      tally();
+      current = next;
+      notify(PHASE_TEXT[next]);
+    };
+    const beat = setInterval(
+      () =>
+        notify(
+          `${PHASE_TEXT[current]} (${Math.round((performance.now() - started) / 1000)} s so far)`,
+        ),
+      PROGRESS_EVERY_MS,
+    );
+    let answered = false;
+    const finish = (text: string, isError: boolean, cancelled: boolean) => {
+      tally();
+      void options.record?.({
+        at: new Date().toISOString(),
+        version: options.version,
+        tool: name,
+        ...(project ? { project } : {}),
+        ...(params.arguments === undefined ? {} : { arguments: params.arguments }),
+        ms: Math.round(performance.now() - started),
+        phases: Object.fromEntries(
+          Object.entries(phases).map(([phase, ms]) => [phase, Math.round(ms)]),
+        ),
+        chars: text.length,
+        head: text.split("\n", 1)[0]?.slice(0, 300) ?? "",
+        isError,
+        ...(cancelled ? { cancelled } : {}),
+      });
+    };
     // Results name their repository, whose root their paths are relative to, so an agent that
     // moved to another sees which one it read.
-    const respond = (text: string, isError: boolean) =>
+    const respond = (text: string, isError: boolean) => {
+      answered = true;
+      finish(text, isError, false);
       send({
         id,
         result: {
@@ -130,6 +204,7 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
           isError,
         },
       });
+    };
     try {
       const parsed = parseMapToolCall(name, params.arguments);
       if ("text" in parsed) return respond(parsed.text, parsed.isError);
@@ -147,8 +222,9 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
       ]);
       timer.abort();
       if (controller.signal.aborted) return;
+      if (ready && name !== MAP_TOOL_NAMES.check) enter("READ");
       const result: MapToolResult = ready
-        ? await runMapTool(await opened, { name, args: routed.args }, controller.signal)
+        ? await runMapTool(await opened, { name, args: routed.args }, controller.signal, enter)
         : {
             text: `LayerMap is still building this project's map (a first build can take minutes on a large repository). Call ${name} again shortly, or read source meanwhile.`,
             isError: false,
@@ -158,6 +234,8 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
       if (controller.signal.aborted) return;
       respond(describeMapError(error) ?? `LayerMap failed: ${String(error)}`, true);
     } finally {
+      clearInterval(beat);
+      if (!answered) finish("", false, true);
       calls.delete(id);
     }
   };

@@ -418,6 +418,14 @@ async function untestedChanges(
   };
 }
 
+/**
+ * What a change check is doing, told as it starts each: updating the map of the working tree,
+ * reading the diff, building the base commit's map, tracing what the change reaches, reading the
+ * code the report names, and compiling. The base map is built when a step first needs it, after
+ * which that step is told again.
+ */
+export type MapCheckPhase = "MAP" | "DIFF" | "BASE" | "TRACE" | "COMPILE" | "REPORT";
+
 export type MapChangeCheckInput = Readonly<{
   /** The index holding the map of the working tree. */
   index: CodeIndex;
@@ -448,6 +456,8 @@ export type MapChangeCheckInput = Readonly<{
    * errors.
    */
   format?: "text" | "json";
+  /** Told as each step of the check starts, for a host showing progress or timing it. */
+  phase?: (phase: MapCheckPhase) => void;
 }>;
 
 /**
@@ -506,6 +516,15 @@ export async function checkMapChanges(
   signal: AbortSignal,
 ): Promise<{ text: string; data: MapChangesData }> {
   const { index, project, working } = input;
+  const phase = input.phase ?? (() => {});
+  // The base map is built when first needed, between the steps that need it.
+  const baseVersion = async (commit: string, then: MapCheckPhase) => {
+    phase("BASE");
+    const version = await input.baseVersion(commit, signal);
+    phase(then);
+    return version;
+  };
+  phase("DIFF");
   const changes = await readMapChanges(project, input.base, signal, {
     names: input.format !== "json",
   });
@@ -516,8 +535,9 @@ export async function checkMapChanges(
       file.basePath !== undefined &&
       (file.baseLines.length || file.baseText !== undefined || file.status === "RENAMED"),
   )
-    ? await input.baseVersion(changes.commit, signal)
+    ? await baseVersion(changes.commit, "TRACE")
     : undefined;
+  if (!base) phase("TRACE");
   // The uses of fields and types in one version; what a repository uses too widely to read says
   // little about this change.
   const usesIn =
@@ -563,6 +583,7 @@ export async function checkMapChanges(
   );
   const data = mapChangesData(changes, impact, mapChangeEdges(links));
   if (input.format === "json") return { text: JSON.stringify(data), data };
+  phase("REPORT");
   return {
     data,
     text: mapChangesText(
@@ -578,7 +599,7 @@ export async function checkMapChanges(
         ),
       ),
       changes.files.length
-        ? await compileBreaks(input, views, changes, base, until, signal)
+        ? await compileBreaks(input, views, changes, base, until, signal, phase, baseVersion)
         : undefined,
     ),
   };
@@ -652,8 +673,11 @@ async function compileBreaks(
   base: string | undefined,
   until: number,
   signal: AbortSignal,
+  phase: (phase: MapCheckPhase) => void,
+  baseVersion: (commit: string, then: MapCheckPhase) => Promise<string>,
 ): Promise<MapCompileBreaks> {
   const { index, working } = input;
+  phase("COMPILE");
   const present = changes.files
     .filter((file) => file.status !== "DELETED")
     .map((file) => file.path);
@@ -694,7 +718,7 @@ async function compileBreaks(
     onUnchanged.length && Date.now() <= until
       ? await index.findDiagnostics(
           {
-            version: base ?? (await input.baseVersion(changes.commit, signal)),
+            version: base ?? (await baseVersion(changes.commit, "COMPILE")),
             source: { ...input.source, kind: "COMMIT", commit: changes.commit },
             configurations: onUnchanged.map(({ configPath }) => configPath),
             until,

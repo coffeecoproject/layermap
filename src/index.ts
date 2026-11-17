@@ -13,6 +13,7 @@ export {
   checkMapChanges,
   type MapChangeCheckInput,
   type MapChangesData,
+  type MapCheckPhase,
 } from "./project-map-changes";
 export * from "./project-map-failure";
 export * from "./project-map-imports";

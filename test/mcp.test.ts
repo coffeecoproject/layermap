@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import type { MapCallRecord } from "../src/agent/call-log";
 import { projectDirectory } from "../src/agent/environment";
 import { serveMcp } from "../src/agent/mcp";
 import type { SessionStart } from "../src/agent/projects";
@@ -22,6 +23,9 @@ const session = (
 ) => {
   const input = new PassThrough();
   const output = new PassThrough();
+  // The calls the server recorded, and the notifications it sent.
+  const records: MapCallRecord[] = [];
+  const notifications: { method: string; params: Record<string, unknown> }[] = [];
   const served = serveMcp({
     version: "0.0.0-test",
     start,
@@ -30,6 +34,7 @@ const session = (
     output,
     buildWaitMs,
     log: () => {},
+    record: (record) => records.push(record),
   });
   const pending = new Map<number, (message: Record<string, unknown>) => void>();
   createInterface({ input: output }).on("line", (line) => {
@@ -44,6 +49,7 @@ const session = (
           },
         })}\n`,
       );
+    else if (message.id === undefined) notifications.push(message);
     else pending.get(message.id)?.(message);
   });
   let id = 0;
@@ -52,12 +58,13 @@ const session = (
       pending.set(++id, resolve);
       input.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
-  const notify = (method: string) => input.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
+  const notify = (method: string, params?: unknown) =>
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   const close = () => {
     input.end();
     return served;
   };
-  return { request, notify, close };
+  return { request, notify, close, records, notifications };
 };
 
 test("an MCP client lists the read-only map tools and explores the project", async () => {
@@ -432,4 +439,89 @@ test("a session's project is found by LayerMap's Git, whatever Git the caller's 
 
   assert.deepEqual(await projectDirectory(path.join(root, "src")), { directory, git: true });
   assert.deepEqual(await projectDirectory(outside), { directory: outside, git: false });
+});
+
+test("a check tells a client that asked for progress each step, and every call is recorded with its steps' time", async () => {
+  const { root, write } = await project(FILES);
+  await run("git", ["add", "-A"], { cwd: root });
+  await run("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], {
+    cwd: root,
+  });
+  const client = session({ directory: root, git: true }, openMap, 10 * 60_000);
+  try {
+    await client.request("initialize", { protocolVersion: "2025-06-18", capabilities: {} });
+    client.notify("notifications/initialized");
+    await write("src/target.ts", FILES["src/target.ts"].replace("* 2", "* 3"));
+    const checked = (await client.request("tools/call", {
+      name: "project_check_changes",
+      arguments: {},
+      _meta: { progressToken: "check-1" },
+    })) as { result: { content: { text: string }[]; isError: boolean } };
+    assert.equal(checked.result.isError, false, checked.result.content[0]?.text ?? "");
+    const progress = client.notifications.filter(
+      ({ method }) => method === "notifications/progress",
+    );
+    assert.ok(progress.every(({ params }) => params.progressToken === "check-1"));
+    assert.deepEqual(
+      progress.map(({ params }) => params.progress),
+      progress.map((_, index) => index + 1),
+      "progress only grows",
+    );
+    assert.deepEqual(
+      progress.map(({ params }) => params.message),
+      [
+        "Updating the map of the working tree",
+        "Reading the diff",
+        "Building the map of the base commit",
+        "Tracing what the change reaches",
+        "Finding the code the report names",
+        "Compiling the changed code",
+      ],
+    );
+
+    await client.request("tools/call", { name: "project_explore_map", arguments: { path: "." } });
+    assert.equal(progress.length, client.notifications.length, "no progress unless asked for");
+
+    const [check, explore] = client.records;
+    assert.equal(check?.tool, "project_check_changes");
+    assert.equal(check?.project, root);
+    assert.deepEqual(Object.keys(check?.phases ?? {}).sort(), [
+      "BASE",
+      "COMPILE",
+      "DIFF",
+      "MAP",
+      "REPORT",
+      "TRACE",
+      "WAIT",
+    ]);
+    assert.match(check?.head ?? "", /^PROJECT MAP · CHANGES against HEAD /u);
+    assert.equal(check?.isError, false);
+    assert.equal(explore?.tool, "project_explore_map");
+    assert.deepEqual(explore?.arguments, { path: "." });
+    assert.deepEqual(Object.keys(explore?.phases ?? {}).sort(), ["READ", "WAIT"]);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a call the client cancels is recorded as cancelled", async () => {
+  const { root } = await project(FILES);
+  // A map whose build never ends keeps the call waiting until it is cancelled.
+  const building = {
+    refresh: () => new Promise(() => {}),
+    close: async () => {},
+  } as unknown as LayerMap;
+  const client = session({ directory: root, git: true }, async () => building, 60_000);
+  try {
+    await client.request("initialize", { protocolVersion: "2025-06-18", capabilities: {} });
+    void client.request("tools/call", { name: "project_explore_map", arguments: { path: "." } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    client.notify("notifications/cancelled", { requestId: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(client.records.length, 1);
+    assert.equal(client.records[0]?.cancelled, true);
+    assert.deepEqual(Object.keys(client.records[0]?.phases ?? {}), ["WAIT"]);
+  } finally {
+    await client.close();
+  }
 });
