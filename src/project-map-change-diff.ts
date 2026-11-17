@@ -244,6 +244,15 @@ export const changedInWorkingTree = (files: readonly MapChangedFile[]) =>
 /** The changed files that existed in the base, by their path there. */
 export const changedInBase = (files: readonly MapChangedFile[]) =>
   new Map(files.flatMap((file) => (file.basePath ? [[file.basePath, file] as const] : [])));
+/** A file of the base by its path now: renamed files moved; deleted ones keep the base's path. */
+export function mapPathNow(files: readonly MapChangedFile[]): (path: string) => string {
+  const moved = new Map(
+    files.flatMap((file) =>
+      file.basePath !== undefined && file.status !== "DELETED" ? [[file.basePath, file.path]] : [],
+    ),
+  );
+  return (path) => moved.get(path) ?? path;
+}
 export const overlaps = (lines: Lines, start: number, end: number) =>
   lines.some(([from, to]) => from <= end && start <= to);
 /** Where a base line the diff left unchanged is in the working tree; a file outside it keeps it. */

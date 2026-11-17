@@ -10,7 +10,7 @@ import {
   mapTestPath,
 } from "./project-map-types";
 import type { MapViewCache } from "./project-map-view";
-import { type MapViewGraph, mapIsModule } from "./project-map-view-graph";
+import { type MapViewGraph, mapInnermost, mapIsModule } from "./project-map-view-graph";
 
 // Following a change up its callers to the entry points and tests that run it.
 
@@ -42,6 +42,25 @@ export const changeUnits = (graph: MapViewGraph, path: string) =>
   mapMiniprogramTemplate(path)
     ? graph.objectsAt(path).filter((object) => mapIsModule(object) && object.parsing === "PARSED")
     : graph.declarationsAt(path);
+
+/**
+ * The units a diff changed in a file, the innermost around each changed line; and whether a
+ * changed line lies outside all of them, in the file's top-level code.
+ */
+export function changedUnits(graph: MapViewGraph, path: string, lines: Lines) {
+  const refs = new Set<string>();
+  let topLevel = false;
+  const inFile = changeUnits(graph, path);
+  for (const [from, to] of lines) {
+    const containing = inFile.filter(
+      (object) => object.anchor.startLine <= to && from <= object.anchor.endLine,
+    );
+    // What a deletion took from top-level code is found in the base.
+    if (!containing.length && from <= to) topLevel = true;
+    for (const object of mapInnermost(containing)) refs.add(object.id);
+  }
+  return { refs, topLevel };
+}
 
 // A declaration the trace reached, and the one below it on the way from the change; used: it was
 // reached by reading or naming a field or type, not by calling; shaped: it was reached from the

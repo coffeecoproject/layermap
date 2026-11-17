@@ -8,6 +8,7 @@ export * from "./core";
 export * from "./git-runner";
 export * from "./project-map-analyzer";
 export * from "./project-map-archived-navigation";
+export type { MapChangeEdges } from "./project-map-change-edges";
 export type { MapUntestedChanges } from "./project-map-change-types";
 export {
   checkMapChanges,

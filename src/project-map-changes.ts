@@ -12,6 +12,12 @@ import {
   readMapChanges,
   unmappedKind,
 } from "./project-map-change-diff";
+import {
+  type MapChangeEdges,
+  type MapChangeLinks,
+  mapChangeEdges,
+  mapChangeLinks,
+} from "./project-map-change-edges";
 import { mapRemovedImpact } from "./project-map-change-removed";
 import {
   type Importer,
@@ -26,7 +32,7 @@ import {
   unworkedRequests,
 } from "./project-map-change-tests";
 import { mapChangesText } from "./project-map-change-text";
-import { type ChangeStart, changeUnits, Tracer } from "./project-map-change-trace";
+import { type ChangeStart, changedUnits, Tracer } from "./project-map-change-trace";
 import {
   LIMITS,
   LIST,
@@ -54,7 +60,7 @@ import { type MapSimilarCode, similarCode } from "./project-map-reuse";
 import { type MapShapeReader, MapShapeUses, mapShapeDeadline } from "./project-map-shapes";
 import { MAP_MIGRATION_PATH, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
-import { MapViewGraph, mapDeclarationLabel, mapInnermost } from "./project-map-view-graph";
+import { MapViewGraph, mapDeclarationLabel } from "./project-map-view-graph";
 
 // "What does this change affect?": the declarations a diff touches, the entry points and tests
 // their callers reach, and what a static map cannot see. It borrows test impact analysis practice:
@@ -67,6 +73,8 @@ export async function mapChangeImpact(
   working: string,
   base: string | undefined,
   changes: MapChanges,
+  /** What the changed files import and call of other files in both versions. */
+  links: MapChangeLinks,
   shapes: Readonly<{ working: MapShapeReader; base: MapShapeReader }>,
   /** When the check stops reading uses and compiling. */
   until: number,
@@ -146,17 +154,7 @@ export async function mapChangeImpact(
     }
     if (!objects.length) continue;
     // The innermost declarations around each changed line; top-level lines belong to the file.
-    const hits = new Set<string>();
-    let topLevel = false;
-    const inFile = changeUnits(graph, file.path);
-    for (const [from, to] of file.lines) {
-      const containing = inFile.filter(
-        (object) => object.anchor.startLine <= to && from <= object.anchor.endLine,
-      );
-      // What a deletion took from top-level code is found in the base.
-      if (!containing.length && from <= to) topLevel = true;
-      for (const object of mapInnermost(containing)) hits.add(object.id);
-    }
+    const { refs: hits, topLevel } = changedUnits(graph, file.path, file.lines);
     for (const ref of hits) {
       if (changedCount++ >= LIMITS.changed) {
         tracer.truncated = true;
@@ -320,7 +318,7 @@ export async function mapChangeImpact(
     unmapped,
     removedRoutes: taken?.removedRoutes ?? [],
     uncalled: taken?.uncalled ?? [],
-    dependencies: newModuleDependencies(store, cache, working, base, changes.files),
+    dependencies: newModuleDependencies(store, cache, working, changes.files, links.files),
     ...(untested ? { untested } : {}),
     truncated: tracer.truncated,
   };
@@ -454,7 +452,8 @@ export type MapChangeCheckInput = Readonly<{
 /**
  * The check as data, for a program that chooses which tests to run: the changed files, the related
  * tests by rank (0 calls the change ... 4 imports it indirectly), the changed files the map does not
- * analyze, what else it cannot see, and whether the trace stopped at its limits.
+ * analyze, what else it cannot see, and whether the trace stopped at its limits; and, for a program
+ * keeping the project's boundaries, the imports and calls between files the change adds or removes.
  */
 export type MapChangesData = Readonly<{
   base: string;
@@ -468,9 +467,15 @@ export type MapChangesData = Readonly<{
   truncated: boolean;
   /** With test files given, the changed code they do not run. */
   untested?: MapUntestedChanges;
+  /** How the change alters which files import and call which, for a program keeping boundaries. */
+  edges: MapChangeEdges;
 }>;
 
-export function mapChangesData(changes: MapChanges, impact: MapChangeImpact): MapChangesData {
+export function mapChangesData(
+  changes: MapChanges,
+  impact: MapChangeImpact,
+  edges: MapChangeEdges,
+): MapChangesData {
   return {
     base: changes.base,
     commit: changes.commit,
@@ -485,6 +490,7 @@ export function mapChangesData(changes: MapChanges, impact: MapChangeImpact): Ma
     checkByHand: impact.unclear,
     truncated: impact.truncated,
     ...(impact.untested ? { untested: impact.untested } : {}),
+    edges,
   };
 }
 
@@ -537,11 +543,13 @@ export async function checkMapChanges(
   // One deadline for what the check reads on demand, once the maps it reads from exist. Uses come
   // first, as they decide what the trace reaches; the compile has what they leave.
   const until = mapShapeDeadline();
+  const links = mapChangeLinks(index.store, working, base, changes.files);
   const impact = await mapChangeImpact(
     index.store,
     working,
     base,
     changes,
+    links,
     {
       working: usesIn(working, input.source),
       base: usesIn(base ?? working, { ...input.source, kind: "COMMIT", commit: changes.commit }),
@@ -550,7 +558,7 @@ export async function checkMapChanges(
     project,
     input.tests,
   );
-  const data = mapChangesData(changes, impact);
+  const data = mapChangesData(changes, impact, mapChangeEdges(links));
   if (input.format === "json") return { text: JSON.stringify(data), data };
   return {
     data,

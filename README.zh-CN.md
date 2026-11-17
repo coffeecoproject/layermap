@@ -198,7 +198,7 @@ npx layermap search "invoice total"
 npx layermap refs src/billing/tax.ts calculateTax
 npx layermap check --base main
 npx layermap check test/billing.test.ts   # 另外列出改动里这个测试没跑到的代码
-npx layermap check --json                 # 按远近排的相关测试和地图跟不到的部分，输出 JSON
+npx layermap check --json                 # 输出 JSON：按远近排的相关测试、地图跟不到的部分、文件之间增删的 import 和调用
 ```
 
 ## 常见问题

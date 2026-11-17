@@ -1,6 +1,8 @@
 import type { CodeIndexStore } from "./code-index-store";
+import type { MapFileLinks } from "./project-map-change-edges";
+import type { MapChangedFile } from "./project-map-change-types";
 import { mapCodePath } from "./project-map-language";
-import { type MapRelation, mapTestPath } from "./project-map-types";
+import { mapTestPath } from "./project-map-types";
 import { type MapViewCache, mapProjectModules } from "./project-map-view";
 import { MapViewGraph } from "./project-map-view-graph";
 
@@ -22,28 +24,7 @@ export type MapModuleDependency = Readonly<{
   added: boolean;
 }>;
 
-type ChangedFile = Readonly<{
-  path: string;
-  basePath?: string;
-  status: string;
-  lines: readonly (readonly [number, number])[];
-}>;
-
 type Edges = Map<string, Map<string, string[]>>;
-
-const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
-
-// The files a file imports from the project, with the line of each import.
-function imports(graph: MapViewGraph, path: string) {
-  const found: { target: string; line: number }[] = [];
-  for (const relation of graph.relationsFrom(graph.objectsAt(path).map((object) => object.id)))
-    if (IMPORT_KINDS.has(relation.kind) && relation.to !== undefined)
-      found.push({
-        target: graph.object(relation.to).anchor.path,
-        line: relation.anchor.startLine,
-      });
-  return found;
-}
 
 // The modules on the shortest path from one module to another, both included.
 function pathBetween(edges: Edges, from: string, to: string): string[] | undefined {
@@ -67,17 +48,16 @@ function pathBetween(edges: Edges, from: string, to: string): string[] | undefin
 }
 
 /**
- * The imports between modules of the working tree that the base did not have. The base's imports
- * are the working map's for unchanged files and, for changed ones, the base map's when it was
- * built; without it, every changed line is an addition, so the imports on the other lines are
- * the ones the base had.
+ * The imports between modules of the working tree that the base did not have: the working map's
+ * for unchanged files, which the base had as well, and the changed files' in either version.
  */
 export function newModuleDependencies(
   store: CodeIndexStore,
   cache: MapViewCache,
   working: string,
-  base: string | undefined,
-  files: readonly ChangedFile[],
+  files: readonly MapChangedFile[],
+  /** What the changed files import now and in the base, as mapChangeLinks reads it. */
+  links: readonly MapFileLinks[],
 ): MapModuleDependency[] {
   const entries = store.listEntries(working);
   const moduleOf = mapProjectModules(entries);
@@ -99,18 +79,10 @@ export function newModuleDependencies(
       add(now, row.source, row.target);
       add(before, row.source, row.target);
     }
-  const graph = new MapViewGraph(store, working);
-  const baseGraph = base === undefined ? undefined : new MapViewGraph(store, base);
-  for (const file of files) {
-    const current = file.status === "DELETED" ? [] : imports(graph, file.path);
-    for (const { target, line } of current) add(now, file.path, target, `${file.path}:${line}`);
-    if (!file.basePath || file.status === "ADDED") continue;
-    if (baseGraph)
-      for (const { target } of imports(baseGraph, file.basePath)) add(before, file.path, target);
-    else
-      for (const { target, line } of current)
-        if (!file.lines.some(([from, to]) => from <= line && line <= to))
-          add(before, file.path, target);
+  for (const { file, now: after, before: had } of links) {
+    for (const [target, { lines }] of after.imports)
+      for (const line of lines) add(now, file.path, target, `${file.path}:${line}`);
+    for (const target of had.imports.keys()) add(before, file.path, target);
   }
 
   const added = new Set(files.filter((file) => file.status === "ADDED").map((file) => file.path));
