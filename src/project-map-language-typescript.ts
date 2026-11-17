@@ -29,7 +29,7 @@ import {
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "typescript-7.0.2-map-v32",
+  id: "typescript-7.0.2-map-v33",
   claims: (path: string) => /\.[cm]?[jt]sx?$/u.test(path),
   readsRequests: true,
   reads: (path: string) =>
@@ -257,7 +257,8 @@ export class TypeScriptMapAnalyzer implements MapLanguageAnalyzer {
         contextRef,
         // What the context is. What it read is the previous analysis's input files, which
         // replaying requires to be unchanged; the files given to it may be more than it reads,
-        // since discovery opens the inferred project under options other than its own.
+        // since discovery's inferred project also holds the files it moves to the tsconfig that
+        // holds them, as a tsconfig.test.json holds the tests.
         request: {
           configPath: configPath ?? null,
           rootFiles: rootFiles ?? null,

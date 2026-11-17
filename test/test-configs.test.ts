@@ -8,12 +8,17 @@ const run = promisify(execFile);
 
 // The application's tsconfig leaves its tests out, as one that builds for release does; a second
 // one beside it, which the test runner and the type check of the tests use, takes them in. The
-// package is an ES module, so the relative imports without an extension resolve only under the
-// project's own module settings.
+// tests import through the project's path alias, which resolves only under the project's own
+// settings.
 const FILES = {
   "package.json": JSON.stringify({ name: "app", type: "module" }),
   "tsconfig.json": JSON.stringify({
-    compilerOptions: { strict: true, module: "ESNext", moduleResolution: "Bundler" },
+    compilerOptions: {
+      strict: true,
+      module: "ESNext",
+      moduleResolution: "Bundler",
+      paths: { "@/*": ["./src/*"] },
+    },
     include: ["src/**/*.ts"],
     exclude: ["src/**/*.test.ts", "tests/**/*.ts"],
   }),
@@ -24,9 +29,9 @@ const FILES = {
   }),
   "src/target.ts": "export function target(value: number): number {\n  return value * 2;\n}\n",
   "src/target.test.ts":
-    'import { target } from "./target";\n\nexport function beside() {\n  return target(1);\n}\n',
+    'import { target } from "@/target";\n\nexport function beside() {\n  return target(1);\n}\n',
   "tests/target.test.ts":
-    'import { target } from "../src/target";\n\nexport function apart() {\n  return target(2);\n}\n',
+    'import { target } from "@/target";\n\nexport function apart() {\n  return target(2);\n}\n',
 };
 
 test("tests that only another tsconfig of the project holds are read under that one", async (t) => {
@@ -73,13 +78,16 @@ test("a base tsconfig that every package extends does not take in the files outs
 });
 
 test("a test tsconfig at the root of a monorepo holds the tests every package leaves out", async (t) => {
+  const OPTIONS = { strict: true, module: "ESNext", moduleResolution: "Bundler" };
   const PACKAGE = {
-    compilerOptions: { strict: true, module: "ESNext", moduleResolution: "Bundler" },
+    compilerOptions: { ...OPTIONS, paths: { "@/*": ["./src/*"] } },
     include: ["src"],
     exclude: ["src/**/*.test.ts"],
   };
   const { root } = await project({
-    "tsconfig.base.json": JSON.stringify({ compilerOptions: PACKAGE.compilerOptions }),
+    "tsconfig.base.json": JSON.stringify({
+      compilerOptions: { ...OPTIONS, paths: { "@/*": ["./packages/a/src/*"] } },
+    }),
     // The test runner's configuration takes in the sources and tests of every package.
     "tsconfig.test.json": JSON.stringify({
       extends: "./tsconfig.base.json",
@@ -111,6 +119,31 @@ test("a test tsconfig at the root of a monorepo holds the tests every package le
     (await map.explore({ path: "." }, signal())).text,
     /files outside a tsconfig use inferred settings/u,
   );
+});
+
+test("files outside a tsconfig resolve imports without an extension, as bundlers and tsx do", async (t) => {
+  const { root } = await project({
+    "package.json": JSON.stringify({ name: "tools", type: "module" }),
+    "scripts/target.ts": FILES["src/target.ts"],
+    "scripts/later.ts": "export function later(): number {\n  return 3;\n}\n",
+    "scripts/run.ts":
+      'import { target } from "./target";\n\nexport async function run() {\n  const tools = await import("./later");\n  return target(tools.later());\n}\n',
+  });
+  const map = await openMap(root);
+  t.after(() => map.close());
+  assert.match(
+    (await map.explore({ path: "." }, signal())).text,
+    /files outside a tsconfig use inferred settings/u,
+  );
+  const run = (await map.explore({ path: "scripts/run.ts" }, signal())).text;
+  assert.doesNotMatch(run, /UNRESOLVED IMPORTS/u, run);
+  assert.match(run, /IMPORTS → .*scripts\/later\.ts/u, run);
+  assert.match(run, /IMPORTS → .*scripts\/target\.ts/u, run);
+  const { text } = await map.explore(
+    { path: "scripts/later.ts", name: "later", direction: "INCOMING", depth: 1 },
+    signal(),
+  );
+  assert.match(text, /← called by scripts\/run\.ts: run/u, text);
 });
 
 test("a change check finds the tests another tsconfig holds by their calls", async (t) => {

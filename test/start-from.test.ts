@@ -195,15 +195,19 @@ test("a context that comes to read a replayed context's code is built from nothi
 });
 
 test("a context is replayed when a file discovery gave it, but it does not read, changed", async (t) => {
-  // Discovery resolves this import under the inferred project's options; the analysis, in a package
-  // of ES modules, does not.
+  // Discovery opens the test under inferred settings before it moves the test to the tsconfig that
+  // holds it, so the inferred context is given the test, which only the test's context reads.
   const { root } = await project({
     "package.json": JSON.stringify({ type: "module" }),
-    "a/tsconfig.json": JSON.stringify({ include: ["src"] }),
-    "a/src/lib.ts": "export function lib() {\n  return 1;\n}\n",
-    "scripts/run.ts": 'import { lib } from "../a/src/lib";\n\nexport const run = lib;\n',
+    "tsconfig.json": JSON.stringify({ include: ["src"], exclude: ["src/**/*.test.ts"] }),
+    "tsconfig.test.json": JSON.stringify({ include: ["src"] }),
+    "src/lib.ts": "export function lib() {\n  return 1;\n}\n",
+    "src/lib.test.ts": 'import { lib } from "./lib";\n\nexport const one = lib();\n',
+    "scripts/run.ts": "export const run = 1;\n",
   });
-  const edited = await copy(root, { "a/src/lib.ts": "export function lib() {\n  return 2;\n}\n" });
+  const edited = await copy(root, {
+    "src/lib.test.ts": 'import { lib } from "./lib";\n\nexport const two = lib();\n',
+  });
   const { index, store, reused, typescriptRuns } = await host(t);
   await index.prepare(await source(root, "original"), signal());
   typescriptRuns.count = 0;

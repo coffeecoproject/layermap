@@ -40,7 +40,8 @@ process.once(
               allowJs: true,
               jsx: "preserve",
               target: "esnext",
-              module: "nodenext",
+              module: "preserve",
+              moduleResolution: "bundler",
               noResolve: message.syntaxOnly,
             },
             files: (
