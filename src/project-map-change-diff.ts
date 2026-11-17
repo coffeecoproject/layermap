@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 import { ProjectEvidenceError } from "./core";
 import { GitCommandOutputLimitError, GitRunner } from "./git-runner";
@@ -130,7 +130,10 @@ export async function readMapChanges(
   return { base, commit, files, quoted: parsed.quoted, stranded };
 }
 
+// Git keeps a symbolic link as the path it names and lists a repository nested in the project as a
+// directory: only a regular file has bytes to tell by.
 async function startsBinary(file: string): Promise<boolean> {
+  if (!(await lstat(file).catch(() => undefined))?.isFile()) return false;
   const handle = await open(file, "r").catch(() => undefined);
   if (!handle) return false;
   try {
@@ -286,6 +289,8 @@ const nonCodeKind = (path: string) => NON_CODE.find(([pattern]) => pattern.test(
 const UNANALYZED: readonly (readonly [RegExp, string])[] = [
   [/\.(?:sh|bash|zsh|fish|ps1|bat|cmd)$/iu, "shell script"],
   [/\.(?:css|scss|sass|less|styl|wxss|acss)$/iu, "style sheet"],
+  // Git lists a repository nested in the project by its directory, and nothing inside it.
+  [/\/$/u, "nested repository"],
 ];
 const DOCUMENTATION = /\.(?:md|mdx|markdown|rst|adoc)$|(?:^|\/)(?:LICENSE|NOTICE)[^/]*$/iu;
 /** What a changed file the map does not follow is, or nothing for documentation. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { lstat, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, readFile, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
@@ -273,6 +273,28 @@ test("an untracked binary is named as one", async (t) => {
     { path: "notes.xyz", kind: "unanalyzed file" },
   ]);
 });
+
+// Creating a symbolic link on Windows takes a privilege a test run may not have.
+const links = { skip: process.platform === "win32" };
+test(
+  "an untracked link to a directory and a repository nested in the project are not read as files",
+  links,
+  async (t) => {
+    const { root } = await project({ "a.ts": "export const a = 1;\n" });
+    await run("git", ["add", "-A"], { cwd: root });
+    await commit(root);
+    const map = await openMap(root);
+    t.after(() => map.close());
+    const outside = await sandbox();
+    await symlink(outside, path.join(root, "state"));
+    await run("git", ["init", "--quiet", path.join(root, "nested")]);
+    const { data } = await map.checkChanges({ format: "json" }, signal());
+    assert.deepEqual(data.unmapped, [
+      { path: "nested/", kind: "nested repository" },
+      { path: "state", kind: "unanalyzed file" },
+    ]);
+  },
+);
 
 // A Windows file name cannot hold a tab.
 const tabNames = { skip: process.platform === "win32" };
