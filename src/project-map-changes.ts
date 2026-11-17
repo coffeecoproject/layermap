@@ -42,6 +42,7 @@ import {
   type MapChanges,
   type MapCompileBreaks,
   type MapReusableCode,
+  type MapUnclear,
   type MapUntestedChanges,
 } from "./project-map-change-types";
 import {
@@ -92,7 +93,7 @@ export async function mapChangeImpact(
     true,
   );
   const changed: string[] = [];
-  const unclear: string[] = [];
+  const unclear: MapUnclear[] = [];
   const incomplete: string[] = [];
   if (changes.quoted.length)
     incomplete.push(
@@ -122,8 +123,9 @@ export async function mapChangeImpact(
   const pathIndex = () => (paths ??= mapPathIndex(mappedPaths()));
 
   const topLevelChanged = (path: string) => {
-    const note = `top-level code of ${path} changed (imports, constants or registrations)`;
-    if (!unclear.includes(note)) unclear.push(note);
+    const text = `top-level code of ${path} changed (imports, constants or registrations)`;
+    if (!unclear.some((note) => note.text === text))
+      unclear.push({ text, group: { kind: "TOP_LEVEL", subject: path } });
   };
   for (const file of changes.files) {
     const objects = file.status === "DELETED" || file.binary ? [] : graph.objectsAt(file.path);
@@ -148,9 +150,11 @@ export async function mapChangeImpact(
         ? unmappedKind(file.path, file.binary)
         : undefined;
     if (kind) {
-      unclear.push(
-        `${file.path} ${file.status === "DELETED" ? "deleted" : "changed"} (${kind}): its effects are not mapped`,
-      );
+      const deleted = file.status === "DELETED";
+      unclear.push({
+        text: `${file.path} ${deleted ? "deleted" : "changed"} (${kind}): its effects are not mapped`,
+        group: { kind: "UNMAPPED", subject: `${file.path}${deleted ? " deleted" : ""} (${kind})` },
+      });
       unmapped.push({ path: file.path, kind });
     }
     if (!objects.length) continue;
@@ -170,10 +174,13 @@ export async function mapChangeImpact(
     // Registrations on changed lines, wherever they are: a call's route literal, a decorator's route.
     for (const relation of graph.relationsFrom(objects.map((object) => object.id))) {
       const route = mapRegisteredRoute(relation);
-      if (route && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine))
-        unclear.push(
-          `the registration of ${JSON.stringify(route)} at ${relation.anchor.path}:${relation.anchor.startLine} changed; check that the route still reaches the right handler`,
-        );
+      if (route && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)) {
+        const site = `${relation.anchor.path}:${relation.anchor.startLine}`;
+        unclear.push({
+          text: `the registration of ${JSON.stringify(route)} at ${site} changed; check that the route still reaches the right handler`,
+          group: { kind: "REGISTRATION", subject: site, route },
+        });
+      }
     }
     if (analyzed && topLevel && file.status !== "ADDED") topLevelChanged(file.path);
     // A file's importers back up its callers: tests that import it, even without a mapped call.
@@ -237,14 +244,14 @@ export async function mapChangeImpact(
     await tracer.release(climbing);
   }
   if (unfound.length)
-    unclear.push(
-      `no test is found to request ${unfound.length > 1 ? `${unfound.length} routes the change reaches (` : ""}${unfound
+    unclear.push({
+      text: `no test is found to request ${unfound.length > 1 ? `${unfound.length} routes the change reaches (` : ""}${unfound
         .slice(0, LIST.names)
         .map((label) => JSON.stringify(label))
         .join(
           ", ",
         )}${unfound.length > LIST.names ? ", …" : ""}${unfound.length > 1 ? ")" : ""}: a test requesting ${unfound.length > 1 ? "them" : "it"} in a way the map does not read is not selected`,
-    );
+    });
   if (tracer.held.size) await unworkedRequests(routeRequests(), tracer, reaching);
   if (requests?.unsearched)
     incomplete.push(
@@ -252,14 +259,14 @@ export async function mapChangeImpact(
     );
   const unread = [...tracer.shapes.unread];
   if (unread.length)
-    unclear.push(
-      `who uses ${unread.length} fields or types the change reaches was not read, so what they affect is not known (${unread
+    unclear.push({
+      text: `who uses ${unread.length} fields or types the change reaches was not read, so what they affect is not known (${unread
         .slice(0, LIST.names)
         .map((ref) => graph.qualifiedName(ref))
         .join(
           ", ",
         )}${unread.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
-    );
+    });
   const untested =
     tests && (await untestedChanges(graph, tracer, memberCalls, starts, changed, tests));
   supportTests(store, working, tracer);
@@ -307,7 +314,9 @@ export async function mapChangeImpact(
           .sort((left, right) => right.names.length - left.names.length),
       }))
       .sort((left, right) => right.tests.length - left.tests.length),
-    unclear: [...new Set([...unclear, ...tracer.unclear])],
+    unclear: [
+      ...new Map([...unclear, ...tracer.unclear].map((note) => [note.text, note])).values(),
+    ],
     incomplete: [
       ...incomplete,
       ...(tracer.truncated
@@ -498,7 +507,7 @@ export function mapChangesData(
     tests: impact.tests,
     unmapped: impact.unmapped,
     incomplete: impact.incomplete,
-    checkByHand: impact.unclear,
+    checkByHand: impact.unclear.map(({ text }) => text),
     truncated: impact.truncated,
     ...(impact.untested ? { untested: impact.untested } : {}),
     edges,

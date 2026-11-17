@@ -343,7 +343,12 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
     /REMOVED OR RENAMED, STILL USED[^\n]*\n {2}src\/store\.ts: legacy f5-7 ← src\/routes\.ts: oldHandler\n/u,
   );
   assert.match(text, /"GET \/old" → oldHandler → legacy/u);
-  assert.match(text, /config\.yaml changed \(configuration\)/u);
+  // A note alone of its kind reads in full; notes of one kind share a line.
+  assert.match(text, /^ {2}config\.yaml changed \(configuration\): its effects are not mapped$/mu);
+  assert.match(
+    text,
+    /^ {2}2 changed declarations have no callers in the map: they may be wired by a framework, called dynamically, or unused \(app\/billing\/service\.py: charge, src\/store\.ts: legacyRenamed\)$/mu,
+  );
   // Tests, closest first: the one calling the change, the mirrored module's, then a mention.
   const tests = text.slice(text.indexOf("RELATED TESTS"));
   assert.match(tests, /test\/store\.test\.ts: testMarkRead \(calls markRead\)/u);
@@ -351,7 +356,7 @@ test("a change lists the routes it reaches, removed declarations, unmapped files
   assert.match(tests, /test\/feeds\.spec\.ts \(mentions "PUT \/feeds\/:id\/read"\)/u);
   assert.ok(tests.indexOf("store.test.ts") < tests.indexOf("feeds.spec.ts"));
   assert.match(text, /If the change needs verifying, these existing tests are the ones to run\./u);
-  assert.match(text, /does not prove the change is safe/u);
+  assert.match(text, /does not prove the change safe/u);
 });
 
 // Files the map keeps as files but does not analyze, by kind.
@@ -562,7 +567,13 @@ test("a route the diff removes is named as removed, where the base registered it
     text,
     /"GET \/old" → oldHandler → legacy \(the diff removes it; registered at src\/routes\.ts:7 before\)/u,
   );
-  assert.match(text, /"GET \/older" → oldHandler \(registered at src\/routes\.ts:7\)/u);
+  // Its registration is on a line the diff changed: said where the route is listed, not again.
+  assert.match(
+    text,
+    /"GET \/older" → oldHandler \(registered at src\/routes\.ts:7, a line the diff changed\)/u,
+  );
+  assert.match(text, /^Where the diff changed a route's registration, check/mu);
+  assert.doesNotMatch(text, /the registration of "GET \/older"/u);
 });
 
 test("a removed class that unchanged code still extends is still used", async (t) => {
@@ -703,11 +714,16 @@ test("a host embedding the index gets the same change check as LayerMap, whateve
     "the base map is asked for once, since the diff removed a function",
   );
   assert.match(text, /REMOVED OR RENAMED/u);
-  // Changes to files the map does not analyze are named by kind, never as top-level code.
-  assert.match(text, /config\.yaml changed \(configuration\)/u);
-  assert.match(text, /db\/schema\.sql changed \(database migration or schema\)/u);
-  assert.match(text, /web\/feeds\.html changed \(template\)/u);
-  assert.match(text, /package\.json changed \(build or dependency file\)/u);
+  // Changes to files the map does not analyze are named by kind, on one line, never as top-level
+  // code.
+  assert.match(
+    text,
+    /^ {2}5 changed files are of kinds the map does not analyze, so their effects are not mapped: /mu,
+  );
+  assert.match(text, /config\.yaml \(configuration\)/u);
+  assert.match(text, /db\/schema\.sql \(database migration or schema\)/u);
+  assert.match(text, /web\/feeds\.html \(template\)/u);
+  assert.match(text, /package\.json \(build or dependency file\)/u);
   assert.doesNotMatch(text, /top-level code of (?!src\/)/u);
   assert.equal(text, (await map.checkChanges({}, signal())).text);
 });
@@ -1360,6 +1376,7 @@ test("given test files, the check names the changed code none of them runs and t
   assert.match(presenter, /· 1 changed declarations not reached by the given tests$/mu);
   assert.match(left, /given files: test\/gone\.test\.ts$/mu);
   assert.match(left, /1 of 2 changed declarations/u);
+  // The chain to the code the given tests do not run, not the one listed above to other code.
   assert.match(
     left,
     /^ {2}"GET \/funds\/receivables" → FundsService\.listReceivables → readFundsReceivableList → readReceivableOverdueIds \(registered at src\/routes\.ts:4\)$/mu,
@@ -1476,7 +1493,11 @@ test("a changed registration is named by the whole route it registers, by a call
   try {
     const { text } = await map.checkChanges({}, signal());
     // The decorator's argument is only "/items"; the route it registers is whole.
-    assert.match(text, /the registration of "GET \/api\/items" at app\/main\.py:7 changed/u);
+    // A route the change reaches is marked where it is listed; another is checked by hand.
+    assert.match(
+      text,
+      /"GET \/api\/items" → list_items \(registered at app\/main\.py:7, a line the diff changed\)/u,
+    );
     assert.match(text, /the registration of "GET \/health" at web\/routes\.ts:6 changed/u);
   } finally {
     await map.close();
@@ -1671,7 +1692,9 @@ test("a changed field or type reaches the code that uses it, the entry points ab
   assert.match(covered, /^ {2}none: the given tests reach all 1 changed declarations$/mu);
   const uncovered = (await map.checkChanges({ tests: ["test/other.test.ts"] }, signal())).text;
   assert.match(uncovered, /^ {2}1 of 1 changed declarations are reached by none/mu);
-  assert.match(uncovered, /^ {2}"GET \/shapes\/area" → area → Shape\.side.* \(possibly\)$/mu);
+  // The same chain as listed above is named alone.
+  assert.match(uncovered, /^ {2}"GET \/shapes\/area" → area → Shape\.side.*\(registered at /mu);
+  assert.match(uncovered, /^ {2}"GET \/shapes\/area" \(as listed above\) \(possibly\)$/mu);
 
   // A type named by another type's field: the code reading that field uses it. A field nothing
   // reads ends the chain without being an entry point.

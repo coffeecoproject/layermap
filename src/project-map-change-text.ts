@@ -6,10 +6,63 @@ import {
   type MapChanges,
   type MapCompileBreaks,
   type MapReusableCode,
+  type MapUnclear,
 } from "./project-map-change-types";
 import { type MapRouteClientSearch, routeClientsLine } from "./project-map-clients";
 import type { MapModuleDependency, MapReuseImport } from "./project-map-dependencies";
 import { strandedNameLine } from "./project-map-names";
+
+// The line naming every note of a kind to check by hand, with as many subjects as it shows.
+const GROUPED: Readonly<
+  Record<NonNullable<MapUnclear["group"]>["kind"], (count: number, subjects: string) => string>
+> = {
+  TOP_LEVEL: (count, subjects) =>
+    `top-level code of ${count} files changed (imports, constants or registrations): ${subjects}`,
+  UNMAPPED: (count, subjects) =>
+    `${count} changed files are of kinds the map does not analyze, so their effects are not mapped: ${subjects}`,
+  NO_CALLERS: (count, subjects) =>
+    `${count} changed declarations have no callers in the map: they may be wired by a framework, called dynamically, or unused (${subjects})`,
+  NO_USE: (count, subjects) =>
+    `${count} changed fields or types have no callers in the map, and a search for references found no use: they may be read through reflection, serialization or a value of unknown type, or be unused (${subjects})`,
+  REGISTRATION: (count, subjects) =>
+    `${count} route registrations changed; check that each route still reaches the right handler: ${subjects}`,
+};
+
+// The notes to check by hand, a line each but for those of a kind, which share one.
+function uncertainLines(notes: readonly MapUnclear[]): string[] {
+  type Group = NonNullable<MapUnclear["group"]>;
+  type Kind = { kind: Group["kind"]; texts: string[]; groups: Group[] };
+  const lines: (string | Kind)[] = [];
+  const kinds = new Map<Group["kind"], Kind>();
+  for (const { text, group } of notes) {
+    if (!group) {
+      lines.push(text);
+      continue;
+    }
+    let same = kinds.get(group.kind);
+    if (!same) {
+      same = { kind: group.kind, texts: [], groups: [] };
+      kinds.set(group.kind, same);
+      lines.push(same);
+    }
+    same.texts.push(text);
+    same.groups.push(group);
+  }
+  return lines.map((line) => {
+    if (typeof line === "string") return line;
+    if (line.texts.length === 1) return line.texts[0] as string;
+    const shown = line.groups
+      .slice(0, LIST.grouped)
+      .map(({ subject, route }) =>
+        route === undefined ? subject : `${JSON.stringify(route)} at ${subject}`,
+      );
+    const more = line.groups.length - shown.length;
+    return GROUPED[line.kind](
+      line.groups.length,
+      `${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}`,
+    );
+  });
+}
 
 // The test functions among the test file's declarations that reach the change, else a few of them.
 function testNames(names: readonly string[], limit: number = LIST.names): string {
@@ -64,7 +117,7 @@ export function mapChangesText(
   );
   if (compile.missing.length)
     lines.push(
-      `PACKAGES NOT FOUND (${compile.missing.slice(0, LIST.names).join(", ")}${compile.missing.length > LIST.names ? `, +${compile.missing.length - LIST.names} more` : ""}): are dependencies installed in this directory? Values typed by them have no type to follow, so calls through them (framework page methods among them), their uses and compile errors are not seen, and this report can miss what the change reaches.`,
+      `PACKAGES NOT FOUND (${compile.missing.slice(0, LIST.names).join(", ")}${compile.missing.length > LIST.names ? `, +${compile.missing.length - LIST.names} more` : ""}): are dependencies installed in this directory? Without their types, calls through them (framework page methods among them), their uses and compile errors are not seen, so this report can miss what the change reaches.`,
     );
   if (compile.unchecked.length)
     lines.push(
@@ -151,14 +204,37 @@ export function mapChangesText(
       `Decide for each whether it runs the way the project's layers do: code others build on (shared types, storage, utilities) should not import the features or interfaces built on it.${impact.dependencies.some((dependency) => dependency.back) ? " A cycle ties the modules together, so neither can change or be tested alone." : ""} If one runs the wrong way, move what both need into the lower module or pass it in, rather than import upward.`,
     );
   }
-  const entry = (item: MapChangeEntry) =>
-    `${item.route ? JSON.stringify(item.label) : item.label}${item.chain.length ? ` → ${item.chain.join(" → ")}` : ""}${
+  // A route whose registration the diff changed is marked where it is listed, not again below.
+  const registrations = new Map<string, string[]>();
+  for (const { group } of impact.unclear)
+    if (group?.route !== undefined)
+      registrations.set(group.route, [...(registrations.get(group.route) ?? []), group.subject]);
+  const certain = impact.entries.filter((e) => e.certain).slice(0, LIST.entries);
+  const possible = impact.entries.filter((e) => !e.certain).slice(0, LIST.entries);
+  const marked = new Set(
+    [...certain, ...possible]
+      .filter((item) => item.route && !item.removed && registrations.has(item.label))
+      .map((item) => item.label),
+  );
+  const label = (item: MapChangeEntry) => (item.route ? JSON.stringify(item.label) : item.label);
+  const entry = (item: MapChangeEntry) => {
+    const changedAt = marked.has(item.label) ? (registrations.get(item.label) ?? []) : [];
+    const registered = item.site
+      ? `registered at ${item.site}${changedAt.includes(item.site) ? ", a line the diff changed" : ""}`
+      : "";
+    const elsewhere = changedAt.filter((site) => site !== item.site);
+    const where = [
+      ...(registered ? [registered] : []),
+      ...(elsewhere.length ? [`its registration at ${elsewhere.join(", ")} changed`] : []),
+    ];
+    return `${label(item)}${item.chain.length ? ` → ${item.chain.join(" → ")}` : ""}${
       item.removed
         ? ` (the diff removes it${item.site ? `; registered at ${item.site} before` : ""})`
-        : item.site
-          ? ` (registered at ${item.site})`
+        : where.length
+          ? ` (${where.join("; ")})`
           : ""
     }`;
+  };
   list(
     "AFFECTED ENTRY POINTS (through resolved calls)",
     impact.entries.filter((e) => e.certain).map(entry),
@@ -169,6 +245,11 @@ export function mapChangesText(
     impact.entries.filter((e) => !e.certain).map(entry),
     LIST.entries,
   );
+  const listed = new Set([...certain, ...possible].map(entry));
+  if (marked.size)
+    lines.push(
+      "Where the diff changed a route's registration, check that the route still reaches the right handler.",
+    );
   // What the given tests leave out: none of them runs the code under these entry points.
   if (impact.untested) {
     const { changed, entries, throughRoutes, routes, missing, truncated } = impact.untested;
@@ -183,8 +264,13 @@ export function mapChangesText(
       lines.push(
         `  ${changed.length} of ${impact.changed.length} changed declarations are reached by none of the given tests; ${entries.length ? "the entry points above them, then the declarations:" : "the declarations:"}`,
       );
+      // An entry point listed above with the same chain is named alone; a chain to other changed
+      // code is shown.
       items(
-        entries.map((item) => `${entry(item)}${item.certain ? "" : " (possibly)"}`),
+        entries.map((item) => {
+          const full = entry(item);
+          return `${listed.has(full) ? `${label(item)} (as listed above)` : full}${item.certain ? "" : " (possibly)"}`;
+        }),
         LIST.entries,
       );
       items(changed, LIST.changed);
@@ -256,7 +342,14 @@ export function mapChangesText(
   ];
   list(
     "CHECK BY HAND (the map cannot see these)",
-    [...incomplete, ...impact.unclear],
+    [
+      ...incomplete,
+      ...uncertainLines(
+        impact.unclear.filter(
+          ({ group }) => group?.route === undefined || !marked.has(group.route),
+        ),
+      ),
+    ],
     incomplete.length + LIST.unclear,
   );
   if (direct.length) {
@@ -275,7 +368,7 @@ export function mapChangesText(
       `RELATED TESTS: none call or import the changed code directly; ${indirect.length} test files import it through other modules, which a broader run covers.`,
     );
   lines.push(
-    "Static estimate: calls through dependency injection, reflection, string dispatch, configuration and database coupling are not mapped, so an empty list does not prove the change is safe; confirm the entry points in source.",
+    "Static estimate: dependency injection, reflection, string dispatch, configuration and the database are not followed, so an empty list does not prove the change safe.",
   );
   // Code the diff adds that the project already has: reuse it, or retire the old copy. It comes
   // last, after what the change reaches and breaks: a copy is no fault, and weighing it first

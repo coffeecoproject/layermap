@@ -1,4 +1,9 @@
-import { LIMITS, type Lines, type MapChangeEntry } from "./project-map-change-types";
+import {
+  LIMITS,
+  type Lines,
+  type MapChangeEntry,
+  type MapUnclear,
+} from "./project-map-change-types";
 import { mapRegisteredRoute } from "./project-map-clients";
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate } from "./project-map-miniprogram";
@@ -103,7 +108,7 @@ export class Tracer {
   readonly tests = new Map<string, { names: Set<string>; why: string; rank: number }>();
   /** Tests that certainly call the change, by the area of the declaration they call it through. */
   readonly areas = new Map<string, { through: Set<string>; tests: Map<string, Set<string>> }>();
-  readonly unclear: string[] = [];
+  readonly unclear: MapUnclear[] = [];
   truncated = false;
   private readonly callerCount = new Map<string, number>();
   private readonly owners = new Set<string>();
@@ -316,12 +321,21 @@ export class Tracer {
       // A page's template that changed is the entry itself: the page shows it.
       if (reached.depth === 0 && !mapMiniprogramTemplate(object.anchor.path)) {
         const uses = this.usesWithoutCalls(reached.ref);
+        const subject = this.where(reached.ref);
         this.unclear.push(
           uses.length
-            ? `${this.where(reached.ref)} has no callers in the map, and is used without a call: ${uses.join("; ")}`
+            ? {
+                text: `${subject} has no callers in the map, and is used without a call: ${uses.join("; ")}`,
+              }
             : mapIsShape(object)
-              ? `${this.where(reached.ref)} has no callers in the map, and a search for references found no use: it may be read through reflection, serialization or a value of unknown type, or be unused`
-              : `${this.where(reached.ref)} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
+              ? {
+                  text: `${subject} has no callers in the map, and a search for references found no use: it may be read through reflection, serialization or a value of unknown type, or be unused`,
+                  group: { kind: "NO_USE", subject },
+                }
+              : {
+                  text: `${subject} has no callers in the map: it may be wired by a framework, called dynamically, or unused`,
+                  group: { kind: "NO_CALLERS", subject },
+                },
         );
         // Nothing runs from a type, or from a field that only uses another field or type. A field
         // that holds a function others call by key is an entry point.
@@ -666,9 +680,9 @@ export class Tracer {
     if (object.kind !== "METHOD" || !language || /^__\w+__$/u.test(object.name)) return;
     const calls = this.memberCalls.get(`${language}\u0000${object.name}`) ?? [];
     if (calls.length)
-      this.unclear.push(
-        `${calls.length} calls of a member named ${object.name} on receivers of unknown type may reach ${this.graph.qualifiedName(ref)}; a text search finds them`,
-      );
+      this.unclear.push({
+        text: `${calls.length} calls of a member named ${object.name} on receivers of unknown type may reach ${this.graph.qualifiedName(ref)}; a text search finds them`,
+      });
   }
 
   private entry(

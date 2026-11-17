@@ -55,6 +55,27 @@ export type MapChangeEntry = Readonly<{
   removed?: boolean;
 }>;
 
+/**
+ * Something the map cannot see, to check by hand. A note of a kind a change can have many of (a
+ * file's top-level code, a file the map does not analyze, a declaration nothing calls, a changed
+ * route registration) names its kind and subject, and the report lists the notes of a kind on one
+ * line.
+ */
+export type MapUnclear = Readonly<{
+  /** The note in full, as check --json lists it. */
+  text: string;
+  group?: Readonly<{
+    kind: "TOP_LEVEL" | "UNMAPPED" | "NO_CALLERS" | "NO_USE" | "REGISTRATION";
+    /**
+     * What the note is about, as the kind's line names it: the file, with its kind when the map does
+     * not analyze it; the declaration; for a registration, where it is.
+     */
+    subject: string;
+    /** For a changed registration, the route it registers. */
+    route?: string;
+  }>;
+}>;
+
 export type MapChangeImpact = Readonly<{
   changed: readonly string[];
   /** Removed or renamed declarations, with the code the diff left unchanged that still uses them. */
@@ -73,7 +94,7 @@ export type MapChangeImpact = Readonly<{
     through: readonly string[];
     tests: readonly Readonly<{ path: string; names: readonly string[] }>[];
   }>[];
-  unclear: readonly string[];
+  unclear: readonly MapUnclear[];
   /**
    * Where the check itself stopped short (a search cut by the deadline, a limit or git, the trace
    * stopping at its limits), so what it would have found is missing; shown before anything else.
@@ -148,6 +169,8 @@ export const LIST = Object.freeze({
   entries: 40,
   tests: 12,
   unclear: 20,
+  /** Subjects named on the line of one kind of note to check by hand. */
+  grouped: 8,
   stranded: 12,
   clients: 8,
   names: 6,

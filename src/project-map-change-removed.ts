@@ -7,7 +7,12 @@ import {
 } from "./project-map-change-diff";
 import { existingTestsChanged, routesIn } from "./project-map-change-tests";
 import { CALLER_KINDS, changeUnits, NAMING_KINDS, Tracer } from "./project-map-change-trace";
-import { LIST, type MapChangeImpact, type MapChanges } from "./project-map-change-types";
+import {
+  LIST,
+  type MapChangeImpact,
+  type MapChanges,
+  type MapUnclear,
+} from "./project-map-change-types";
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
 import { type MapShapeReader, MapShapeUses, mapIsShape } from "./project-map-shapes";
@@ -51,7 +56,7 @@ export async function mapRemovedImpact(
   }>,
 ): Promise<MapRemovedImpact> {
   const { store, base, graph, tracer, changes } = input;
-  const unclear: string[] = [];
+  const unclear: MapUnclear[] = [];
   const before = new MapViewGraph(store, base);
   const removedRoutes: string[] = [];
   const registered = new Set<string>();
@@ -225,9 +230,9 @@ export async function mapRemovedImpact(
   for (const { shapes: inRemoved, inside, usedBy } of goneShapes)
     for (const shape of inRemoved) {
       if (beforeTracer.shapes.unread.has(shape))
-        unclear.push(
-          `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; search the code for its name`,
-        );
+        unclear.push({
+          text: `${before.object(shape).anchor.path}: ${before.qualifiedName(shape)} was removed, and who used it was not read; search the code for its name`,
+        });
       const now = successors(shape);
       for (const { owner, anchor } of beforeTracer.shapes.uses.get(shape) ?? []) {
         const place = nowAt(anchor);
@@ -252,8 +257,8 @@ export async function mapRemovedImpact(
       }
     }
   if (unfollowed.size)
-    unclear.push(
-      `${unfollowed.size} removed fields or types are used on lines the diff left alone, and whether that code now uses what took their place was not read (${[
+    unclear.push({
+      text: `${unfollowed.size} removed fields or types are used on lines the diff left alone, and whether that code now uses what took their place was not read (${[
         ...unfollowed,
       ]
         .sort()
@@ -261,7 +266,7 @@ export async function mapRemovedImpact(
         .join(
           ", ",
         )}${unfollowed.size > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
-    );
+    });
   // Template links the diff broke: a template's binding or tag that reached a method, a component
   // or an event in the base and reaches nothing now, as when a component stops emitting an event
   // a page binds, or app.json registers a component where there is none. No compiler checks a
@@ -288,13 +293,13 @@ export async function mapRemovedImpact(
       const event = miniprogramEventOf(relation.target);
       const at = `${path}:${relation.anchor.startLine}`;
       if (file && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)) {
-        unclear.push(
-          event
+        unclear.push({
+          text: event
             ? `${at} binds the ${event.event} event of <${event.tag}>, which it does not emit`
             : relation.kind === "REFERENCES"
               ? `${at} puts <${relation.target}>, which its registration does not find`
               : `${at} binds ${relation.target}, which its page or component does not register`,
-        );
+        });
         continue;
       }
       // An event is named by the component that no longer emits it.
@@ -435,14 +440,14 @@ export async function mapRemovedImpact(
   }
   uncalled.sort();
   if (unknown.length)
-    unclear.push(
-      `${unknown.length} fields lost callers the diff removed, and whether others use them was not read (${unknown
+    unclear.push({
+      text: `${unknown.length} fields lost callers the diff removed, and whether others use them was not read (${unknown
         .sort()
         .slice(0, LIST.names)
         .join(
           ", ",
         )}${unknown.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
-    );
+    });
 
   return {
     removed: removed.map(({ declaration, usedBy }) => ({
