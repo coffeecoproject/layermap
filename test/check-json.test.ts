@@ -286,6 +286,33 @@ test("without the base map, a file imported or called again on a new line is no 
   assert.deepEqual(found.calls, []);
 });
 
+test("a re-export, an import assignment and a CommonJS require import the file they name", async () => {
+  const found = await edges(
+    {
+      // Lines added alone: the billing entry's existing re-export is what it had.
+      "src/billing/index.ts": 'export { charge } from "./charge";\nexport * from "./rate";\n',
+      "src/shared.ts": 'export * as orders from "./orders/order";\nexport { one } from "./util";\n',
+      "src/booking/total.ts":
+        'import util = require("../util");\n\nexport const total = util.one;\n',
+      "src/booking/legacy.js": 'const { one } = require("../util");\n\nmodule.exports = one;\n',
+    },
+    {
+      ...MODULES,
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { strict: true, allowJs: true },
+        include: ["src"],
+      }),
+    },
+  );
+  assert.deepEqual(found.imports, [
+    { from: "src/billing/index.ts", to: "src/billing/rate.ts", line: 2, change: "ADDED" },
+    { from: "src/booking/legacy.js", to: "src/util.ts", line: 1, change: "ADDED" },
+    { from: "src/booking/total.ts", to: "src/util.ts", line: 1, change: "ADDED" },
+    { from: "src/shared.ts", to: "src/orders/order.ts", line: 1, change: "ADDED" },
+    { from: "src/shared.ts", to: "src/util.ts", line: 2, change: "ADDED" },
+  ]);
+});
+
 test("the edges follow renamed files, read deleted ones in the base and leave the tests out", async () => {
   const found = await edges(
     {

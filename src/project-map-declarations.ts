@@ -82,13 +82,20 @@ export function mapRequireBinding(node: Node): boolean {
   if (!isVariableDeclaration(node) || !node.initializer) return false;
   let value = unwrap(node.initializer);
   while (isPropertyAccessExpression(value)) value = unwrap(value.expression);
-  return (
-    isCallExpression(value) &&
-    isIdentifier(value.expression) &&
-    value.expression.text === "require" &&
-    value.arguments.length === 1 &&
-    isStringLiteral(value.arguments[0] as Node)
-  );
+  return mapRequiredModule(value) !== undefined;
+}
+
+/** The module a CommonJS require names, as require("./users") names "./users". */
+export function mapRequiredModule(node: Node): Node | undefined {
+  if (
+    !isCallExpression(node) ||
+    !isIdentifier(node.expression) ||
+    node.expression.text !== "require" ||
+    node.arguments.length !== 1
+  )
+    return undefined;
+  const name = node.arguments[0] as Node;
+  return isStringLiteral(name) ? name : undefined;
 }
 
 const unwrap = (node: Node): Node =>

@@ -4,8 +4,11 @@ import {
   isClassDeclaration,
   isDecorator,
   isElementAccessExpression,
+  isExportDeclaration,
+  isExternalModuleReference,
   isIdentifier,
   isImportDeclaration,
+  isImportEqualsDeclaration,
   isImportSpecifier,
   isInterfaceDeclaration,
   isNamedImports,
@@ -35,6 +38,7 @@ import {
   mapNodeLabel as label,
   mapDeclarationKind,
   mapRequireBinding,
+  mapRequiredModule,
   mapDeclarationName as named,
 } from "./project-map-declarations";
 import {
@@ -121,6 +125,19 @@ const NOT_STATE_READS = new Set<SyntaxKind>([
   SyntaxKind.JsxSelfClosingElement,
   SyntaxKind.JsxClosingElement,
 ]);
+
+// The module a node takes from another file: an import, a re-export (export { x } from "./x",
+// export * from "./x"), a dynamic import(), import x = require("./x") or a CommonJS require.
+function importedModule(node: Node): Node | undefined {
+  if (isImportDeclaration(node) || isExportDeclaration(node)) return node.moduleSpecifier;
+  if (isImportEqualsDeclaration(node))
+    return isExternalModuleReference(node.moduleReference)
+      ? node.moduleReference.expression
+      : undefined;
+  if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword)
+    return node.arguments[0];
+  return mapRequiredModule(node);
+}
 
 // The names a file can read module state by: its own top-level variables, and the names it imports
 // (namespace imports apart), a CommonJS require's among them. A read of another name cannot reach a
@@ -369,11 +386,7 @@ export async function extractProjectMap(
           truncated: false,
         });
       let reference: Omit<Pending, "owner" | "anchor"> | undefined;
-      const moduleSpecifier = isImportDeclaration(node)
-        ? node.moduleSpecifier
-        : isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword
-          ? node.arguments[0]
-          : undefined;
+      const moduleSpecifier = importedModule(node);
       if (
         moduleSpecifier &&
         (isStringLiteral(moduleSpecifier) || isNoSubstitutionTemplateLiteral(moduleSpecifier))
