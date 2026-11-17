@@ -107,6 +107,7 @@ function session(id: string, cwd: string, temp: string, env: Record<string, stri
       calls += 1;
       const text = `${projectHeading(repository)}\n\nPROJECT MAP · CHANGES against HEAD`;
       const call = { tool_name: CHECK, tool_input: {}, tool_use_id: `c${calls}` };
+      await send("PreToolUse", call);
       if (fails === "Claude Code")
         await send("PostToolUseFailure", { ...call, error: "LAYERMAP_NOT_A_GIT_REPOSITORY" });
       else
@@ -337,6 +338,21 @@ test("a command sent to the background counts what it changes until it ends", as
   await s.check(await gitRoot(root));
   await writeFile(path.join(root, "src/late.ts"), "export const late = 4;\n");
   assert.equal(await s.stop(running), "", "what changes after it ended is not its change");
+});
+
+test("what a command in the background changed before a check is not asked about again after it", async () => {
+  const { root } = await committed({ "src/a.ts": "export const a = 1;\n" });
+  const s = session("s", root, await sandbox());
+  await s.start();
+  await s.bash('echo "export const late = 3;" > src/late.ts && sleep 60', undefined, {
+    task: "bg1",
+  });
+  const running = { background_tasks: [{ id: "bg1", type: "shell", status: "running" }] };
+  await writeFile(path.join(root, "src/late.ts"), "export const late = 3;\n");
+  await s.check(await gitRoot(root));
+  assert.equal(await s.stop(running), "", "the check saw it");
+  await writeFile(path.join(root, "src/late.ts"), "export const late = 4;\n");
+  assert.equal(await s.stop(running), AGENT_STOP_CHECK, "it changed the file after the check");
 });
 
 test("a session's ledger goes with it, and so do those of sessions that ended without their end hook", async () => {

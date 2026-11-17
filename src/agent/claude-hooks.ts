@@ -99,6 +99,9 @@ async function main(input: Input) {
     if (files.length) await note({ kind: "before", call, states: await fileStates(files) });
     return;
   }
+  // What the commands still in the background changed so far, the check about to run sees: noted
+  // ahead of it, so the stop hook does not count it again after the check.
+  if (event === "PreToolUse" && CHECK_TOOL.test(tool)) return compareBackground(await read(), note);
   if (event === "PostToolUse" || event === "PostToolUseFailure") {
     if (tool === "Bash") {
       const before = lastBefore(await read(), call);
@@ -124,7 +127,12 @@ async function main(input: Input) {
     return;
   }
   if (event === "Stop" && !input.stop_hook_active) {
-    await compareBackground(await read(), input, note);
+    const running = new Set(
+      (input.background_tasks ?? []).flatMap((task) =>
+        task.status === "running" && task.id ? [task.id] : [],
+      ),
+    );
+    await compareBackground(await read(), note, running);
     const entries = await read();
     const start = entries.find((entry) => entry.kind === "start")?.directory ?? cwd;
     const asked = entries.findLast((entry) => entry.kind === "asked")?.fingerprint ?? "";
@@ -148,19 +156,14 @@ const lastBefore = (entries: readonly Entry[], call: string) =>
       entry.kind === "before" && entry.call === call,
   )?.states;
 
-// Notes what each command still running in the background changed since it was last compared, and
-// ends those no longer running.
+// Notes what each command in the background changed since it was last compared; given the tasks
+// still running, as the stop hook is, also ends the others.
 async function compareBackground(
   entries: readonly Entry[],
-  input: Input,
   note: (...entries: Entry[]) => Promise<void>,
+  running?: ReadonlySet<string>,
 ) {
   const ended = new Set(entries.flatMap((entry) => (entry.kind === "ended" ? [entry.call] : [])));
-  const running = new Set(
-    (input.background_tasks ?? []).flatMap((task) =>
-      task.status === "running" && task.id ? [task.id] : [],
-    ),
-  );
   for (const entry of entries) {
     if (entry.kind !== "background" || ended.has(entry.call)) continue;
     ended.add(entry.call);
@@ -171,7 +174,9 @@ async function compareBackground(
     await note(
       ...(await codeEdits(changed)),
       ...(changed.length ? [{ kind: "before" as const, call: entry.call, states: now }] : []),
-      ...(running.has(entry.task) ? [] : [{ kind: "ended" as const, call: entry.call }]),
+      ...(!running || running.has(entry.task)
+        ? []
+        : [{ kind: "ended" as const, call: entry.call }]),
     );
   }
 }

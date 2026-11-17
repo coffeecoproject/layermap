@@ -223,6 +223,7 @@ async function main(input) {
     if (files.length) await note({ kind: "before", call, states: await fileStates(files) });
     return;
   }
+  if (event === "PreToolUse" && CHECK_TOOL.test(tool)) return compareBackground(await read(), note);
   if (event === "PostToolUse" || event === "PostToolUseFailure") {
     if (tool === "Bash") {
       const before = lastBefore(await read(), call);
@@ -244,7 +245,12 @@ async function main(input) {
     return;
   }
   if (event === "Stop" && !input.stop_hook_active) {
-    await compareBackground(await read(), input, note);
+    const running = new Set(
+      (input.background_tasks ?? []).flatMap(
+        (task) => task.status === "running" && task.id ? [task.id] : []
+      )
+    );
+    await compareBackground(await read(), note, running);
     const entries = await read();
     const start = entries.find((entry) => entry.kind === "start")?.directory ?? cwd;
     const asked = entries.findLast((entry) => entry.kind === "asked")?.fingerprint ?? "";
@@ -264,13 +270,8 @@ async function main(input) {
 var lastBefore = (entries, call) => entries.findLast(
   (entry) => entry.kind === "before" && entry.call === call
 )?.states;
-async function compareBackground(entries, input, note) {
+async function compareBackground(entries, note, running) {
   const ended = new Set(entries.flatMap((entry) => entry.kind === "ended" ? [entry.call] : []));
-  const running = new Set(
-    (input.background_tasks ?? []).flatMap(
-      (task) => task.status === "running" && task.id ? [task.id] : []
-    )
-  );
   for (const entry of entries) {
     if (entry.kind !== "background" || ended.has(entry.call)) continue;
     ended.add(entry.call);
@@ -281,7 +282,7 @@ async function compareBackground(entries, input, note) {
     await note(
       ...await codeEdits(changed),
       ...changed.length ? [{ kind: "before", call: entry.call, states: now }] : [],
-      ...running.has(entry.task) ? [] : [{ kind: "ended", call: entry.call }]
+      ...!running || running.has(entry.task) ? [] : [{ kind: "ended", call: entry.call }]
     );
   }
 }

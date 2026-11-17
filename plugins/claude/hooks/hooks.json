@@ -14,7 +14,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|mcp__.*__project_check_changes",
         "hooks": [
           {
             "type": "command",

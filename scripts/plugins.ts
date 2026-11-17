@@ -186,7 +186,7 @@ export function generatedFiles(version: string, dev?: ServerLaunch): Record<stri
       description: "Tells Claude when the map helps, and to check what its code changes affect.",
       hooks: {
         SessionStart: [{ hooks: [HOOK] }],
-        PreToolUse: [{ matcher: "Bash", hooks: [HOOK] }],
+        PreToolUse: [{ matcher: "Bash|mcp__.*__project_check_changes", hooks: [HOOK] }],
         PostToolUse: [
           {
             matcher: "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*__project_check_changes",
