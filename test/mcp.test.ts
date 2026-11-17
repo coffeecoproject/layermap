@@ -131,6 +131,31 @@ test("an MCP client lists the read-only map tools and explores the project", asy
     assert.equal(invalid.result.isError, true);
     assert.match(invalid.result.content[0]?.text ?? "", /^Invalid arguments: query/u);
 
+    // An agent that guessed how to select a declaration is shown how; both tools select it alike.
+    const guessedName = (await client.request("tools/call", {
+      name: "project_explore_map",
+      arguments: { path: "src/target.ts", symbol: "target" },
+    })) as { result: { content: { text: string }[]; isError: boolean } };
+    assert.equal(guessedName.result.isError, true);
+    assert.match(
+      guessedName.result.content[0]?.text ?? "",
+      /^Invalid arguments: \(arguments\): Unrecognized key: "symbol"\. For example: \{"path": "src\/billing\/tax\.ts", "name": "calculateTax", "direction": "INCOMING", "depth": 8\}$/u,
+    );
+    const used = (await client.request("tools/call", {
+      name: "project_find_references",
+      arguments: { path: "src/target.ts", name: "target" },
+    })) as { result: { content: { text: string }[]; isError: boolean } };
+    assert.equal(used.result.isError, false, used.result.content[0]?.text ?? "");
+    assert.match(used.result.content[0]?.text ?? "", /src\/helper\.ts/u);
+    const unnamed = (await client.request("tools/call", {
+      name: "project_find_references",
+      arguments: { path: "src/target.ts" },
+    })) as { result: { content: { text: string }[]; isError: boolean } };
+    assert.match(
+      unnamed.result.content[0]?.text ?? "",
+      /^Invalid arguments: \(arguments\): Select the declaration with path and name .*For example: \{"path": "src\/billing\/tax\.ts", "name": "calculateTax"\}$/u,
+    );
+
     // An agent that has not loaded the schema guesses arguments; the check ignores those it lacks.
     const guessed = (await client.request("tools/call", {
       name: "project_check_changes",
@@ -294,18 +319,20 @@ test("a session started in a folder holding several repositories maps the one ea
     assert.ok(named(inB, b), "an absolute path names its repository");
 
     const references = await call("project_find_references", {
-      symbol: { path: "a/src/target.ts", name: "target" },
-      path: "a/src",
+      path: "a/src/target.ts",
+      name: "target",
+      within: "a/src",
     });
     assert.equal(references.result.isError, false, references.result.content[0]?.text ?? "");
     assert.ok(named(references, a));
     assert.match(references.result.content[0]?.text ?? "", /src\/helper\.ts/u);
     const elsewhere = await call("project_find_references", {
-      symbol: { path: "a/src/target.ts", name: "target" },
-      path: "b/src",
+      path: "a/src/target.ts",
+      name: "target",
+      within: "b/src",
     });
     assert.equal(elsewhere.result.isError, true);
-    assert.match(elsewhere.result.content[0]?.text ?? "", /^PROJECT_PATH_INVALID: path b\/src/u);
+    assert.match(elsewhere.result.content[0]?.text ?? "", /^PROJECT_PATH_INVALID: within b\/src/u);
 
     const unnamed = await call("project_check_changes", {});
     assert.equal(unnamed.result.isError, true);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agentMapTools } from "../src/agent/tools";
+import { ProjectEvidenceError } from "../src/core";
 import { FILES, openMap, project, signal } from "./support";
 
 test("a project directory is mapped on first use and queried by directory, declaration and name", async (t) => {
@@ -32,11 +33,17 @@ test("a project directory is mapped on first use and queried by directory, decla
   );
   assert.match(found.text, /src\/helper\.ts: .*helper f3-5/u);
 
+  // A declaration is selected as the views select it, and the usages filtered by within.
   const references = await map.references(
-    { symbol: { path: "src/target.ts", name: "target" }, path: ".", maxResults: 20 },
+    { path: "src/target.ts", name: "target", within: "src", maxResults: 20 },
     signal(),
   );
   assert.ok(references.references.some((reference) => reference.anchor.path === "src/helper.ts"));
+  assert.equal(references.query.within, "src");
+  await assert.rejects(
+    map.references({ path: "src/target.ts", maxResults: 20 }, signal()),
+    (error) => error instanceof ProjectEvidenceError && error.code === "PROJECT_READ_INPUT_INVALID",
+  );
 });
 
 test("coding agents' own directories, with their worktrees and copies of the project, are not mapped", async (t) => {

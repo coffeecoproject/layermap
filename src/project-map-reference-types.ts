@@ -7,7 +7,6 @@ import {
   MapGapSchema,
   type MapObject,
   MapObjectSchema,
-  type MapSymbolSelector,
 } from "./project-map-types";
 
 export const MapReferenceKindSchema = z.enum([
@@ -79,16 +78,20 @@ export type MapReferenceRequest = Readonly<{
   path?: string;
   kinds?: readonly z.infer<typeof MapReferenceKindSchema>[];
 }>;
+// The declaration is selected as the map's views select it, by its file, name and start line; or by
+// an entityRef or locator. within filters where its usages are.
 export type MapReferenceInput = Readonly<{
   version: string;
   source: CodeIndexSource;
+  path?: string;
+  name?: string;
+  line?: number;
   entityRef?: string;
   locator?: MapExploreInput["locator"];
-  symbol?: MapSymbolSelector;
   maxResults: number;
   cursor?: string;
   allowedPathPrefixes?: readonly string[];
-  path?: string;
+  within?: string;
   kinds?: readonly z.infer<typeof MapReferenceKindSchema>[];
   outputBudget?: MapQueryOutputBudget;
 }>;
@@ -117,7 +120,7 @@ export const MapReferenceResultSchema = z
     authority: z.literal("CODE_FACTS_AND_SOURCE_DECLARATIONS_NOT_BUSINESS_AUTHORITY"),
     testing: z.literal("TEST_ASSOCIATION_IS_NOT_BEHAVIOR_VERIFICATION"),
     object: MapObjectSchema,
-    query: z.object({ path: z.string(), kinds: z.array(MapReferenceKindSchema) }).strict(),
+    query: z.object({ within: z.string(), kinds: z.array(MapReferenceKindSchema) }).strict(),
     references: z.array(
       MapReferenceSchema.extend({
         contextRef: z.string(),

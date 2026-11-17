@@ -27,7 +27,7 @@ Usage:
   layermap explore [PATH] [--name NAME] [--line N] [--direction INCOMING|OUTGOING|BOTH]
                    [--depth N] [--tests] [--unresolved] [--offset N]
   layermap search QUERY [--path DIR] [--mode ANY|ALL|LITERAL] [--max N] [--offset N]
-  layermap refs PATH NAME [--line N] [--path DIR] [--max N] [--cursor C]
+  layermap refs PATH NAME [--line N] [--within DIR] [--max N] [--cursor C]
   layermap check [--base REF] [--json] [TEST...]
                                           what the uncommitted changes (or those since REF) affect,
                                           and what of them the test files given do not run; --json
@@ -82,6 +82,7 @@ async function main(argv: string[]): Promise<number> {
       unresolved: { type: "boolean", default: false },
       offset: { type: "string" },
       path: { type: "string" },
+      within: { type: "string" },
       mode: { type: "string" },
       max: { type: "string" },
       cursor: { type: "string" },
@@ -205,8 +206,10 @@ async function main(argv: string[]): Promise<number> {
       refs: [
         MAP_TOOL_NAMES.references,
         {
-          symbol: { path: rest[0], name: rest[1], line: number(values.line) },
-          path: values.path,
+          path: rest[0],
+          name: rest[1],
+          line: number(values.line),
+          within: values.within,
           maxResults: number(values.max),
           cursor: values.cursor,
         },

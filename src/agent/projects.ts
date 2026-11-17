@@ -65,13 +65,14 @@ export async function routeMapCall(
   start: SessionStart,
   { name, args }: MapToolCall,
 ): Promise<RoutedCall | string> {
-  // The path that names the repository, and the argument that holds it.
-  const holder = (["symbol", "locator"] as const).find(
-    (key) => name === MAP_TOOL_NAMES.references && args[key] !== undefined,
-  );
-  const value = holder
-    ? (args[holder] as { path: string }).path
-    : (args.path as string | undefined);
+  const references = name === MAP_TOOL_NAMES.references;
+  const locator = references ? (args.locator as { path: string } | undefined) : undefined;
+  // The path that names the repository; for references found by an entityRef, the one their usages
+  // are filtered by.
+  const value =
+    locator?.path ??
+    (args.path as string | undefined) ??
+    (references && args.within !== "." ? (args.within as string) : undefined);
   const named = value || ".";
   const located = await locate(start, named);
   if (!located) {
@@ -86,7 +87,7 @@ export async function routeMapCall(
             : `. Name a file or directory in one, relative to ${start.directory} or absolute${such}`
         }.`;
   }
-  if (!holder) {
+  if (!references) {
     const routed = value === undefined ? args : { ...args, path: located.path };
     if (!Array.isArray(args.tests)) return { project: located.project, args: routed };
     // The tests a check is judged by are files of the repository it checks.
@@ -99,15 +100,16 @@ export async function routeMapCall(
     }
     return { project: located.project, args: { ...routed, tests } };
   }
-  const routed = {
-    ...args,
-    [holder]: { ...(args[holder] as Record<string, unknown>), path: located.path },
-  };
+  const routed = locator
+    ? { ...args, locator: { ...locator, path: located.path } }
+    : args.path !== undefined
+      ? { ...args, path: located.path }
+      : args;
   // References filter their usages by a path in the declaration's repository.
-  const filter = args.path as string;
+  const filter = args.within as string;
   if (filter === ".") return { project: located.project, args: routed };
   const within = await locate(start, filter);
   if (within?.project !== located.project)
-    return `PROJECT_PATH_INVALID: path ${filter} is not in ${located.project}, the repository of the declaration.`;
-  return { project: located.project, args: { ...routed, path: within.path } };
+    return `PROJECT_PATH_INVALID: within ${filter} is not in ${located.project}, the repository of the declaration.`;
+  return { project: located.project, args: { ...routed, within: within.path } };
 }

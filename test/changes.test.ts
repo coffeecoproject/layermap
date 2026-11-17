@@ -2346,7 +2346,7 @@ test("a field a file both reads and indexes is one reference for each place", as
   t.after(() => map.close());
 
   const { references } = await map.references(
-    { symbol: { path: "src/row.ts", name: "Row.total" }, maxResults: 20 },
+    { path: "src/row.ts", name: "Row.total", maxResults: 20 },
     signal(),
   );
   assert.deepEqual(references.map((reference) => reference.kind).sort(), [
@@ -2373,7 +2373,7 @@ test("an index on a generic or a union names the same field of each type", async
   t.after(() => map.close());
 
   const { references } = await map.references(
-    { symbol: { path: "src/row.ts", name: "Row.total" }, maxResults: 20 },
+    { path: "src/row.ts", name: "Row.total", maxResults: 20 },
     signal(),
   );
   assert.deepEqual([...new Set(references.map((reference) => reference.anchor.path))].sort(), [

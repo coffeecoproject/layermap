@@ -51,8 +51,9 @@ test("an index built with only some languages answers queries on the maps it bui
     {
       version,
       source,
-      symbol: { path: path.posix.join("src", "main.ts"), name: "helper" },
-      path: ".",
+      path: path.posix.join("src", "main.ts"),
+      name: "helper",
+      within: ".",
       maxResults: 20,
       allowedPathPrefixes: ["."],
       outputBudget,

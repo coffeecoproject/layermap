@@ -56,7 +56,7 @@ const more = (nextOffset: number | undefined) =>
 // What an agent can do about a failure, for the codes a wrong argument or a busy map produces.
 const HINTS: Readonly<Record<string, string>> = {
   PROJECT_MAP_OBJECT_NOT_FOUND:
-    "No such path or declaration in the map. Explore the parent directory or the file to see what it contains.",
+    'No such path or declaration in the map. path names a file or directory, and name a declaration in it (as {path: "src/a.ts", name: "run"}); explore the parent directory or the file to see what it contains.',
   PROJECT_FILE_CHANGED: "Files kept changing while the map was updating. Call again.",
   PROJECT_FILE_UNIVERSE_CHANGED: "Files kept changing while the map was updating. Call again.",
   PROJECT_READ_SOURCE_CHANGED: "Files kept changing while the map was updating. Call again.",
@@ -88,6 +88,15 @@ export const describeMapError = (error: unknown): string | undefined =>
 /** A map tool call whose arguments its schema accepted, with their defaults filled in. */
 export type MapToolCall = Readonly<{ name: string; args: Record<string, unknown> }>;
 
+// A call each tool takes, for an agent that guessed its arguments; the two that select a
+// declaration select it the same way.
+const EXAMPLES: Readonly<Record<string, string>> = {
+  [MAP_TOOL_NAMES.explore]:
+    '{"path": "src/billing/tax.ts", "name": "calculateTax", "direction": "INCOMING", "depth": 8}',
+  [MAP_TOOL_NAMES.references]: '{"path": "src/billing/tax.ts", "name": "calculateTax"}',
+  [MAP_TOOL_NAMES.search]: '{"query": "tax"}',
+};
+
 /** The call as its tool's schema reads it, or what an agent reads about why it cannot be made. */
 export function parseMapToolCall(name: string, args: unknown): MapToolCall | MapToolResult {
   const tool = agentMapTools.find((candidate) => candidate.name === name);
@@ -95,7 +104,7 @@ export function parseMapToolCall(name: string, args: unknown): MapToolCall | Map
   const parsed = tool.schema.safeParse(args ?? {});
   if (!parsed.success)
     return {
-      text: `Invalid arguments: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "(arguments)"}: ${issue.message}`).join("; ")}`,
+      text: `Invalid arguments: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "(arguments)"}: ${issue.message}`).join("; ")}${EXAMPLES[name] ? `. For example: ${EXAMPLES[name]}` : ""}`,
       isError: true,
     };
   return { name, args: parsed.data as Record<string, unknown> };

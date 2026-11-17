@@ -262,16 +262,34 @@ export class ProjectMapReferenceQuery {
     );
     if (!prefixes.length || prefixes.length > 64)
       throw new ProjectEvidenceError("PROJECT_READ_INPUT_INVALID", false);
-    const selection = mapQuerySelection(input, MapReferenceKindSchema.options);
-    const query = { path: selection.path, kinds: [...selection.kinds] };
-    const object = requireMapObject(this.store, input.version, input, prefixes);
+    const { path, name, line, entityRef, locator } = input;
+    if ((path === undefined) !== (name === undefined) || (line !== undefined && name === undefined))
+      throw new ProjectEvidenceError("PROJECT_READ_INPUT_INVALID", false);
+    const selection = mapQuerySelection(
+      { path: input.within, kinds: input.kinds },
+      MapReferenceKindSchema.options,
+    );
+    const query = { within: selection.path, kinds: [...selection.kinds] };
+    const object = requireMapObject(
+      this.store,
+      input.version,
+      {
+        entityRef,
+        locator,
+        symbol:
+          path !== undefined && name !== undefined
+            ? { path, name, ...(line === undefined ? {} : { line }) }
+            : undefined,
+      },
+      prefixes,
+    );
     if (object.symbolStart === undefined)
       throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_TARGET_UNAVAILABLE", false);
     const availableContexts = this.contexts(input.version, object.anchor.path);
     if (!availableContexts.length)
       throw new ProjectEvidenceError("PROJECT_MAP_REFERENCE_CONTEXT_UNAVAILABLE", false);
     const contexts = availableContexts.filter((context) =>
-      context.inputFiles.some((file) => mapQueryPathMatches(file, query.path)),
+      context.inputFiles.some((file) => mapQueryPathMatches(file, query.within)),
     );
     if (
       contexts.some((context) => context.inputFiles.some((file) => !mapPathAllowed(file, prefixes)))
@@ -345,7 +363,7 @@ export class ProjectMapReferenceQuery {
       if (
         !anchored(reference, files) ||
         !mapPathAllowed(reference.anchor.path, prefixes) ||
-        !mapQueryPathMatches(reference.anchor.path, query.path) ||
+        !mapQueryPathMatches(reference.anchor.path, query.within) ||
         !query.kinds.includes(reference.kind) ||
         locations.has(location)
       )

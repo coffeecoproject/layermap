@@ -66,7 +66,7 @@ test("a package's types give a framework page's this, and never enter the map", 
   assert.match(view.text, /← called by src\/page\.ts: run /u);
   // The references read the same packages, or they would disagree with the map.
   const { references } = await map.references(
-    { symbol: { path: "src/page.ts", name: "helper" }, maxResults: 20 },
+    { path: "src/page.ts", name: "helper", maxResults: 20 },
     signal(),
   );
   assert.ok(references.some(({ kind }) => kind === "CALL"));
