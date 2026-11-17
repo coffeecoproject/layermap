@@ -1,8 +1,11 @@
 import {
+  isBindingElement,
   isCallExpression,
   isIdentifier,
+  isObjectBindingPattern,
   isPropertyAssignment,
   isShorthandPropertyAssignment,
+  isStringLiteral,
   type Node,
   SyntaxKind,
 } from "typescript/unstable/ast";
@@ -66,8 +69,7 @@ export class MapTargetResolver {
     const cached = this.cache.get(symbol.id);
     if (cached) return cached;
     const original = symbol.id;
-    if (symbol.flags & SymbolFlags.Alias)
-      symbol = await this.project.checker.getAliasedSymbol(symbol);
+    symbol = await mapSymbolTarget(this.project, symbol);
     const objects: MapObject[] = [];
     const reasons = new Set<MapRelation["unresolvedReason"]>();
     const nodes = new Map<(typeof symbol.declarations)[number], Node | undefined>();
@@ -126,10 +128,7 @@ export class MapTargetResolver {
     if (this.input.syntaxOnly || !symbol) return [];
     const cached = this.mappedCache.get(symbol.id);
     if (cached) return cached;
-    const target =
-      symbol.flags & SymbolFlags.Alias
-        ? await this.project.checker.getAliasedSymbol(symbol)
-        : symbol;
+    const target = await mapSymbolTarget(this.project, symbol);
     const objects: MapObject[] = [];
     if (target.flags & SymbolFlags.Variable)
       for (const handle of target.declarations) {
@@ -149,10 +148,7 @@ export class MapTargetResolver {
     depth = 0,
   ): Promise<Resolution | undefined> {
     if (this.input.syntaxOnly || !symbol) return undefined;
-    const target =
-      symbol.flags & SymbolFlags.Alias
-        ? await this.project.checker.getAliasedSymbol(symbol)
-        : symbol;
+    const target = await mapSymbolTarget(this.project, symbol);
     let callable = (target.flags & (SymbolFlags.Function | SymbolFlags.Method)) !== 0;
     if (!callable && target.flags & (SymbolFlags.Variable | SymbolFlags.Property))
       for (const handle of target.declarations) {
@@ -196,6 +192,11 @@ export class MapTargetResolver {
     return resolved.objects.length ? resolved : undefined;
   }
 
+  /**
+   * What a symbol stands for: an alias's target, and for a binding taken apart from a module's
+   * namespace, the export it takes: const { f } = await import("./m"), import("./m").then(({ f }) =>
+   * ...), const { f } = ns. A binding taken apart from any other object stays the binding.
+   */
   private callableType(symbol: CompilerSymbol): Promise<boolean> {
     const known = this.callableTypes.get(symbol.id);
     if (known) return known;
@@ -225,4 +226,33 @@ export class MapTargetResolver {
     }
     return [...objects.values()];
   }
+}
+
+/**
+ * What a name stands for in the code that declares it: an import's target, and a binding taken
+ * apart from a module's namespace (const { foo } = await import("./mod")) as the module's export.
+ * A binding taken from any other object stays a binding of its own.
+ */
+export async function mapSymbolTarget(
+  project: Project,
+  symbol: CompilerSymbol,
+): Promise<CompilerSymbol> {
+  const { checker } = project;
+  if (symbol.flags & SymbolFlags.Alias) return checker.getAliasedSymbol(symbol);
+  const [handle, other] = symbol.declarations;
+  // The handle tells the declaration's kind without asking the compiler for its node.
+  if (!(symbol.flags & SymbolFlags.Variable) || handle?.kind !== SyntaxKind.BindingElement || other)
+    return symbol;
+  if (mapRelativePath(handle.path) === undefined) return symbol;
+  const node = await handle.resolve(project);
+  if (!node || !isBindingElement(node) || node.dotDotDotToken) return symbol;
+  if (!isObjectBindingPattern(node.parent)) return symbol;
+  const key = node.propertyName ?? node.name;
+  if (!key || (!isIdentifier(key) && !isStringLiteral(key))) return symbol;
+  const type = await checker.getTypeAtLocation(node.parent);
+  const namespace = type && (await type.getSymbol());
+  if (!type || !namespace || !(namespace.flags & SymbolFlags.ValueModule)) return symbol;
+  const taken = await checker.getPropertyOfType(type, key.text);
+  if (!taken) return symbol;
+  return taken.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(taken) : taken;
 }

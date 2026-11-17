@@ -35,11 +35,11 @@ import {
 import {
   type Symbol as CompilerSymbol,
   type Project,
-  SymbolFlags,
   type Type,
   TypeFlags,
 } from "typescript/unstable/async";
 import { mapInNodeModules } from "./project-map-installed";
+import { mapSymbolTarget } from "./project-map-resolution";
 import { constDeclaration, httpMethod } from "./project-map-routes";
 import { mapTestPath } from "./project-map-types";
 import { mapRelativePath } from "./project-map-virtual-files";
@@ -371,10 +371,7 @@ export class MapPathFolder {
             ? callee
             : undefined;
         const symbol = project && name && (await project.checker.getSymbolAtLocation(name));
-        if (!project || !symbol) return undefined;
-        return symbol.flags & SymbolFlags.Alias
-          ? await project.checker.getAliasedSymbol(symbol)
-          : symbol;
+        return project && symbol ? mapSymbolTarget(project, symbol) : undefined;
       }),
     );
   }
@@ -483,10 +480,9 @@ export class MapPathFolder {
     const local = constDeclaration(name);
     if (local) return this.fold(local, false, depth + 1);
     if (!this.project) return undefined;
-    let symbol = await this.project.checker.getSymbolAtLocation(name);
-    if (!symbol) return undefined;
-    if (symbol.flags & SymbolFlags.Alias)
-      symbol = await this.project.checker.getAliasedSymbol(symbol);
+    const named = await this.project.checker.getSymbolAtLocation(name);
+    if (!named) return undefined;
+    const symbol = await mapSymbolTarget(this.project, named);
     const id = symbol.id;
     if (this.folding.has(id)) return undefined;
     const known = this.symbols.get(id);

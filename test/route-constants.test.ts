@@ -172,6 +172,17 @@ test("a test requesting a route under a base URL it computes is found too", asyn
   assert.equal(selected["test/stock.test.ts"]?.why, 'requests "GET /api/v1/stock"');
 });
 
+test("a route under a constant taken apart from a module's namespace is found too", async () => {
+  const routes = FILES["src/routes.ts"]?.replace(
+    'import { API, ITEMS_PATH } from "./paths";\n',
+    'import * as paths from "./paths";\n\nconst { API, ITEMS_PATH } = paths;\n',
+  );
+  assert.ok(routes?.includes("const { API, ITEMS_PATH } = paths;"));
+  const files = { ...FILES, "src/routes.ts": routes };
+  const data = await check(await changed("src/service.ts", "return 2;", "return 20;", files));
+  assert.equal(tests(data)["test/stock.test.ts"]?.why, 'requests "GET /api/v1/stock"');
+});
+
 test("for a route no test requests, where the app's tests request its routes in ways the map reads, no test is selected and the check says so", async () => {
   const data = await check(await changed("src/service.ts", "return 3;", "return 30;"));
   assert.deepEqual(Object.keys(tests(data)), [], JSON.stringify(data.tests));

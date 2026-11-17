@@ -1,10 +1,10 @@
-import path from "node:path";
 import { stopProcessTree } from "./platform";
 import { withMapCompiler } from "./project-map-compiler";
 import { applyMapWorkspace, discoverMapConfiguration } from "./project-map-configuration";
 import { mapParsingContext } from "./project-map-context";
 import { extractProjectMap } from "./project-map-extract";
 import { type MapParserTrace, mapWorkerFailure } from "./project-map-failure";
+import { mapPackages } from "./project-map-installed";
 import { extractMapDiagnostics } from "./project-map-reference-diagnostics";
 import { extractMapReferences } from "./project-map-reference-extract";
 import type { MapReferenceRequest } from "./project-map-reference-types";
@@ -74,8 +74,12 @@ process.once(
           await timing?.checkpoint(api, "OPEN_PROJECT");
           trace.phase = message.operation === "REFERENCES" ? "REFERENCES" : "SOURCE_FILES";
           const programFiles = await project.program.getSourceFileNames();
+          const packages = mapPackages(
+            message.files,
+            (relative) => files.fs.directoryExists?.(mapVirtualPath(relative)) ?? false,
+          );
           if (message.operation === "DIAGNOSTICS") {
-            const result = await extractMapDiagnostics(project, message, programFiles);
+            const result = await extractMapDiagnostics(project, message, programFiles, packages);
             result.requiredFiles = [...files.required].sort();
             await snapshot.dispose();
             return result;
@@ -104,15 +108,7 @@ process.once(
                         ? text
                         : undefined;
                     },
-                    (file, name) => {
-                      // Up from the importing file, as the compiler looks for a package.
-                      for (let at = path.posix.dirname(file); ; at = path.posix.dirname(at)) {
-                        const modules = at === "." ? "node_modules" : `${at}/node_modules`;
-                        if (files.fs.directoryExists?.(mapVirtualPath(`${modules}/${name}`)))
-                          return true;
-                        if (at === ".") return false;
-                      }
-                    },
+                    packages,
                   );
           result.requiredFiles = [...files.required].sort();
           if ("contexts" in result) {

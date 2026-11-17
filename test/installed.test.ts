@@ -4,7 +4,13 @@ import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { mapInstalledDigest, mapMissingPackage, mapPackageOf } from "../src/project-map-installed";
+import {
+  type MapPackages,
+  mapInstalledDigest,
+  mapMissingPackage,
+  mapPackageOf,
+  mapPackages,
+} from "../src/project-map-installed";
 import { MapVirtualFiles } from "../src/project-map-virtual-files";
 import { mapWorkspaceMembership } from "../src/project-map-workspace-membership";
 import { openMap, project, sandbox, signal } from "./support";
@@ -91,13 +97,51 @@ test("a project without its packages says which, and what the result lacks", asy
   const map = await openMap(root);
   t.after(() => map.close());
   const overview = await map.explore({ path: "." }, signal());
-  assert.match(overview.text, /Map limits: .*absent-pkg, fw are not installed in this directory/u);
+  // A `types` entry no package.json depends on is a package of types.
+  assert.match(overview.text, /Map limits: .*@types\/fw, absent-pkg are not installed/u);
   await editHelper(write);
   const { text } = await map.checkChanges({}, signal());
   // Named by the `types` entry alone: nothing imports the framework.
-  assert.match(text, /^PACKAGES NOT FOUND \(.*fw.*\): are dependencies installed/mu);
+  assert.match(
+    text,
+    /^PACKAGES NOT FOUND \(@types\/fw, absent-pkg\): are dependencies installed/mu,
+  );
   assert.match(text, /this report can miss what the change reaches/u);
   assert.match(text, /src\/page\.ts: helper .*has no callers|helper has no callers/u);
+});
+
+test("a `types` entry the project depends on is the package itself, not one of types", async (t) => {
+  const { root, write } = await project({
+    ...PAGE,
+    "package.json": JSON.stringify({ devDependencies: { fw: "1.0.0" } }),
+  });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  // fw itself, not @types/fw.
+  assert.match(
+    (await map.explore({ path: "." }, signal())).text,
+    /Map limits: .*(?<![\w/-])fw are not installed/u,
+  );
+  await editHelper(write);
+  assert.match((await map.checkChanges({}, signal())).text, /^PACKAGES NOT FOUND \(fw\)/mu);
+});
+
+test("a name only Node's types declare tells a check that they are missing", async (t) => {
+  const uses = (exit: number) =>
+    `import { readFileSync } from "node:fs";\nexport function run() {\n  readFileSync("x");\n  process.exit(${exit});\n}\n`;
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/run.ts": uses(0),
+  });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  await write("src/run.ts", uses(1));
+  assert.match(
+    (await map.checkChanges({}, signal())).text,
+    /^PACKAGES NOT FOUND \(@types\/node\)/mu,
+  );
 });
 
 test("a package installed without types is not reported as missing", async (t) => {
@@ -504,9 +548,66 @@ test("a package's name is what an import or a diagnostic names", () => {
     "virtual:x",
   ])
     assert.equal(mapPackageOf(other), other === "~/alias" ? "~" : undefined, other);
-  assert.equal(mapMissingPackage(2307, "Cannot find module 'pkg/sub' or its types."), "pkg");
-  assert.equal(mapMissingPackage(2792, "Cannot find module '@s/p'. Did you mean..."), "@s/p");
-  assert.equal(mapMissingPackage(2688, "Cannot find type definition file for 'fw'."), "fw");
-  assert.equal(mapMissingPackage(2307, "Cannot find module './local'."), undefined);
-  assert.equal(mapMissingPackage(2345, "Argument of type 'x'."), undefined);
+  const none: MapPackages = { installed: () => false, declared: () => false };
+  const missing = (code: number, text: string, packages = none) =>
+    mapMissingPackage(code, text, "src/a.ts", packages);
+  assert.equal(missing(2307, "Cannot find module 'pkg/sub' or its types."), "pkg");
+  assert.equal(missing(2792, "Cannot find module '@s/p'. Did you mean..."), "@s/p");
+  assert.equal(missing(2307, "Cannot find module './local'."), undefined);
+  assert.equal(missing(2345, "Argument of type 'x'."), undefined);
+});
+
+test("a missing `types` entry or name is reported as the package to install", () => {
+  const none: MapPackages = { installed: () => false, declared: () => false };
+  const missing = (code: number, text: string, packages = none) =>
+    mapMissingPackage(code, text, "src/a.ts", packages);
+  const entry = (name: string) => `Cannot find type definition file for '${name}'.`;
+  // A bare entry is a package of types, unless the project depends on the package itself.
+  assert.equal(missing(2688, entry("node")), "@types/node");
+  const declares =
+    (...names: string[]) =>
+    (file: string, name: string) => {
+      assert.equal(file, "src/a.ts");
+      return names.includes(name);
+    };
+  assert.equal(missing(2688, entry("fw"), { ...none, declared: declares("fw") }), "fw");
+  assert.equal(
+    missing(2688, entry("fw"), { ...none, declared: declares("fw", "@types/fw") }),
+    "@types/fw",
+  );
+  assert.equal(missing(2688, entry("vite/client")), "vite");
+  assert.equal(missing(2688, entry("@cloudflare/workers-types")), "@cloudflare/workers-types");
+  // A name the compiler cannot find, with the one package of types it suggests.
+  const name = (suggestion: string) =>
+    `Cannot find name 'process'. Do you need to install type definitions for node? Try ${suggestion}.`;
+  const node = name("`npm i --save-dev @types/node` and then add 'node' to the types field");
+  assert.equal(missing(2591, node), "@types/node");
+  assert.equal(missing(2580, name("`npm i --save-dev @types/node`")), "@types/node");
+  // Installed but left out of `types`: not a package that is missing.
+  assert.equal(missing(2591, node, { ...none, installed: () => true }), undefined);
+  assert.equal(
+    missing(2582, name("`npm i --save-dev @types/jest` or `npm i --save-dev @types/mocha`")),
+    undefined,
+  );
+  assert.equal(missing(2304, "Cannot find name 'thing'."), undefined);
+});
+
+test("a file finds the packages installed and declared in the directories above it", () => {
+  const packages = mapPackages(
+    {
+      "package.json": JSON.stringify({ devDependencies: { "@types/node": "1" } }),
+      "apps/web/package.json": JSON.stringify({ dependencies: { fw: "1" } }),
+      "apps/bad/package.json": "{",
+    },
+    (directory) => ["node_modules/lib", "apps/web/node_modules/fw"].includes(directory),
+  );
+  assert.equal(packages.declared("apps/web/src/a.ts", "fw"), true);
+  assert.equal(packages.declared("apps/web/src/a.ts", "@types/node"), true);
+  assert.equal(packages.declared("apps/bad/a.ts", "@types/node"), true);
+  assert.equal(packages.declared("src/a.ts", "fw"), false);
+  assert.equal(packages.declared("tsconfig.json", "fw"), false);
+  assert.equal(packages.installed("apps/web/src/a.ts", "fw"), true);
+  assert.equal(packages.installed("apps/web/src/a.ts", "lib"), true);
+  assert.equal(packages.installed("apps/bad/a.ts", "fw"), false);
+  assert.equal(packages.installed("a.ts", "lib"), true);
 });

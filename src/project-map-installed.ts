@@ -35,12 +35,97 @@ export function mapPackageOf(specifier: string): string | undefined {
   return /^(?:@[a-z0-9~][\w.~-]*\/)?[a-z0-9~][\w.~-]*(?=\/|$)/iu.exec(specifier)?.[0];
 }
 
-/** The package a compiler diagnostic says it could not find, undefined for other diagnostics. */
-export function mapMissingPackage(code: number, text: string): string | undefined {
+/** What a context's code finds of npm packages, seen from one of its files. */
+export type MapPackages = Readonly<{
+  /** Whether the package is installed where the file would find it. */
+  installed: (file: string, name: string) => boolean;
+  /** Whether a package.json in a directory above the file names the package as a dependency. */
+  declared: (file: string, name: string) => boolean;
+}>;
+
+const DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+] as const;
+
+// The directories above a file, nearest first, up to the root, ".".
+function directoriesAbove(file: string): string[] {
+  const directories = [path.posix.dirname(file)];
+  while (directories.at(-1) !== ".")
+    directories.push(path.posix.dirname(directories.at(-1) ?? "."));
+  return directories;
+}
+
+const within = (directory: string, name: string) =>
+  directory === "." ? name : `${directory}/${name}`;
+
+// Whether a package.json, as its text, names the package as a dependency; one that does not parse
+// declares nothing.
+function dependsOn(manifest: string, name: string): boolean {
+  try {
+    const value = JSON.parse(manifest) as Record<string, unknown> | null;
+    return DEPENDENCY_FIELDS.some((field) => {
+      const dependencies = value?.[field];
+      return typeof dependencies === "object" && dependencies !== null
+        ? Object.hasOwn(dependencies, name)
+        : false;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a context's code finds of npm packages: those installed in a node_modules directory, as
+ * the compiler looks for them, up from the file, and those a package.json above it depends on.
+ */
+export function mapPackages(
+  files: Readonly<Record<string, string>>,
+  directoryExists: (relative: string) => boolean,
+): MapPackages {
+  return {
+    installed: (file, name) =>
+      directoriesAbove(file).some((at) => directoryExists(within(at, `node_modules/${name}`))),
+    declared: (file, name) =>
+      directoriesAbove(file).some((at) => {
+        const manifest = within(at, "package.json");
+        return Object.hasOwn(files, manifest) && dependsOn(files[manifest] ?? "", name);
+      }),
+  };
+}
+
+// Cannot find a name such as process, $ or describe: the compiler names the package of types that
+// would declare it.
+const SUGGESTING_TYPES = new Set([2580, 2581, 2582, 2591, 2592, 2593, 2867, 2868]);
+
+/**
+ * The package a compiler diagnostic in the file (for the program's own, its configuration) says
+ * is not there, undefined for other diagnostics.
+ */
+export function mapMissingPackage(
+  code: number,
+  text: string,
+  file: string,
+  packages: MapPackages,
+): string | undefined {
+  if (SUGGESTING_TYPES.has(code)) {
+    // Two suggestions (jest or mocha) do not say which is meant; one installed is not missing,
+    // only left out of the configuration's `types`.
+    const [suggested, other] = new Set(text.match(/@types\/[\w-]+(?:\.[\w-]+)*/gu));
+    return suggested && !other && !packages.installed(file, suggested) ? suggested : undefined;
+  }
   // Cannot find module 'x', its variant asking for another module resolution, and a `types` entry.
   if (code !== 2307 && code !== 2792 && code !== 2688) return undefined;
   const named = /'([^']+)'/u.exec(text)?.[1];
-  return named ? mapPackageOf(named) : undefined;
+  const name = named ? mapPackageOf(named) : undefined;
+  // A `types` entry names a package of types: @types/<entry>, unless the entry is a package of its
+  // own, scoped or with a path into it, or the project depends on the package itself.
+  if (code !== 2688 || !name || name !== named || name.startsWith("@")) return name;
+  return packages.declared(file, name) && !packages.declared(file, `@types/${name}`)
+    ? name
+    : `@types/${name}`;
 }
 
 /**

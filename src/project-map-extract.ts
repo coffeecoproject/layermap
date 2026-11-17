@@ -54,6 +54,7 @@ import {
 import type { MapParserTrace } from "./project-map-failure";
 import {
   MAP_DEPENDENCY_NOT_INSTALLED,
+  type MapPackages,
   mapMissingPackage,
   mapPackageOf,
 } from "./project-map-installed";
@@ -172,8 +173,8 @@ export async function extractProjectMap(
   trace: MapParserTrace,
   /** A file outside the program, read so that it counts among the context's inputs. */
   read: (path: string) => string | undefined,
-  /** Whether a package an owned file imports is installed where that file would find it. */
-  installed: (path: string, name: string) => boolean,
+  /** The packages the context's files would find. */
+  packages: MapPackages,
 ): Promise<MapAnalysis> {
   const output: MapAnalysis = {
     contexts: [],
@@ -917,7 +918,12 @@ export async function extractProjectMap(
   const notInstalled = new Set<string>();
   for (const diagnostic of await project.program.getProgramDiagnostics()) {
     gap(`TSC_PROGRAM_${diagnostic.code}`, input.configPath);
-    const name = mapMissingPackage(diagnostic.code, diagnostic.text);
+    const name = mapMissingPackage(
+      diagnostic.code,
+      diagnostic.text,
+      input.configPath ?? ".",
+      packages,
+    );
     if (name) notInstalled.add(name);
   }
   // An import the compiler found nothing for: of a package that is not there, unless the package
@@ -926,7 +932,7 @@ export async function extractProjectMap(
     if (relation.kind !== "IMPORTS" || relation.unresolvedReason !== "SYMBOL_NOT_RESOLVED")
       continue;
     const name = mapPackageOf(relation.target);
-    if (name && !installed(relation.anchor.path, name)) notInstalled.add(name);
+    if (name && !packages.installed(relation.anchor.path, name)) notInstalled.add(name);
   }
   for (const name of [...notInstalled].sort())
     output.gaps.push({ code: MAP_DEPENDENCY_NOT_INSTALLED, package: name });

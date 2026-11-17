@@ -1,5 +1,5 @@
 import { DiagnosticCategory, type Project } from "typescript/unstable/async";
-import { mapMissingPackage } from "./project-map-installed";
+import { type MapPackages, mapMissingPackage } from "./project-map-installed";
 import type { MapDiagnostics } from "./project-map-reference-types";
 import type { MapWorkerInput } from "./project-map-types";
 import { mapRelativePath } from "./project-map-virtual-files";
@@ -9,12 +9,13 @@ export async function extractMapDiagnostics(
   project: Project,
   input: MapWorkerInput,
   programFiles: readonly string[],
+  packages: MapPackages,
 ): Promise<MapDiagnostics> {
   const diagnostics: MapDiagnostics["diagnostics"] = [];
   const missing = new Set<string>();
   // A `types` entry that is not there is the program's, not any file's.
   for (const item of await project.program.getProgramDiagnostics()) {
-    const name = mapMissingPackage(item.code, item.text);
+    const name = mapMissingPackage(item.code, item.text, input.configPath ?? ".", packages);
     if (name) missing.add(name);
   }
   for (const name of programFiles) {
@@ -23,7 +24,7 @@ export async function extractMapDiagnostics(
     if (relative === undefined || text === undefined) continue;
     for (const item of await project.program.getSemanticDiagnostics(name)) {
       if (item.category !== DiagnosticCategory.Error) continue;
-      const missed = mapMissingPackage(item.code, item.text);
+      const missed = mapMissingPackage(item.code, item.text, relative, packages);
       if (missed) missing.add(missed);
       let line = 1;
       for (let at = text.indexOf("\n"); at >= 0 && at < item.pos; at = text.indexOf("\n", at + 1))
