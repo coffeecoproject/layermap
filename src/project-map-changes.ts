@@ -70,6 +70,8 @@ import { MapViewGraph, mapDeclarationLabel } from "./project-map-view-graph";
 
 export async function mapChangeImpact(
   store: CodeIndexStore,
+  /** What the check reads of whole versions, read once for all its parts. */
+  views: MapViewCache,
   working: string,
   base: string | undefined,
   changes: MapChanges,
@@ -82,8 +84,7 @@ export async function mapChangeImpact(
   tests?: readonly string[],
 ): Promise<MapChangeImpact> {
   const graph = new MapViewGraph(store, working);
-  const cache = new MapViewCache();
-  const memberCalls = cache.memberCalls(store, working);
+  const memberCalls = views.memberCalls(store, working);
   const tracer = new Tracer(
     graph,
     memberCalls,
@@ -267,7 +268,7 @@ export async function mapChangeImpact(
   const taken = base
     ? await mapRemovedImpact({
         store,
-        cache,
+        cache: views,
         base,
         graph,
         tracer,
@@ -318,7 +319,7 @@ export async function mapChangeImpact(
     unmapped,
     removedRoutes: taken?.removedRoutes ?? [],
     uncalled: taken?.uncalled ?? [],
-    dependencies: newModuleDependencies(store, cache, working, changes.files, links.files),
+    dependencies: newModuleDependencies(store, views, working, changes.files, links.files),
     ...(untested ? { untested } : {}),
     truncated: tracer.truncated,
   };
@@ -544,8 +545,10 @@ export async function checkMapChanges(
   // first, as they decide what the trace reaches; the compile has what they leave.
   const until = mapShapeDeadline();
   const links = mapChangeLinks(index.store, working, base, changes.files);
+  const views = new MapViewCache();
   const impact = await mapChangeImpact(
     index.store,
+    views,
     working,
     base,
     changes,
@@ -568,12 +571,15 @@ export async function checkMapChanges(
       await mapRouteClients(project, index.store, working, impact, signal),
       reusable(
         index.store,
+        views,
         working,
         await similarCode(index.store, working, base, changes.files, (file) =>
           readFile(path.join(project, file), "utf8").catch(() => undefined),
         ),
       ),
-      changes.files.length ? await compileBreaks(input, changes, base, until, signal) : undefined,
+      changes.files.length
+        ? await compileBreaks(input, views, changes, base, until, signal)
+        : undefined,
     ),
   };
 }
@@ -585,11 +591,12 @@ export async function checkMapChanges(
  */
 function reusable(
   store: CodeIndexStore,
+  views: MapViewCache,
   working: string,
   similar: readonly MapSimilarCode[],
 ): MapReusableCode[] {
   if (!similar.length) return [];
-  const importsFor = mapReuseImports(store, new MapViewCache(), working);
+  const importsFor = mapReuseImports(store, views, working);
   return similar.flatMap((item) => {
     const imports = importsFor(item.path, item.like.path);
     return imports ? [{ ...item, imports }] : [];
@@ -640,6 +647,7 @@ export async function mapRouteClients(
  */
 async function compileBreaks(
   input: MapChangeCheckInput,
+  views: MapViewCache,
   changes: MapChanges,
   base: string | undefined,
   until: number,
@@ -666,7 +674,6 @@ async function compileBreaks(
   );
   const missing = new Set(after.contexts.flatMap((context) => context.missing));
   // A context without a configuration is not compiled here, but its imports still tell.
-  const views = new MapViewCache();
   const { notInstalled } = views.coverageNotes(index.store, working);
   if (notInstalled.length)
     for (const { source, target, specifier } of views.imports(index.store, working))

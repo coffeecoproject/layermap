@@ -19,6 +19,7 @@ import { GitRunner } from "./git-runner";
 import { ProjectMapAnalyzer } from "./project-map-analyzer";
 import { resolveMapBase } from "./project-map-change-diff";
 import { checkMapChanges, type MapChangesData } from "./project-map-changes";
+import { loadMapImports, type MapProjectImports, mapProjectImports } from "./project-map-imports";
 import { mapInstalledDigest } from "./project-map-installed";
 import { GoMapAnalyzer } from "./project-map-language-go";
 import { JavaMapAnalyzer } from "./project-map-language-java";
@@ -488,6 +489,13 @@ export class LayerMap {
           signal,
         ),
       ),
+    );
+  }
+
+  /** Every import of the directory as it is now, by file of the project, test files apart. */
+  imports(signal: AbortSignal): Promise<MapProjectImports> {
+    return this.using(async (hold) =>
+      mapProjectImports(loadMapImports(this.store, await this.current(signal, hold))),
     );
   }
 

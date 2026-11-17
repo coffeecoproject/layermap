@@ -1,7 +1,7 @@
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError } from "./core";
 import { canonicalJson } from "./digest";
-import type { MapRelation } from "./project-map-types";
+import { type MapRelation, mapTestPath } from "./project-map-types";
 
 export const mapSearchAllowedSql = (column: string) => `EXISTS (SELECT 1 FROM json_each(?) scope
   WHERE scope.value = '.' OR ${column} = scope.value OR substr(${column}, 1, length(scope.value) + 1) = scope.value || '/')`;
@@ -17,7 +17,6 @@ const relationWeight: Readonly<Record<MapRelation["kind"], number>> = {
   WRITES: 1200,
   READS: 900,
   IMPORTS: 800,
-  TEST_IMPORTS: 700,
   EXTENDS: 900,
   IMPLEMENTS: 900,
   OVERRIDES: 900,
@@ -25,6 +24,8 @@ const relationWeight: Readonly<Record<MapRelation["kind"], number>> = {
   REFERENCES: 500,
   CONTAINS: 250,
 };
+// A test's imports say less about the code it imports than the code's own imports do.
+const TEST_IMPORT_WEIGHT = 700;
 
 export function mapSearchFocus(
   store: CodeIndexStore,
@@ -45,7 +46,7 @@ export function mapSearchFocus(
   for (const ref of refs) found.set(ref, { distance: 0, score: 1800 });
 
   let frontier = new Set(refs);
-  const edges = store.database.prepare(`SELECT r.from_ref, r.to_ref,
+  const edges = store.database.prepare(`SELECT r.from_ref, r.to_ref, r.path,
       json_extract(r.relation_json, '$.kind') AS kind
     FROM project_map_relations r
     JOIN project_map_objects f ON f.version_ref = r.version_ref AND f.entity_ref = r.from_ref
@@ -65,7 +66,11 @@ export function mapSearchFocus(
       assertMapSearchActive(signal);
       const from = String(row.from_ref);
       const to = String(row.to_ref);
-      const weight = relationWeight[String(row.kind) as MapRelation["kind"]];
+      const kind = String(row.kind) as MapRelation["kind"];
+      const weight =
+        kind === "IMPORTS" && mapTestPath(String(row.path))
+          ? TEST_IMPORT_WEIGHT
+          : relationWeight[kind];
       if (weight === undefined)
         throw new ProjectEvidenceError("PROJECT_EVIDENCE_STORE_CORRUPT", false);
       for (const [parent, neighbor] of [

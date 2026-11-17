@@ -703,11 +703,7 @@ func (w *walker) importSpec(spec *ast.ImportSpec, fileObject int) {
 		return
 	}
 	start, end := w.x.span(spec)
-	kind := "IMPORTS"
-	if w.file.test {
-		kind = "TEST_IMPORTS"
-	}
-	fact := relationFact{Kind: kind, From: fileObject, Path: w.file.path, Start: start, End: end, Target: importPath}
+	fact := relationFact{Kind: "IMPORTS", From: fileObject, Path: w.file.path, Start: start, End: end, Target: importPath}
 	if target := w.x.representative(importPath); target != 0 {
 		fact.To, fact.Basis = target, "TYPE_RESOLVED"
 	} else {

@@ -749,7 +749,6 @@ final class Extract {
       if (!p.written(unit, node)) return null;
       Tree qualified = node.getQualifiedIdentifier();
       String specifier = qualified.toString();
-      String kind = p.tests.contains(path) ? "TEST_IMPORTS" : "IMPORTS";
       int file = fileObjects.get(path);
       TreePath qualifiedPath = child(qualified);
       boolean wildcard = specifier.endsWith(".*");
@@ -761,15 +760,15 @@ final class Extract {
         String pkg = specifier.substring(0, specifier.length() - 2);
         List<Integer> targets = packages.getOrDefault(pkg, List.of());
         for (int target : targets)
-          if (target != file) resolved(site(kind, file, node, specifier), target);
+          if (target != file) resolved(site("IMPORTS", file, node, specifier), target);
         // An on-demand import of a type's members (import p.Outer.*) names the type's file.
         Integer outer = targets.isEmpty() ? fileOf(p.elements.getTypeElement(pkg)) : null;
         if (outer != null) {
-          if (outer != file) resolved(site(kind, file, node, specifier), outer);
+          if (outer != file) resolved(site("IMPORTS", file, node, specifier), outer);
         } else if (targets.isEmpty()) {
           var element = p.elements.getPackageElement(pkg);
           unresolved(
-              site(kind, file, node, specifier),
+              site("IMPORTS", file, node, specifier),
               element != null && p.platform(element) ? "COMPILER_LIBRARY" : "DECLARATION_NOT_AVAILABLE");
         }
         return null;
@@ -780,7 +779,7 @@ final class Extract {
               : qualifiedPath;
       Element element = element(typePath);
       Integer target = element instanceof TypeElement type ? fileOf(type) : null;
-      Map<String, Object> relation = site(kind, file, node, specifier);
+      Map<String, Object> relation = site("IMPORTS", file, node, specifier);
       if (target != null) {
         if (target == file) relations.remove(relation);
         else resolved(relation, target);

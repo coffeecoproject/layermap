@@ -7,7 +7,6 @@ export * from "./code-index-types";
 export * from "./core";
 export * from "./git-runner";
 export * from "./project-map-analyzer";
-export * from "./project-map-archived-navigation";
 export type { MapChangeEdges } from "./project-map-change-edges";
 export type { MapUntestedChanges } from "./project-map-change-types";
 export {
@@ -16,6 +15,7 @@ export {
   type MapChangesData,
 } from "./project-map-changes";
 export * from "./project-map-failure";
+export * from "./project-map-imports";
 export { PROJECT_MAP_ANALYZER } from "./project-map-language";
 export * from "./project-map-navigation";
 export * from "./project-map-process";

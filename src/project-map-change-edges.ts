@@ -1,6 +1,6 @@
 import type { CodeIndexStore } from "./code-index-store";
 import { changedInWorkingTree, mapPathNow, overlaps } from "./project-map-change-diff";
-import { CALLER_KINDS, changedUnits, changeUnits, IMPORT_KINDS } from "./project-map-change-trace";
+import { CALLER_KINDS, changedUnits, changeUnits } from "./project-map-change-trace";
 import { LIMITS, type MapChangedFile } from "./project-map-change-types";
 import { type MapObject, mapTestPath } from "./project-map-types";
 import { MapViewGraph, mapIsModule } from "./project-map-view-graph";
@@ -101,7 +101,7 @@ function linksOf(side: Side, path: string | undefined): Links {
   for (const relation of graph.relationsFrom(graph.objectsAt(path).map((object) => object.id))) {
     const line = relation.anchor.startLine;
     if (relation.to === undefined || !side.counts(path, line)) continue;
-    if (IMPORT_KINDS.has(relation.kind)) {
+    if (relation.kind === "IMPORTS") {
       const target = graph.object(relation.to).anchor.path;
       if (target === path) continue;
       const to = side.pathNow(target);

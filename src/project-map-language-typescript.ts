@@ -29,7 +29,7 @@ import {
 import { type MapAnalysis, MapAnalysisSchema, type MapWorkerInput } from "./project-map-types";
 
 export const TYPESCRIPT_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "typescript-7.0.2-map-v33",
+  id: "typescript-7.0.2-map-v34",
   claims: (path: string) => /\.[cm]?[jt]sx?$/u.test(path),
   readsRequests: true,
   reads: (path: string) =>

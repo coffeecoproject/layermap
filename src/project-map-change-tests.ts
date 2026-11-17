@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { CodeIndexStore } from "./code-index-store";
-import { IMPORT_KINDS, type Tracer, testEntries } from "./project-map-change-trace";
+import { type Tracer, testEntries } from "./project-map-change-trace";
 import type { MapChangedFile, MapChangeEntry } from "./project-map-change-types";
 import {
   mapRegisteredRoute,
@@ -80,7 +80,7 @@ export function importerTests(
     const unread = modules.filter((module) => !importers.has(module));
     for (const module of unread) importers.set(module, []);
     for (const relation of graph.relationsTo(unread)) {
-      if (!IMPORT_KINDS.has(relation.kind) || !relation.to) continue;
+      if (relation.kind !== "IMPORTS" || !relation.to) continue;
       const importer = graph.object(relation.from);
       importers.get(relation.to)?.push({
         path: relation.anchor.path,

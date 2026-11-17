@@ -23,7 +23,7 @@ import {
   runMapOperation,
 } from "./project-map-process";
 import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
-import { type MapAnalysis, type MapWorkerInput, mapTestPath } from "./project-map-types";
+import type { MapAnalysis, MapWorkerInput } from "./project-map-types";
 
 // Build files, the ones that root a whole multi-module build first.
 const BUILD_FILES = [
@@ -43,7 +43,7 @@ const platformPackage =
   /^(?:java|jdk|sun|com\.sun|javax\.(?:annotation\.processing|crypto|imageio|lang\.model|management|naming|net|print|script|security|sound|sql|swing|tools|transaction\.xa|xml))(?:\.|$)/u;
 
 export const JAVA_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "javac-lombok-1.18.48-map-v9",
+  id: "javac-lombok-1.18.48-map-v10",
   claims: (path: string) => path.endsWith(".java"),
   reads: (path: string) => buildFile.test(path),
   // A package of the Java platform, or a library named by its first two package segments.
@@ -169,7 +169,7 @@ export class JavaMapAnalyzer implements MapLanguageAnalyzer {
     }
   }
 
-  // The worker's request for a context: the Java sources, the release and which are tests.
+  // The worker's request for a context: the Java sources and the release.
   private request(input: JavaInput, buildTexts: readonly string[]) {
     const files: Record<string, string> = Object.create(null);
     for (const [path, text] of Object.entries(input.files))
@@ -177,7 +177,6 @@ export class JavaMapAnalyzer implements MapLanguageAnalyzer {
     return {
       files,
       release: javaRelease(buildTexts, this.resources.runtimeVersion),
-      tests: Object.keys(files).filter((path) => mapTestPath(path)),
     };
   }
 
@@ -281,7 +280,6 @@ export class JavaMapAnalyzer implements MapLanguageAnalyzer {
         {
           configPath: configPath || null,
           release: request.release,
-          tests: request.tests,
           runtime,
           built: existsSync(this.resources.compilerPath),
           lombokConfig,

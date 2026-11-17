@@ -82,7 +82,6 @@ import { mapRelativePath as relativePath } from "./project-map-virtual-files";
 import { isMapWrite } from "./project-map-write";
 
 const key = (node: Node) => `${node.getSourceFile().fileName}:${node.pos}:${node.kind}`;
-const IMPORT_RELATIONS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // Nodes that declare something an object can stand for, and the name it would carry.
 const declares = (node: Node) =>
   Boolean(mapExecutionDeclaration(node) || (mapDeclarationKind(node, true) && named(node)));
@@ -394,7 +393,7 @@ export async function extractProjectMap(
         reference = {
           node,
           lookup: moduleSpecifier,
-          kind: /(?:^|[/.])(?:test|spec|tests)(?:[/.]|$)/u.test(path) ? "TEST_IMPORTS" : "IMPORTS",
+          kind: "IMPORTS",
           target: moduleSpecifier.text,
         };
       } else if (isCallExpression(node) || isNewExpression(node)) {
@@ -924,7 +923,7 @@ export async function extractProjectMap(
   // An import the compiler found nothing for: of a package that is not there, unless the package
   // is there without types.
   for (const relation of output.relations) {
-    if (!IMPORT_RELATIONS.has(relation.kind) || relation.unresolvedReason !== "SYMBOL_NOT_RESOLVED")
+    if (relation.kind !== "IMPORTS" || relation.unresolvedReason !== "SYMBOL_NOT_RESOLVED")
       continue;
     const name = mapPackageOf(relation.target);
     if (name && !installed(relation.anchor.path, name)) notInstalled.add(name);

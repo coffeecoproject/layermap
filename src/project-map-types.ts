@@ -47,7 +47,6 @@ export const MapRelationKindSchema = z.enum([
   // A member that implements or overrides the target member, so calls to it may dispatch here.
   "OVERRIDES",
   "DECORATED_BY",
-  "TEST_IMPORTS",
 ]);
 
 export const MapObjectLocatorSchema = z
@@ -129,7 +128,6 @@ export const MAP_RELATION_PRIORITY: Readonly<Record<MapRelation["kind"], number>
   CALLS: 0,
   WRITES: 0,
   IMPORTS: 0,
-  TEST_IMPORTS: 0,
   EXTENDS: 0,
   IMPLEMENTS: 0,
   OVERRIDES: 0,

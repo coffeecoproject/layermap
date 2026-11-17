@@ -17,7 +17,6 @@ process.once(
     files: Record<string, string>;
     root: string;
     pythonVersion: { major: number; minor: number };
-    tests: string[];
     targets?: { path: string; offset: number }[];
   }) => {
     const trace: MapParserTrace = { phase: "OPEN_PROJECT" };
@@ -35,7 +34,7 @@ process.once(
           process.send?.({ result: findPythonReferences(source, message.targets) });
         } else {
           trace.phase = "TRAVERSAL";
-          process.send?.({ result: extractPython(source, new Set(message.tests)) });
+          process.send?.({ result: extractPython(source) });
         }
       } finally {
         trace.phase = "DISPOSE";

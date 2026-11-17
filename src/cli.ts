@@ -33,6 +33,9 @@ Usage:
                                           and what of them the test files given do not run; --json
                                           prints the related tests by rank and what the map cannot
                                           follow, for a program choosing which tests to run
+  layermap imports [--json]               every import of the project as it is now, test files
+                                          apart: the file and line importing, the file imported,
+                                          and the imports with no file of the project, with why
 
 The project is the Git work tree around the current directory unless --project names one; the MCP
 server also maps any other repository a tool call's path names.
@@ -94,7 +97,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (values.help || !command) return usage(command ? 0 : 1);
-  if (values.json && command !== "check") return usage(1);
+  if (values.json && command !== "check" && command !== "imports") return usage(1);
   const { directory: project, git } = await projectDirectory(values.project ?? process.cwd());
   const cache = cacheDirectory();
   const open = async (directory: string) => {
@@ -149,6 +152,23 @@ async function main(argv: string[]): Promise<number> {
         signal,
       );
       process.stdout.write(`${text}\n`);
+      return 0;
+    }
+    if (command === "imports") {
+      const imports = await map.imports(signal);
+      process.stdout.write(
+        values.json
+          ? `${JSON.stringify(imports)}\n`
+          : [
+              `IMPORTS (${imports.imports.length})`,
+              ...imports.imports.map((item) => `${item.from}:${item.line} → ${item.to}`),
+              `UNRESOLVED IMPORTS (${imports.unresolved.length})`,
+              ...imports.unresolved.map(
+                (item) => `${item.from}:${item.line} ${item.specifier} ${item.reason}`,
+              ),
+              "",
+            ].join("\n"),
+      );
       return 0;
     }
     const call: Record<string, [string, Record<string, unknown>]> = {

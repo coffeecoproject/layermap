@@ -72,7 +72,6 @@ final class Program {
   final Elements elements;
   final Types types;
   final SourcePositions positions;
-  final Set<String> tests;
   /** Analyzed compilation units in path order. */
   final Map<String, CompilationUnitTree> units = new TreeMap<>();
   final Map<CompilationUnitTree, String> paths = new IdentityHashMap<>();
@@ -89,21 +88,18 @@ final class Program {
   /** The files whose classes were attributed, when an incremental build did not attribute all. */
   Set<String> attributed;
 
-  private Program(JavacTask task, Set<String> tests) {
+  private Program(JavacTask task) {
     this.task = task;
     this.trees = DocTrees.instance(task);
     this.elements = task.getElements();
     this.types = task.getTypes();
     this.positions = trees.getSourcePositions();
-    this.tests = tests;
   }
 
   static Program load(Map<String, Object> request) throws Exception {
     Map<String, Object> files = Requests.object(request.get("files"));
     int release = Requests.integer(request, "release", 21);
     String lombok = Requests.optionalString(request, "lombok");
-    Set<String> tests = new HashSet<>();
-    for (Object path : Requests.list(request, "tests")) tests.add(String.valueOf(path));
     List<Source> sources = new ArrayList<>();
     for (Map.Entry<String, Object> file : new TreeMap<>(files).entrySet()) {
       if (!file.getKey().endsWith(".java") || !(file.getValue() instanceof String text)) continue;
@@ -174,7 +170,7 @@ final class Program {
                 null,
                 Stream.concat(sources.stream(), missing.stream()).toList());
     if (processing) task.setProcessors(LombokRoots.load(lombok));
-    Program program = new Program(task, tests);
+    Program program = new Program(task);
     for (CompilationUnitTree unit : task.parse()) {
       String path = byUri.get(unit.getSourceFile().toUri());
       if (path == null) continue;

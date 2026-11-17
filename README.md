@@ -226,6 +226,7 @@ npx layermap refs src/billing/tax.ts calculateTax
 npx layermap check --base main
 npx layermap check test/billing.test.ts   # also: what of the change this test does not run
 npx layermap check --json                 # as JSON: related tests by rank, what the map cannot follow, the imports and calls it changes between files
+npx layermap imports --json               # every import of the project as it is now, test files apart: file and line, the file imported, and why the rest reach no file
 ```
 
 ## FAQ

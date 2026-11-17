@@ -74,7 +74,6 @@ export type PythonRelationFact = {
     | "REFERENCES"
     | "WRITES"
     | "IMPORTS"
-    | "TEST_IMPORTS"
     | "EXTENDS"
     | "IMPLEMENTS"
     | "OVERRIDES"
@@ -189,7 +188,6 @@ class Extraction {
   constructor(
     readonly source: PythonProgram,
     readonly evaluator: TypeEvaluator,
-    private readonly tests: ReadonlySet<string>,
   ) {}
 
   add(fact: Omit<PythonObjectFact, "id">): number {
@@ -253,9 +251,6 @@ class Extraction {
       start: node.start,
       end: end(node),
     });
-  }
-  isTest(path: string) {
-    return this.tests.has(path);
   }
 
   // Declarations a name refers to, with imports followed to what they import. An import that
@@ -1231,8 +1226,12 @@ class Relater extends ParseTreeWalker {
 
   private imports(module: ModuleNameNode, site: ParseNode, from?: ImportFromNode) {
     const specifier = `${".".repeat(module.d.leadingDots)}${module.d.nameParts.map((part) => part.d.value).join(".")}`;
-    const kind = this.x.isTest(this.path) ? ("TEST_IMPORTS" as const) : ("IMPORTS" as const);
-    const fact = { kind, from: this.top(this.executing), start: site.start, end: end(site) };
+    const fact = {
+      kind: "IMPORTS" as const,
+      from: this.top(this.executing),
+      start: site.start,
+      end: end(site),
+    };
     const result = getImportInfo(module, this.x.source.program.analyzerNodeInfoReader);
     const resolved = result?.isImportFound ? result.resolvedUris.at(-1) : undefined;
     const path = resolved && !resolved.isEmpty() ? this.x.source.pathOf(resolved) : undefined;
@@ -1343,10 +1342,10 @@ function implementations(x: Extraction) {
 }
 
 /** Map facts for every tracked source of the program. */
-export function extractPython(source: PythonProgram, tests: ReadonlySet<string>): PythonFacts {
+export function extractPython(source: PythonProgram): PythonFacts {
   const evaluator = source.program.evaluator;
   if (!evaluator) throw new Error("PROJECT_MAP_ANALYSIS_FAILED");
-  const x = new Extraction(source, evaluator, tests);
+  const x = new Extraction(source, evaluator);
   const modules: { path: string; file: number; tree: ParseNode }[] = [];
   for (const path of source.paths) {
     const uri: Uri = source.uriOf(path);

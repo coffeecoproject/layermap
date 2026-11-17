@@ -32,7 +32,6 @@ const USED_BY: Partial<Record<MapRelation["kind"], string>> = {
 // relation says so: followed up to the component that emits it, the trace would reach every page
 // showing that component.
 const runsTarget = (relation: MapRelation) => CALLER_KINDS.has(relation.kind) && !relation.event;
-export const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 
 /**
  * What a change is read in: a file's declarations, or a template as one unit, the page or

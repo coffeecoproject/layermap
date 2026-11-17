@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CodeIndexStore } from "./code-index-store";
 import { ProjectEvidenceError, type ProjectEvidenceRevisionFileEntryV1 } from "./core";
+import { loadMapImports, type MapImports } from "./project-map-imports";
 import { MAP_DEPENDENCY_NOT_INSTALLED } from "./project-map-installed";
 import {
   mapCodePath,
@@ -11,7 +12,6 @@ import {
 import { JAVA_MAP_LANGUAGE } from "./project-map-language-java";
 import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { type MapQueryOutputBudget, mapQueryPage } from "./project-map-query-page";
-import { MAP_RELATION_TARGET_JOIN } from "./project-map-query-selection";
 import {
   type MapGap,
   type MapObject,
@@ -277,35 +277,10 @@ type DirectoryFacts = Readonly<{
   files: ReadonlyMap<string, Readonly<{ lines: number; parsed: boolean; language?: string }>>;
   calls: ReadonlyMap<string, Readonly<CallResolution>>;
   exported: ReadonlyMap<string, readonly Readonly<{ text: string; start: number }>[]>;
-  imports: readonly Readonly<{
-    source: string;
-    target: string | null;
-    specifier: string;
-    count: number;
-  }>[];
 }>;
 
 // Whole-version reads scan rows in storage order: walking a version index would fetch every
 // row at random. Versions are immutable, so one scan serves every directory view.
-// Import statements by source file, target file and specifier; the target is null outside the map.
-type MapImports = DirectoryFacts["imports"];
-function loadImports(store: CodeIndexStore, version: string): MapImports {
-  return store.database
-    .prepare(`SELECT r.path AS source, t.path AS target,
-        json_extract(r.relation_json, '$.target') AS specifier, count(*) AS count
-      FROM project_map_relations r NOT INDEXED
-      ${MAP_RELATION_TARGET_JOIN}
-      WHERE r.version_ref = ? AND json_extract(r.relation_json, '$.kind') IN ('IMPORTS', 'TEST_IMPORTS')
-      GROUP BY source, target, specifier`)
-    .all(version)
-    .map((row) => ({
-      source: String(row.source),
-      target: row.target === null ? null : String(row.target),
-      specifier: String(row.specifier),
-      count: Number(row.count),
-    }));
-}
-
 function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFacts {
   const files = new Map<string, { lines: number; parsed: boolean; language?: string }>();
   const declarations: {
@@ -386,7 +361,6 @@ function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFa
     ]);
   }
   for (const list of exported.values()) list.sort((left, right) => left.start - right.start);
-  const imports = loadImports(store, version);
   // Calls into the standard library or into declarations that are not loaded (usually packages)
   // have no project target; the rest either link to a project declaration or have an unknown callee.
   const calls = new Map<string, CallResolution>();
@@ -406,7 +380,7 @@ function loadDirectoryFacts(store: CodeIndexStore, version: string): DirectoryFa
       unresolved: Number(row.total) - resolved - external,
     });
   }
-  return { files, calls, exported, imports };
+  return { files, calls, exported };
 }
 
 // Unresolved member calls (x.name(...)) whose receiver's type is unknown, by the caller's
@@ -529,7 +503,7 @@ function loadCoverageNotes(store: CodeIndexStore, version: string): MapCoverageN
 
 export class MapViewCache {
   private readonly facts = new VersionCache(loadDirectoryFacts);
-  private readonly importRows = new VersionCache(loadImports);
+  private readonly importRows = new VersionCache(loadMapImports);
   private readonly calls = new VersionCache(loadMemberCalls);
   private readonly coverage = new VersionCache(loadCoverageNotes);
 
@@ -559,6 +533,7 @@ export class MapViewCache {
 
 function directoryView(
   facts: DirectoryFacts,
+  imports: MapImports,
   coverage: MapCoverageNotes,
   entries: readonly ProjectEvidenceRevisionFileEntryV1[],
   input: MapViewInput,
@@ -585,20 +560,19 @@ function directoryView(
   const moduleImports = new Map<string, Map<string, number>>();
   const external = new Map<string, number>();
   let unresolvedLocal = 0;
-  for (const row of facts.imports) {
-    const { source, target, specifier, count } = row;
+  for (const { source, target, specifier } of imports) {
     const from = visiblePaths.has(source) ? moduleOf(source) : undefined;
     if (!from) continue;
     if (target === null) {
-      if (specifier.startsWith(".") || specifier.startsWith("/")) unresolvedLocal += count;
-      else increment(external, mapExternalImport(source, specifier), count);
+      if (specifier.startsWith(".") || specifier.startsWith("/")) unresolvedLocal++;
+      else increment(external, mapExternalImport(source, specifier));
       continue;
     }
     if (!mapPathAllowed(target, prefixes) || (!showTests && mapTestPath(target))) continue;
     const to = within(target, directory) ? moduleOf(target) : undefined;
     if (to === from) continue;
     const edges = moduleImports.get(moduleLabel(from)) ?? new Map<string, number>();
-    increment(edges, to ? moduleLabel(to) : outside(target), count);
+    increment(edges, to ? moduleLabel(to) : outside(target));
     moduleImports.set(moduleLabel(from), edges);
   }
 
@@ -809,7 +783,6 @@ const OUTGOING: Readonly<Partial<Record<MapRelation["kind"], string>>> = {
   REFERENCES: "uses as value",
   WRITES: "writes",
   IMPORTS: "imports",
-  TEST_IMPORTS: "test imports",
 };
 const INCOMING: Readonly<Partial<Record<MapRelation["kind"], string>>> = {
   CALLS: "called by",
@@ -819,7 +792,6 @@ const INCOMING: Readonly<Partial<Record<MapRelation["kind"], string>>> = {
   IMPLEMENTS: "implemented by",
   DECORATED_BY: "decorates",
 };
-const IMPORT_KINDS = new Set<MapRelation["kind"]>(["IMPORTS", "TEST_IMPORTS"]);
 // A template's tag that puts a component.
 const shows = (relation: MapRelation) =>
   relation.kind === "REFERENCES" && mapMiniprogramTemplate(relation.anchor.path);
@@ -964,7 +936,7 @@ class DeclarationGroups {
         if (relation.to === undefined) continue;
       }
       // Static imports belong to the file view; imports inside a declaration load dynamically.
-      if (IMPORT_KINDS.has(relation.kind) && mapIsModule(graph.object(relation.from))) continue;
+      if (relation.kind === "IMPORTS" && mapIsModule(graph.object(relation.from))) continue;
       if (relation.to === undefined) {
         if (relation.kind === "DECORATED_BY")
           tags.push(decoratorTag(relation.target, relation.argument, relation.route));
@@ -998,7 +970,9 @@ class DeclarationGroups {
             ? `calls via ${relation.event} event`
             : shows(relation)
               ? "shows"
-              : (OUTGOING[relation.kind] ?? relation.kind.toLowerCase()),
+              : relation.kind === "IMPORTS" && mapTestPath(relation.anchor.path)
+                ? "test imports"
+                : (OUTGOING[relation.kind] ?? relation.kind.toLowerCase()),
           other,
           relation.anchor.startLine,
           relation.argument,
@@ -1016,7 +990,7 @@ class DeclarationGroups {
           );
         continue;
       }
-      if (!incoming || relation.kind === "CONTAINS" || IMPORT_KINDS.has(relation.kind)) continue;
+      if (!incoming || relation.kind === "CONTAINS" || relation.kind === "IMPORTS") continue;
       const other = graph.object(graph.owner(relation.from));
       if (owned.has(other.id)) continue;
       if (!this.visible(relation.anchor.path)) {
@@ -1274,7 +1248,7 @@ function fileView(
   // Includes dynamic imports made inside declarations; those also appear in their declarations.
   const fileObjects = graph.objectsAt(path).map((object) => object.id);
   for (const relation of graph.relationsFrom(fileObjects)) {
-    if (!IMPORT_KINDS.has(relation.kind)) continue;
+    if (relation.kind !== "IMPORTS") continue;
     if (relation.to === undefined) external.add(relation.target);
     else {
       const target = graph.object(relation.to).anchor.path;
@@ -1295,7 +1269,7 @@ function fileView(
           .flatMap((entry) => graph.objectsAt(entry.path).filter((object) => mapIsModule(object)))
           .map((object) => object.id);
   for (const relation of graph.relationsTo(packageModules)) {
-    if (!IMPORT_KINDS.has(relation.kind)) continue;
+    if (relation.kind !== "IMPORTS") continue;
     const source = relation.anchor.path;
     if (!mapPathAllowed(source, prefixes)) continue;
     (!showTests && mapTestPath(source) ? testImporters : importers).add(source);
@@ -1433,6 +1407,7 @@ export function mapView(
     ? fileView(store, coverage, graph, input, input.path, prefixes)
     : directoryView(
         cache.directoryFacts(store, input.version),
+        cache.imports(store, input.version),
         coverage,
         store.listEntries(input.version),
         input,

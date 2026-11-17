@@ -21,7 +21,7 @@ import {
 } from "./project-map-process";
 import { PYTHON_STANDARD_LIBRARY } from "./project-map-python-stdlib";
 import type { MapReferenceBatch, MapReferenceRequest } from "./project-map-reference-types";
-import { type MapWorkerInput, mapTestPath } from "./project-map-types";
+import type { MapWorkerInput } from "./project-map-types";
 
 // Configuration that roots a Python context, most specific to Pyright first.
 const CONFIGURATION = ["pyrightconfig.json", "pyproject.toml", "setup.cfg"];
@@ -31,7 +31,7 @@ const directoryOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
 const DEFAULT_PYTHON = { major: 3, minor: 13 };
 
 export const PYTHON_MAP_LANGUAGE: MapLanguage = Object.freeze({
-  id: "pyright-1.1.414-map-v13",
+  id: "pyright-1.1.414-map-v14",
   claims: (path: string) => /\.pyi?$/u.test(path),
   reads: (path: string) => pythonConfig.test(path),
   // An absolute import names the standard library or a distribution's top-level package.
@@ -105,7 +105,6 @@ export class PythonMapAnalyzer implements MapLanguageAnalyzer {
     return {
       root: input.configPath ? directoryOf(input.configPath).replace(/\/$/u, "") : "",
       pythonVersion: pythonVersion(input.files, input.configPath),
-      tests: Object.keys(input.files).filter((path) => this.claims(path) && mapTestPath(path)),
     };
   }
 

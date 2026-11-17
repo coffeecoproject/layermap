@@ -18,7 +18,6 @@ process.once(
     operation: string;
     files: Record<string, string>;
     release: number;
-    tests: string[];
     targets?: { path: string; offset: number }[];
     incremental?: { changed: string[]; state: unknown };
   }) => {
@@ -72,7 +71,6 @@ process.once(
         operation: message.operation,
         files: message.files,
         release: message.release,
-        tests: message.tests,
         lombok: path.join(path.dirname(message.compilerPath), "lombok.jar"),
         ...(message.targets ? { targets: message.targets } : {}),
         ...(message.incremental ? { incremental: message.incremental } : {}),
