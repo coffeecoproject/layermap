@@ -387,7 +387,7 @@ test("a configuration the base does not have is named, not compared with nothing
 });
 
 test("uses and compiles share one deadline, and uses come first", async (t) => {
-  const shape = "export interface Shape {\n  side: number;\n  name: string;\n}\n";
+  const shape = 'export class Shape {\n  side = 1;\n  name = "";\n}\n';
   const { root, write } = await project({
     ...CONFIG,
     "src/shape.ts": shape,
@@ -397,7 +397,7 @@ test("uses and compiles share one deadline, and uses come first", async (t) => {
   await commit(root);
   const map = await openMap(root);
   t.after(() => map.close());
-  await write("src/shape.ts", shape.replace("  side: number;\n", ""));
+  await write("src/shape.ts", shape.replace("  side = 1;\n", ""));
   const seen: { kind: string; until: number }[] = [];
   const uses = CodeIndex.prototype.findUses;
   t.mock.method(
@@ -418,7 +418,7 @@ test("uses and compiles share one deadline, and uses come first", async (t) => {
   // A changed field is read in the working tree too.
   seen.length = 0;
   sides.length = 0;
-  await write("src/shape.ts", shape.replace("side: number", "side: string"));
+  await write("src/shape.ts", shape.replace("side = 1", 'side = "1"'));
   // Every reading of the clock differs, so two deadlines cannot pass for one.
   const now = Date.now;
   let tick = 0;
@@ -444,7 +444,7 @@ test("uses and compiles share one deadline, and uses come first", async (t) => {
     },
   );
   const started = t.mock.method(ProjectMapAnalyzer.prototype, "diagnostics");
-  await write("src/shape.ts", `${shape.replace("  side: number;\n", "")}// again\n`);
+  await write("src/shape.ts", `${shape.replace("  side = 1;\n", "")}// again\n`);
   const { text } = await map.checkChanges({}, signal());
   assert.equal(started.mock.callCount(), 0);
   assert.deepEqual(section(text), []);

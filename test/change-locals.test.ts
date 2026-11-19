@@ -626,7 +626,7 @@ export function couponsPage() {
   ]);
 });
 
-test("a member of a type nested in a field changes the field: what reads the field is followed, not only what calls the member", async (t) => {
+test("a member of a type nested in a field is a change of types alone: neither what calls it nor what reads the field is followed", async (t) => {
   const api = (result: string) => `export interface Api {
   inner: {
     load(): ${result};
@@ -651,7 +651,9 @@ export function reader(api: Api) {
 
   await write("src/api.ts", api("string"));
   const { text } = await map.checkChanges({}, signal());
-  assert.match(text, /src\/pages\.ts: reader\b/u);
+  // The field changes as a whole, and runs nothing: the code calling or reading it runs as before.
+  assert.match(text, /^ {2}src\/api\.ts: Api\.inner p2-4$/mu);
+  assert.doesNotMatch(text, /src\/pages\.ts: (?:reader|caller)\b/u);
 });
 
 test("a static method is a caller of its own class's constructor, and a method dispatching to its own contract is not its own caller", async (t) => {

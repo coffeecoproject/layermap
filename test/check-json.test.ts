@@ -98,6 +98,167 @@ test("the check as JSON gives the related tests by rank and the changed files th
   assert.deepEqual(report.data, given);
 });
 
+// Routes taking what they need as ports, typed by interfaces and type aliases of their own.
+const PORTS = (lock: string, name: string, find: string, body: string) => ({
+  "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src", "test"] }),
+  "src/needs.ts": `export type Lock = (client: number) => Promise<${lock}>;
+export interface Source {
+  find(id: number): ${find};
+  name: ${name};
+}
+`,
+  "src/demands.ts": `import type { Lock, Source } from "./needs";
+
+type Ports = { lockProjects: Lock; source: Source };
+export type Stage = "draft" | "${lock === "void" ? "done" : "closed"}";
+
+export function demandRoutes({ lockProjects, source }: Ports) {
+  return async (id: number) => {
+    await lockProjects(id);
+    return source.find(id);
+  };
+}
+export const projectLock: Lock = async (client) => {
+  ${body};
+};
+export class DbSource implements Source {
+  name = "${body === "void client" ? "db" : "rows"}";
+  find(id: number) {
+    return id ${body === "void client" ? "+ 1" : "+ 2"};
+  }
+}
+export function untouched() {
+  return ${body === "void client" ? 1 : 2};
+}
+`,
+  "test/demands.test.ts": `import { DbSource, demandRoutes, projectLock } from "../src/demands";
+
+export const run = () => demandRoutes({ lockProjects: projectLock, source: new DbSource() })(1);
+`,
+});
+
+test("types and interface members run nothing, so the given tests are not asked to run them", async (t) => {
+  const { root, write } = await project(PORTS("void", "string", "number", "void client"));
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const tests = ["test/demands.test.ts"];
+
+  // Only types: the alias, the interface's members, the ports' member and a union change.
+  await write("src/needs.ts", PORTS("unknown", "String", "number | undefined", "")["src/needs.ts"]);
+  await write(
+    "src/demands.ts",
+    PORTS("unknown", "", "", "void client")["src/demands.ts"].replace(
+      "type Ports = { lockProjects: Lock; source: Source };",
+      "type Ports = { lockProjects: Lock; source: Source; extra?: Lock };",
+    ),
+  );
+  const types = JSON.parse(
+    (await map.checkChanges({ format: "json", tests }, signal())).text,
+  ) as MapChangesData;
+  assert.deepEqual(types.untested?.changed, []);
+  // Lock, Source.find and Source.name; the three members on the changed line of Ports; Stage.
+  assert.equal(types.untested?.typeOnly, 7);
+  assert.equal(types.untested?.truncated, false);
+  assert.deepEqual(types.incomplete, []);
+  const text = (await map.checkChanges({ tests }, signal())).text;
+  assert.match(
+    text,
+    /^ {2}none: outside the tests the diff changes types alone \(or comments and layout\)$/mu,
+  );
+  assert.match(text, /^ {2}\d+ changed declarations change types alone/mu);
+
+  // Code beside the types: what the test runs is reached, through the port and the interface it
+  // implements; a class field's value and a function the test does not call still are not.
+  await write("src/demands.ts", PORTS("unknown", "", "", "void client + 1")["src/demands.ts"]);
+  const code = JSON.parse(
+    (await map.checkChanges({ format: "json", tests }, signal())).text,
+  ) as MapChangesData;
+  assert.deepEqual(code.untested?.changed, [
+    "src/demands.ts: DbSource.name p16",
+    "src/demands.ts: untouched f21-23",
+  ]);
+  assert.equal(code.untested?.typeOnly, 4);
+  assert.equal(code.untested?.truncated, false);
+});
+
+const ROWS = `export type Row = { id: number; amount: number };
+export const total = (rows: Row[]): number => {
+  return rows.reduce((sum, row) => sum + row.amount, 0);
+};
+export function lookup(query: <T>(sql: string) => T[], id: number) {
+  return query<{ id: number; name: string }>(\`SELECT \${id}\`)[0];
+}
+export function untouched() {
+  return 1;
+}
+`;
+
+test("a TypeScript change to annotations, inline types or comments runs nothing new; a change to code still counts", async (t) => {
+  const { root, write } = await project({ ...FILES, "src/rows.ts": ROWS });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const tests = ["test/other.test.ts"];
+  const check = async () =>
+    JSON.parse(
+      (await map.checkChanges({ format: "json", tests }, signal())).text,
+    ) as MapChangesData;
+
+  const types = ROWS.replace("(rows: Row[]): number =>", "(rows: readonly Row[]) =>")
+    .replace("{ id: number; name: string }", "{ id: number; name: string | null }")
+    .replace("  return 1;", "  // one, always\n  return 1;");
+  await write("src/rows.ts", types);
+  const typed = await check();
+  assert.deepEqual(typed.untested?.changed, []);
+  assert.deepEqual(typed.incomplete, []);
+  assert.equal(typed.truncated, false);
+  assert.ok((typed.untested?.typeOnly ?? 0) >= 3);
+  // Listed as changed all the same.
+  assert.ok(typed.files.some((file) => file.path === "src/rows.ts"));
+
+  await write("src/rows.ts", types.replace("  return 1;", "  return 2;"));
+  const code = await check();
+  assert.deepEqual(code.untested?.changed, ["src/rows.ts: untouched f8-11"]);
+});
+
+test("types take none of the changed declarations the check follows; past the limit, it says which limit", async (t) => {
+  // Many changed interface members, and a few, then too many, changed functions.
+  const types = (type: string) =>
+    `export interface Wide {\n${Array.from({ length: 250 }, (_, at) => `  f${at}: ${type};`).join("\n")}\n}\n`;
+  const code = (count: number, value: number) =>
+    Array.from(
+      { length: count },
+      (_, at) => `export function g${at}() {\n  return ${value};\n}\n`,
+    ).join("");
+  const { root, write } = await project({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
+    "src/wide.ts": types("number"),
+    "src/code.ts": code(201, 1),
+  });
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+  const check = async () =>
+    JSON.parse((await map.checkChanges({ format: "json" }, signal())).text) as MapChangesData;
+
+  await write("src/wide.ts", types("string"));
+  await write("src/code.ts", code(3, 2) + code(201, 1).split("\n").slice(9).join("\n"));
+  const few = await check();
+  assert.deepEqual(few.incomplete, []);
+  assert.equal(few.truncated, false);
+
+  await write("src/code.ts", code(201, 2));
+  const many = await check();
+  assert.deepEqual(many.incomplete, [
+    "the diff changes more than 200 declarations that run; the 1 after the first 200 were not followed, so what only they reach is not listed",
+  ]);
+  assert.equal(many.truncated, true);
+});
+
 test("every changed file the map does not follow is unmapped, migrations with mapped code too", async (t) => {
   const { root, write } = await project({
     ...FILES,

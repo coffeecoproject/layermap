@@ -1,7 +1,8 @@
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, readFile } from "node:fs/promises";
 import path from "node:path";
 import { ProjectEvidenceError } from "./core";
 import { GitCommandOutputLimitError, GitRunner } from "./git-runner";
+import { mapErasable, mapRuntimeLines } from "./project-map-change-runtime";
 import type { Hunk, Lines, MapChangedFile, MapChanges } from "./project-map-change-types";
 import { mapLanguageOf } from "./project-map-language";
 import { strandedNames } from "./project-map-names";
@@ -118,6 +119,7 @@ export async function readMapChanges(
       // not analyze is told the way git tells it, by a NUL in its first 8000 bytes.
       binary: !mapLanguageOf(file) && (await startsBinary(path.join(project, file))),
     });
+  await eraseTypes(project, commit, files, signal);
   const stranded = options.names
     ? await strandedNames(
         project,
@@ -128,6 +130,43 @@ export async function readMapChanges(
       )
     : { names: [] };
   return { base, commit, files, quoted: parsed.quoted, stranded };
+}
+
+/** Each changed TypeScript file outside tests with the lines whose code changed once types are erased. */
+async function eraseTypes(
+  project: string,
+  commit: string,
+  files: MapChangedFile[],
+  signal: AbortSignal,
+) {
+  const erasable = [...files.entries()].filter(
+    ([, file]) =>
+      file.status !== "DELETED" &&
+      !file.binary &&
+      !mapTestPath(file.path) &&
+      mapErasable(file.path),
+  );
+  // A few files at a time: git and the reads wait, the erasing does not.
+  for (let at = 0; at < erasable.length; at += 8)
+    await Promise.all(
+      erasable.slice(at, at + 8).map(async ([index, file]) => {
+        const text = await readFile(path.join(project, file.path), "utf8").catch(() => undefined);
+        const baseText =
+          file.status === "ADDED" || !file.basePath
+            ? ""
+            : await git
+                .run(["show", `${commit}:${file.basePath}`], gitOptions(project, signal))
+                .then((result) => result.stdout.toString("utf8"))
+                .catch(() => undefined);
+        if (text === undefined || baseText === undefined) return;
+        // A file git does not track yet is all new.
+        const hunks = file.hunks.length
+          ? file.hunks
+          : [{ baseStart: 0, baseCount: 0, start: 1, count: text.split("\n").length }];
+        const runtime = mapRuntimeLines(file.path, baseText, text, hunks);
+        if (runtime) files[index] = { ...file, runtime };
+      }),
+    );
 }
 
 // Git keeps a symbolic link as the path it names and lists a repository nested in the project as a

@@ -15,6 +15,22 @@ const READ_MS = 20_000;
 export const mapIsShape = (object: Pick<MapObject, "kind" | "execution">) =>
   KINDS.has(object.kind) && object.execution !== "CLOSURE";
 
+const TYPE_KINDS = new Set<MapObject["kind"]>(["TYPE", "INTERFACE"]);
+
+/**
+ * A declaration for the compiler alone: a type or interface, or a member of one that holds no code
+ * (an interface member, a property of a type literal). Nothing runs it, so no test can run it; the
+ * type checker judges it. A member with code of its own (a default method, a constant's value) runs.
+ */
+export function mapTypeOnly(graph: MapViewGraph, ref: string): boolean {
+  for (let at: string | undefined = ref; at !== undefined; at = graph.parent(at)) {
+    const object = graph.object(at);
+    if (TYPE_KINDS.has(object.kind)) return true;
+    if (object.execution || (object.kind !== "PROPERTY" && object.kind !== "METHOD")) return false;
+  }
+  return false;
+}
+
 export type MapShapeUse = Readonly<{ owner: string; anchor: MapAnchor; write: boolean }>;
 
 /** Each declaration's uses, by the object around each; complete is false when some were left out. */

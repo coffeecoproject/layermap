@@ -31,6 +31,13 @@ export type MapChangedFile = Readonly<{
   binary: boolean;
   /** A changed test file's text in the base, to tell which of its existing tests changed. */
   baseText?: string;
+  /**
+   * Of the changed lines of a TypeScript file, those whose code changed once its types are erased:
+   * a change to types alone, comments or layout runs nothing new. Written as lines is; absent where
+   * that is not worked out (another language, a test, a file with decorators), as every changed
+   * line then counts.
+   */
+  runtime?: Lines;
 }>;
 
 export type MapChanges = Readonly<{
@@ -120,6 +127,13 @@ export type MapChangeImpact = Readonly<{
 export type MapUntestedChanges = Readonly<{
   /** The changed declarations no code in the given files calls, directly or through other code. */
   changed: readonly string[];
+  /**
+   * How many changed declarations change types alone: types, interfaces and their members without
+   * code, and, in TypeScript, code whose change erases with its types (or is to comments or
+   * layout). Nothing new runs, so no test runs it differently: the type checker judges them, not
+   * this check.
+   */
+  typeOnly: number;
   /**
    * Of those, the ones the project's other related tests run, by a call or a route they request,
    * with those test files, closest first.

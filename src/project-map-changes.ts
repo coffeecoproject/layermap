@@ -58,7 +58,12 @@ import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate } from "./project-map-miniprogram";
 import { MAP_REFERENCES_MAX, type MapDiagnostic } from "./project-map-reference-types";
 import { type MapSimilarCode, similarCode } from "./project-map-reuse";
-import { type MapShapeReader, MapShapeUses, mapShapeDeadline } from "./project-map-shapes";
+import {
+  type MapShapeReader,
+  MapShapeUses,
+  mapShapeDeadline,
+  mapTypeOnly,
+} from "./project-map-shapes";
 import { MAP_MIGRATION_PATH, mapTestPath } from "./project-map-types";
 import { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel } from "./project-map-view-graph";
@@ -108,8 +113,14 @@ export async function mapChangeImpact(
       `the text search for the environment variables and configuration keys the diff removed did not finish (${changes.stranded.failed}), so the files still using them are not listed`,
     );
   const unmapped: { path: string; kind: string }[] = [];
-  let changedCount = 0;
+  // The changed declarations whose code changed, followed from where it changed, and the label of
+  // each. Types, interfaces and their members without code run nothing, and a TypeScript change to
+  // types alone (or comments and layout) leaves the code as it was: they are listed, but nothing new
+  // runs for the trace to follow, and the type checker judges them.
   const starts: ChangeStart[] = [];
+  const traced: string[] = [];
+  let typeOnly = 0;
+  let untraced = 0;
   // Read once for all changed files, as a large change (thousands of files nobody has added to
   // Git yet) would otherwise query the same importers, and every mapped path, once per file.
   const importers = new Map<string, Importer[]>();
@@ -159,22 +170,28 @@ export async function mapChangeImpact(
     }
     if (!objects.length) continue;
     // The innermost declarations around each changed line; top-level lines belong to the file.
-    const { refs: hits, topLevel } = changedUnits(graph, file.path, file.lines);
+    const { refs: hits } = changedUnits(graph, file.path, file.lines);
+    // Of those, the ones whose code changed once types are erased, where that is worked out.
+    const lines = file.runtime ?? file.lines;
+    const { refs: running, topLevel } = changedUnits(graph, file.path, lines);
     for (const ref of hits) {
-      if (changedCount++ >= LIMITS.changed) {
-        tracer.truncated = true;
-        break;
+      const types = !running.has(ref) || mapTypeOnly(graph, ref);
+      if (!types && starts.length >= LIMITS.changed) {
+        untraced++;
+        continue;
       }
-      const object = graph.object(ref);
-      changed.push(
-        `${file.path}${template ? " (template)" : `: ${graph.qualifiedName(ref)} ${mapDeclarationLabel(object)}`}${file.status === "ADDED" ? " (new file)" : ""}`,
-      );
-      starts.push(tracer.startsAt(ref, file.lines));
+      const label = `${file.path}${template ? " (template)" : `: ${graph.qualifiedName(ref)} ${mapDeclarationLabel(graph.object(ref))}`}${file.status === "ADDED" ? " (new file)" : ""}`;
+      changed.push(label);
+      if (types) typeOnly++;
+      else {
+        traced.push(label);
+        starts.push(tracer.startsAt(ref, lines));
+      }
     }
     // Registrations on changed lines, wherever they are: a call's route literal, a decorator's route.
     for (const relation of graph.relationsFrom(objects.map((object) => object.id))) {
       const route = mapRegisteredRoute(relation);
-      if (route && overlaps(file.lines, relation.anchor.startLine, relation.anchor.endLine)) {
+      if (route && overlaps(lines, relation.anchor.startLine, relation.anchor.endLine)) {
         const site = `${relation.anchor.path}:${relation.anchor.startLine}`;
         unclear.push({
           text: `the registration of ${JSON.stringify(route)} at ${site} changed; check that the route still reaches the right handler`,
@@ -268,7 +285,7 @@ export async function mapChangeImpact(
         )}${unread.length > LIST.names ? ", …" : ""}); project_find_references lists their uses`,
     });
   const untested =
-    tests && (await untestedChanges(graph, tracer, memberCalls, starts, changed, tests));
+    tests && (await untestedChanges(graph, tracer, memberCalls, starts, traced, tests, typeOnly));
   supportTests(store, working, tracer);
 
   // What the diff took away, read in the base.
@@ -319,6 +336,11 @@ export async function mapChangeImpact(
     ],
     incomplete: [
       ...incomplete,
+      ...(untraced
+        ? [
+            `the diff changes more than ${LIMITS.changed} declarations that run; the ${untraced} after the first ${LIMITS.changed} were not followed, so what only they reach is not listed`,
+          ]
+        : []),
       ...(tracer.truncated
         ? [
             `the trace stopped at ${LIMITS.depth} levels or ${LIMITS.declarations} declarations; continue with project_explore_map from the last ones`,
@@ -330,7 +352,7 @@ export async function mapChangeImpact(
     uncalled: taken?.uncalled ?? [],
     dependencies: newModuleDependencies(store, views, working, changes.files, links.files),
     ...(untested ? { untested } : {}),
-    truncated: tracer.truncated,
+    truncated: tracer.truncated || untraced > 0,
   };
 }
 
@@ -354,6 +376,7 @@ async function untestedChanges(
   starts: readonly ChangeStart[],
   changed: readonly string[],
   tests: readonly string[],
+  typeOnly: number,
 ): Promise<MapUntestedChanges> {
   const given = new Set(tests);
   // The handlers of the routes these files request, with the files requesting each.
@@ -417,6 +440,7 @@ async function untestedChanges(
   const others = new Set([...tracer.tests.keys()].filter((file) => !given.has(file)));
   return {
     changed: unreached.map((at) => changed[at] ?? ""),
+    typeOnly,
     runByOthers: runBy(others, requested),
     mayRun: runBy(given, tracer.mayRequest),
     entries: [...above.entries.values()].sort(entryOrder),

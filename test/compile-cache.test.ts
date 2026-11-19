@@ -39,7 +39,7 @@ const counted = async <T>(work: () => Promise<T>) => {
   return { result, asked: { ...asked } };
 };
 
-const ORDER = "export interface Order {\n  total: number;\n  note?: string;\n}\n";
+const ORDER = "export class Order {\n  total: number = 1;\n  note?: string;\n}\n";
 const FILES = {
   ".gitignore": "node_modules/\n",
   "README.md": "Orders.\n",
@@ -76,8 +76,8 @@ test("a check of the same inputs starts no compile, and every check says what a 
   };
   const check = () => counted(async () => (await map.checkChanges({}, signal())).text);
 
-  // A field's type changes: its users are traced and both sides compiled.
-  await write("src/order.ts", ORDER.replace("total: number", "total: string"));
+  // A field's value and type change: its users are traced and both sides compiled.
+  await write("src/order.ts", ORDER.replace("total: number = 1", 'total: string = "1"'));
   const first = await check();
   assert.ok(first.asked.DIAGNOSTICS > 0 && first.asked.REFERENCES > 0, "the first check compiles");
   assert.match(first.result, /src\/label\.ts:4 TS2322 /u);

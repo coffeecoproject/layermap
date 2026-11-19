@@ -40,9 +40,10 @@ await build({
   format: "esm",
   platform: "node",
   target: "node22",
-  // The typescript dependency brings the compiler for the user's platform, and the SQLite package
-  // its prebuilt binary; both stay outside.
-  external: ["typescript", "typescript/*", "@photostructure/sqlite"],
+  // The typescript dependency brings the compiler for the user's platform, the SQLite package its
+  // prebuilt binary, and esbuild, which the change check erases types with, its own; all stay
+  // outside.
+  external: ["typescript", "typescript/*", "@photostructure/sqlite", "esbuild"],
   banner: {
     js: '#!/usr/bin/env node\nimport { createRequire as layermapCreateRequire } from "node:module"; const require = layermapCreateRequire(import.meta.url);',
   },
@@ -116,6 +117,7 @@ await writeFile(
       dependencies: {
         "@photostructure/sqlite": source.dependencies["@photostructure/sqlite"],
         typescript: source.dependencies.typescript,
+        esbuild: source.dependencies.esbuild,
       },
       homepage: "https://github.com/coffeecoproject/layermap",
       repository: { type: "git", url: "git+https://github.com/coffeecoproject/layermap.git" },

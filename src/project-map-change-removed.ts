@@ -15,7 +15,7 @@ import {
 } from "./project-map-change-types";
 import { mapLanguageOf } from "./project-map-language";
 import { mapMiniprogramTemplate, miniprogramEventOf } from "./project-map-miniprogram";
-import { type MapShapeReader, MapShapeUses, mapIsShape } from "./project-map-shapes";
+import { type MapShapeReader, MapShapeUses, mapIsShape, mapTypeOnly } from "./project-map-shapes";
 import { type MapAnchor, type MapObject, type MapRelation, mapTestPath } from "./project-map-types";
 import type { MapViewCache } from "./project-map-view";
 import { MapViewGraph, mapDeclarationLabel, mapIsModule } from "./project-map-view-graph";
@@ -337,8 +337,11 @@ export async function mapRemovedImpact(
     )
       topLevel.push(file.path);
   }
-  if (gone.size) {
-    await beforeTracer.trace([...gone], [...gone], true);
+  // What the removed code reached: removed types, interfaces and their members ran nothing, so
+  // only the code is followed; who still names them is read above, and the compiler says the rest.
+  const ran = [...gone].filter((ref) => !mapTypeOnly(before, ref));
+  if (ran.length) {
+    await beforeTracer.trace(ran, ran, true);
     // The base's trace names the base's files and lines. Each is taken to where the working
     // tree has it: a renamed file by its new path, a line by where the diff moved it, and a test
     // file the diff deleted runs nothing. A route the diff removed keeps the base's site.

@@ -252,7 +252,10 @@ export function mapChangesText(
     );
   // What the given tests leave out: none of them runs the code under these entry points.
   if (impact.untested) {
-    const { changed, entries, throughRoutes, routes, missing, truncated } = impact.untested;
+    const { changed, entries, throughRoutes, routes, missing, truncated, typeOnly } =
+      impact.untested;
+    // A change to types alone runs nothing new; the type checker judges it, not the tests.
+    const runs = impact.changed.length - typeOnly;
     const items = (shown: readonly string[], limit: number) => {
       lines.push(...shown.slice(0, limit).map((item) => `  ${item}`));
       if (shown.length > limit) lines.push(`  +${shown.length - limit} more`);
@@ -262,7 +265,7 @@ export function mapChangesText(
       lines.push(`  the map has no code for these given files: ${missing.join(", ")}`);
     if (changed.length) {
       lines.push(
-        `  ${changed.length} of ${impact.changed.length} changed declarations are reached by none of the given tests; ${entries.length ? "the entry points above them, then the declarations:" : "the declarations:"}`,
+        `  ${changed.length} of ${runs} changed declarations are reached by none of the given tests; ${entries.length ? "the entry points above them, then the declarations:" : "the declarations:"}`,
       );
       // An entry point listed above with the same chain is named alone; a chain to other changed
       // code is shown.
@@ -296,9 +299,15 @@ export function mapChangesText(
       );
     } else
       lines.push(
-        impact.changed.length
-          ? `  none: the given tests reach all ${impact.changed.length} changed declarations`
-          : "  none: the diff changes no declarations outside the tests",
+        runs
+          ? `  none: the given tests reach all ${runs} changed declarations`
+          : impact.changed.length
+            ? "  none: outside the tests the diff changes types alone (or comments and layout)"
+            : "  none: the diff changes no declarations outside the tests",
+      );
+    if (typeOnly)
+      lines.push(
+        `  ${typeOnly} changed declarations change types alone (or comments and layout) and are not judged: none of the code they run changed, and the type checker checks the types`,
       );
     if (throughRoutes.length) {
       lines.push(

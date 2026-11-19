@@ -1655,7 +1655,7 @@ router.get("/shapes/label", () => label({ key: "a" } as never));
   "test/other.test.ts": "export const other = 1;\n",
 });
 
-test("a changed field or type reaches the code that uses it, the entry points above it and the tests", async (t) => {
+test("a changed type or interface member runs nothing: it is listed, not followed to the code naming it", async (t) => {
   const { root, write } = await project({
     ...SHAPES("number", "string"),
     "test/direct.test.ts":
@@ -1665,54 +1665,94 @@ test("a changed field or type reaches the code that uses it, the entry points ab
   await commit(root);
   const map = await openMap(root);
   t.after(() => map.close());
-  const possibly = (text: string) =>
-    text.slice(
-      text.indexOf("\nPOSSIBLY AFFECTED"),
-      text.indexOf("\n", text.indexOf('"', text.lastIndexOf("/shapes/"))),
-    );
 
-  // A read and a destructured read, through a route each; what changed in a field may not matter
-  // to them, so they are possibly affected, not certainly.
+  // An interface's field: the code reading it runs as before, so no entry point and no test is
+  // found through it, and its uses are not searched for; the type checker judges it.
   await write("src/shape.ts", SHAPES("bigint", "string")["src/shape.ts"]);
   const field = (await map.checkChanges({}, signal())).text;
   assert.match(field, /^ {2}src\/shape\.ts: Shape\.side p4$/mu);
-  assert.match(field, /^ {2}"GET \/shapes\/area" → area → Shape\.side/mu);
-  assert.match(field, /^ {2}"GET \/shapes\/perimeter" → perimeter → Shape\.side/mu);
-  assert.ok(field.indexOf("POSSIBLY AFFECTED") < field.indexOf('"GET /shapes/area"'));
+  assert.doesNotMatch(field, /ENTRY POINTS|POSSIBLY AFFECTED|has no callers|uses Shape\.side/u);
+  assert.doesNotMatch(field, /the trace stopped/u);
+  // No given test is asked to run it, whichever runs the code using it.
+  for (const tests of [["test/shape.test.ts"], ["test/other.test.ts"]]) {
+    const given = (await map.checkChanges({ tests }, signal())).text;
+    assert.match(
+      given,
+      /^ {2}none: outside the tests the diff changes types alone \(or comments and layout\)$/mu,
+    );
+    assert.match(given, /^ {2}1 changed declarations change types alone/mu);
+  }
+
+  // A type alias another type's field names, and a new field nothing uses: listed alone.
+  await write("src/shape.ts", SHAPES("number", "string", "ghost: number;")["src/shape.ts"]);
+  await write("src/keys.ts", SHAPES("number", "number")["src/keys.ts"]);
+  const type = (await map.checkChanges({}, signal())).text;
+  assert.match(type, /^ {2}src\/keys\.ts: Key t1$/mu);
+  assert.match(type, /^ {2}src\/shape\.ts: Shape\.ghost p5$/mu);
+  assert.doesNotMatch(type, /ENTRY POINTS|POSSIBLY AFFECTED|has no callers|\/shapes\/label/u);
+});
+
+test("a class field's value runs: the code reading it is followed, and a given test reaches it or does not", async (t) => {
+  const box = (side: number, extra = "") => ({
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { strict: true },
+      include: ["src", "test"],
+    }),
+    "src/box.ts": `export class Box {
+  side = ${side};
+  ${extra}
+}
+export const area = (b: Box) => b.side + 1;
+export function perimeter({ side }: Box) {
+  return String(side);
+}
+`,
+    "src/routes.ts": `import { area, Box, perimeter } from "./box";
+declare const router: { get(path: string, h: unknown): void };
+router.get("/box/area", () => area(new Box()));
+router.get("/box/perimeter", () => perimeter(new Box()));
+`,
+    "test/box.test.ts":
+      'import { area, Box } from "../src/box";\n\nexport const value = area(new Box());\n',
+    "test/other.test.ts": "export const other = 1;\n",
+  });
+  const { root, write } = await project(box(1));
+  await run("git", ["add", "-A"], { cwd: root });
+  await commit(root);
+  const map = await openMap(root);
+  t.after(() => map.close());
+
+  // A read and a destructured read, through a route each; what changed in a field may not matter
+  // to them, so they are possibly affected, not certainly.
+  await write("src/box.ts", box(2)["src/box.ts"]);
+  const field = (await map.checkChanges({}, signal())).text;
+  assert.match(field, /^ {2}src\/box\.ts: Box\.side p2$/mu);
+  assert.match(field, /^ {2}"GET \/box\/area" → area → Box\.side/mu);
+  assert.match(field, /^ {2}"GET \/box\/perimeter" → perimeter → Box\.side/mu);
+  assert.ok(field.indexOf("POSSIBLY AFFECTED") < field.indexOf('"GET /box/area"'));
   assert.doesNotMatch(field, /AFFECTED ENTRY POINTS/u);
   assert.doesNotMatch(field, /has no callers/u);
   assert.match(
     field,
-    /test\/shape\.test\.ts: test\/shape\.test\.ts \((?:calls area|uses Shape\.side)\)/u,
+    /test\/box\.test\.ts: test\/box\.test\.ts \((?:calls area|uses Box\.side)\)/u,
   );
-  assert.match(field, /test\/direct\.test\.ts: direct \(uses Shape\.side\)/u);
 
-  // A test that runs code using the field reaches it; one that does not, does not.
-  const covered = (await map.checkChanges({ tests: ["test/shape.test.ts"] }, signal())).text;
+  // A test that runs code reading the field reaches it; one that does not, does not.
+  const covered = (await map.checkChanges({ tests: ["test/box.test.ts"] }, signal())).text;
   assert.match(covered, /^ {2}none: the given tests reach all 1 changed declarations$/mu);
+  assert.doesNotMatch(covered, /not judged/u);
   const uncovered = (await map.checkChanges({ tests: ["test/other.test.ts"] }, signal())).text;
   assert.match(uncovered, /^ {2}1 of 1 changed declarations are reached by none/mu);
   // The same chain as listed above is named alone.
-  assert.match(uncovered, /^ {2}"GET \/shapes\/area" → area → Shape\.side.*\(registered at /mu);
-  assert.match(uncovered, /^ {2}"GET \/shapes\/area" \(as listed above\) \(possibly\)$/mu);
-
-  // A type named by another type's field: the code reading that field uses it. A field nothing
-  // reads ends the chain without being an entry point.
-  await write("src/shape.ts", SHAPES("number", "string")["src/shape.ts"]);
-  await write("src/keys.ts", SHAPES("number", "number")["src/keys.ts"]);
-  const type = (await map.checkChanges({}, signal())).text;
-  assert.match(type, /^ {2}"GET \/shapes\/label" → label → Row\.key → Key/mu);
-  assert.doesNotMatch(type, /^ {2}src\/shape\.ts: Row/mu);
-  assert.ok(possibly(type));
-  assert.doesNotMatch(type, /Idle/u);
+  assert.match(uncovered, /^ {2}"GET \/box\/area" → area → Box\.side.*\(registered at /mu);
+  assert.match(uncovered, /^ {2}"GET \/box\/area" \(as listed above\) \(possibly\)$/mu);
 
   // A field nothing uses is named as such, and is no entry point.
-  await write("src/keys.ts", SHAPES("number", "string")["src/keys.ts"]);
-  await write("src/shape.ts", SHAPES("number", "string", "ghost: number;")["src/shape.ts"]);
+  await write("src/box.ts", box(1, "ghost = 1;")["src/box.ts"]);
   const ghost = (await map.checkChanges({}, signal())).text;
   assert.match(
     ghost,
-    /^ {2}src\/shape\.ts: Shape\.ghost has no callers in the map, and a search for references found no use/mu,
+    /^ {2}src\/box\.ts: Box\.ghost has no callers in the map, and a search for references found no use/mu,
   );
   assert.doesNotMatch(ghost, /ENTRY POINTS|POSSIBLY AFFECTED/u);
 });
@@ -1764,8 +1804,8 @@ test("a removed field or type code still uses is named as used; one that moved i
 });
 
 test("a field's reads count across languages, and who uses it is left to a person when it cannot be read", async (t) => {
-  const many = (type: string) =>
-    `export interface Many {\n  f0: ${type};\n}\nexport const sum = (m: Many) => [m.f0];\n`;
+  const many = (value: string) =>
+    `export class Many {\n  f0 = ${value};\n}\nexport const sum = (m: Many) => [m.f0];\n`;
   const row = (tag: string) =>
     `package models\n\ntype Row struct {\n\tName string \`json:"${tag}"\`\n}\n\nfunc Title(r Row) string {\n\treturn r.Name\n}\n`;
   const point = (value: number) =>
@@ -1776,7 +1816,7 @@ test("a field's reads count across languages, and who uses it is left to a perso
     "models/row.go": row("name"),
     "app/__init__.py": "",
     "app/point.py": point(1),
-    "src/many.ts": many("number"),
+    "src/many.ts": many("1"),
   });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
@@ -1796,7 +1836,7 @@ test("a field's reads count across languages, and who uses it is left to a perso
 
   await write("models/row.go", row("name"));
   await write("app/point.py", point(1));
-  await write("src/many.ts", many("string"));
+  await write("src/many.ts", many('"1"'));
   usesRead(
     map,
     (found) => new Map([...found].map(([ref]) => [ref, { uses: [], complete: false }])),
@@ -1967,8 +2007,9 @@ test("a renamed type's field whose uses in the working tree could not be read is
     "src/use.ts",
     'import type { Account } from "./model";\n\nexport function label(row: Account) {\n  return row.name;\n}\n',
   );
-  // The working tree's compile, the first, finds nothing: whether row.name reads Account.name is not known.
-  noTargets(map, (compile) => compile === 1);
+  // The working tree's compile, the second after the base's, finds nothing: whether row.name reads
+  // Account.name is not known.
+  noTargets(map, (compile) => compile === 2);
   const { text } = await map.checkChanges({}, signal());
   assert.doesNotMatch(text, /STILL USED/u);
   assert.match(
@@ -1979,18 +2020,18 @@ test("a renamed type's field whose uses in the working tree could not be read is
 
 test("a wide change reads its fields in one compile", async (t) => {
   const fields = Array.from({ length: 20 }, (_, at) => `f${at}`);
-  const row = (type: string) =>
-    `export interface Row {\n${fields.map((f) => `  ${f}: ${type};`).join("\n")}\n}\n`;
+  const row = (value: string) =>
+    `export class Row {\n${fields.map((f) => `  ${f} = ${value};`).join("\n")}\n}\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
-    "src/row.ts": row("number"),
+    "src/row.ts": row("1"),
     "src/reader.ts": `import type { Row } from "./row";\n\nexport const reader = (r: Row) => [${fields.map((f) => `r.${f}`).join(", ")}];\n`,
   });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
   const map = await openMap(root);
   t.after(() => map.close());
-  await write("src/row.ts", row("string"));
+  await write("src/row.ts", row('"1"'));
 
   const rounds = usesRead(map);
   const { text } = await map.checkChanges({}, signal());
@@ -2024,11 +2065,12 @@ test("a value is followed to the code reading it, and stops at a type that descr
 
 test("a type a value reached first is still followed when a change reaches it through uses too", async (t) => {
   const work = (value: number) => `export function work() {\n  return ${value};\n}\n`;
-  const inner = (type: string) => `export type Inner = ${type};\nexport type Outer = Inner;\n`;
+  const inner = (value: number) =>
+    `export class Holder {\n  value = ${value};\n}\nexport type Outer = Holder["value"];\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
     "src/work.ts": work(1),
-    "src/inner.ts": inner("number"),
+    "src/inner.ts": inner(1),
     "src/both.ts":
       'import type { Outer } from "./inner";\nimport { work } from "./work";\n\nexport function create() {\n  return work();\n}\nexport const services = { create };\nexport type Both = (typeof services)["create"] & Outer;\n',
     "src/names.ts":
@@ -2041,7 +2083,7 @@ test("a type a value reached first is still followed when a change reaches it th
 
   await write("src/work.ts", work(2));
   assert.doesNotMatch((await map.checkChanges({}, signal())).text, /names/u);
-  await write("src/inner.ts", inner("string"));
+  await write("src/inner.ts", inner(2));
   assert.match((await map.checkChanges({}, signal())).text, /^ {2}src\/names\.ts: names → /mu);
 });
 
@@ -2072,17 +2114,17 @@ test("a field the trace reached and only code writing it is left of has lost its
 });
 
 test("a read that fails for a reason not of the declaration fails the check", async (t) => {
-  const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
+  const row = (value: string) => `export class Row {\n  a = ${value};\n}\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
-    "src/row.ts": row("number"),
+    "src/row.ts": row("1"),
     "src/user.ts": 'import type { Row } from "./row";\n\nexport const user = (r: Row) => r.a;\n',
   });
   await run("git", ["add", "-A"], { cwd: root });
   await commit(root);
   const map = await openMap(root);
   t.after(() => map.close());
-  await write("src/row.ts", row("string"));
+  await write("src/row.ts", row(`"1"`));
 
   usesRead(map, () => {
     throw new ProjectEvidenceError("PROJECT_EVIDENCE_MAINTENANCE_BUSY", false);
@@ -2093,10 +2135,10 @@ test("a read that fails for a reason not of the declaration fails the check", as
 });
 
 test("a declaration its compile finds no target for is left unread, and named as reached, not changed", async (t) => {
-  const row = (type: string) => `export interface Row {\n  a: ${type};\n}\n`;
+  const row = (value: string) => `export class Row {\n  a = ${value};\n}\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
-    "src/row.ts": row("number"),
+    "src/row.ts": row("1"),
     "src/idle.ts":
       'import type { Row } from "./row";\n\nexport interface Idle {\n  key: Row["a"];\n}\n',
   });
@@ -2104,7 +2146,7 @@ test("a declaration its compile finds no target for is left unread, and named as
   await commit(root);
   const map = await openMap(root);
   t.after(() => map.close());
-  await write("src/row.ts", row("string"));
+  await write("src/row.ts", row(`"1"`));
 
   noTargets(map, (compile) => compile === 2);
   const { text } = await map.checkChanges({}, signal());
@@ -2216,7 +2258,7 @@ test("a function held in a field is followed as a function, and importing a type
     "src/work.ts": "export function work() {\n  return 1;\n}\n",
     "src/job.ts":
       'import { work } from "./work";\n\nexport class Job {\n  run = () => work();\n}\n',
-    "src/keys.ts": "export type Lonely = string;\n",
+    "src/keys.ts": 'export enum Lonely {\n  A = "a",\n}\n',
     "src/barrel.ts": 'export type { Lonely } from "./keys";\n',
     "src/importer.ts": 'import type { Lonely } from "./keys";\n\nexport const one = 1;\n',
   });
@@ -2230,7 +2272,7 @@ test("a function held in a field is followed as a function, and importing a type
   assert.match(called, /^ {2}src\/job\.ts: Job\.run → work/mu);
   await write("src/work.ts", "export function work() {\n  return 1;\n}\n");
 
-  await write("src/keys.ts", "export type Lonely = number;\n");
+  await write("src/keys.ts", 'export enum Lonely {\n  A = "b",\n}\n');
   const named = (await map.checkChanges({}, signal())).text;
   assert.match(
     named,
@@ -2321,12 +2363,10 @@ test("removing one key of a type generic code indexes is not a use of it; a clas
 });
 
 test("a field or key only a type's index names is used, by that type alone", async (t) => {
-  const row = (fields: string) => `export interface Row {\n${fields}  kept: string;\n}\n`;
+  const row = (fields: string) => `export class Row {\n${fields}  kept = "";\n}\n`;
   const { root, write } = await project({
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src"] }),
-    "src/row.ts": row(
-      '  total: number;\n  "POST /gone": { request: string };\n  lonely: number;\n',
-    ),
+    "src/row.ts": row('  total = 1;\n  "POST /gone" = { request: "" };\n  lonely = 1;\n'),
     // Offsets count past text that is not ASCII, and past names that only look like an index.
     "src/user.ts":
       'import type { Row } from "./row";\n\n// 中文注释 😀\nexport function show(value: Row["total"], body: Row["POST /gone"]) {\n  return [value, body];\n}\n',
@@ -2338,7 +2378,7 @@ test("a field or key only a type's index names is used, by that type alone", asy
   const map = await openMap(root);
   t.after(() => map.close());
 
-  await write("src/row.ts", row("  total: string;\n  lonely: string;\n"));
+  await write("src/row.ts", row('  total = "1";\n  lonely = "1";\n'));
   const { text } = await map.checkChanges({}, signal());
   assert.match(
     text,
