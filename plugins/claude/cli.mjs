@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "0.1.54";
+const VERSION = "0.1.55";
 const ARGUMENTS = process.argv.slice(2);
 
 // The same directory as installDirectory in src/agent/environment.ts: the user's cache, unless
