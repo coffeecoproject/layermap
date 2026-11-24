@@ -3,12 +3,12 @@
 // so a program run there that calls `layermap`, such as one choosing tests from
 // `layermap check --json`, finds nothing. `layermap setup command` writes one file into
 // ~/.local/bin, which those shells have on their PATH. It holds no version: each time it runs the
-// newest one installed in LayerMap's cache, where every agent's plugin installs the version it
-// starts, so it follows the plugins as they update and never asks npm or a network for anything.
+// newest one installed on this machine, where every agent's plugin installs the version it starts,
+// so it follows the plugins as they update and never asks npm or a network for anything.
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { cacheDirectory } from "./environment";
+import { installDirectory } from "./environment";
 
 export type CommandOptions = Readonly<{
   dryRun: boolean;
@@ -20,13 +20,16 @@ export type CommandOptions = Readonly<{
 const MARK = "// LayerMap's command, written by `layermap setup command`.";
 
 /**
- * The command for a cache directory. It runs as whichever module type node reads a file without an
- * extension as: built-in modules come from process, and the version is loaded with import().
- * LAYERMAP_CACHE moves the cache for it as it does for LayerMap.
+ * The command for the directory LayerMap is installed in: installDirectory, as setup found it. It
+ * looks for versions nowhere else, whatever the shell calling it has set, a test's own home
+ * directory say, or LAYERMAP_CACHE for its maps: it installs nothing, so a directory with no
+ * version in it would leave it nothing to run. It runs as whichever module type node reads a file
+ * without an extension as: built-in modules come from process, and the version is loaded with
+ * import().
  */
-export const commandScript = (cache: string): string => `#!/usr/bin/env node
+export const commandScript = (directory: string): string => `#!/usr/bin/env node
 ${MARK}
-// It runs the newest LayerMap version installed in LayerMap's cache, where each agent's LayerMap
+// It runs the newest LayerMap version installed in the directory below, where each agent's LayerMap
 // plugin installs the version it starts. \`layermap remove command\` deletes this file.
 if (typeof process.getBuiltinModule !== "function") {
   process.stderr.write("layermap: LayerMap needs Node.js 22.22 or later; this is " + process.version + "\\n");
@@ -35,8 +38,7 @@ if (typeof process.getBuiltinModule !== "function") {
 const fs = process.getBuiltinModule("node:fs");
 const path = process.getBuiltinModule("node:path");
 const { pathToFileURL } = process.getBuiltinModule("node:url");
-const cache = process.env.LAYERMAP_CACHE ? path.resolve(process.env.LAYERMAP_CACHE) : ${JSON.stringify(cache)};
-const versions = path.join(cache, "versions");
+const versions = path.join(${JSON.stringify(directory)}, "versions");
 const installed = (version) => path.join(versions, version, "node_modules", "layermap");
 // A version being installed is a directory named .<version>-…, and has no manifest in place yet.
 const numbers = (version) => version.split(".").map(Number);
@@ -102,13 +104,13 @@ export async function setupCommand(options: CommandOptions): Promise<boolean> {
   log(`write LayerMap's command to ${file}`);
   if (options.dryRun) return true;
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(`${file}.${process.pid}`, commandScript(cacheDirectory(env)));
+  await writeFile(`${file}.${process.pid}`, commandScript(installDirectory(env)));
   await chmod(`${file}.${process.pid}`, 0o755);
   await rename(`${file}.${process.pid}`, file);
   if (!(env.PATH ?? "").split(path.delimiter).includes(path.dirname(file)))
     log(`${path.dirname(file)} is not on this shell's PATH: add it for the command to be found.`);
   log(
-    `Done. \`layermap\` runs the newest LayerMap version installed in ${path.join(cacheDirectory(env), "versions")}, where each agent's LayerMap plugin installs the version it starts.`,
+    `Done. \`layermap\` runs the newest LayerMap version installed in ${path.join(installDirectory(env), "versions")}, where each agent's LayerMap plugin installs the version it starts.`,
   );
   return true;
 }

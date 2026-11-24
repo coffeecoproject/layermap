@@ -24,9 +24,8 @@ export const packageRoot = (() => {
 export const packageVersion = async (): Promise<string> =>
   JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")).version;
 
-/** Maps and built analyzers live in the user's cache, never inside a project. */
-export const cacheDirectory = (env: NodeJS.ProcessEnv = process.env): string => {
-  if (env.LAYERMAP_CACHE) return path.resolve(env.LAYERMAP_CACHE);
+// LayerMap's directory in the user's cache, by each system's convention.
+const userCache = (env: NodeJS.ProcessEnv): string => {
   if (process.platform === "darwin") return path.join(homedir(), "Library", "Caches", "layermap");
   if (process.platform === "win32")
     return path.join(
@@ -36,6 +35,22 @@ export const cacheDirectory = (env: NodeJS.ProcessEnv = process.env): string => 
     );
   return path.join(env.XDG_CACHE_HOME || path.join(homedir(), ".cache"), "layermap");
 };
+
+/**
+ * Maps and built analyzers live in the user's cache, never inside a project; LAYERMAP_CACHE names
+ * another directory for them.
+ */
+export const cacheDirectory = (env: NodeJS.ProcessEnv = process.env): string =>
+  env.LAYERMAP_CACHE ? path.resolve(env.LAYERMAP_CACHE) : userCache(env);
+
+/**
+ * Where LayerMap itself is installed: the versions agents start, as versions/<version>, and the
+ * launcher setup registers. The user's cache as well, unless LAYERMAP_HOME names another
+ * directory. LAYERMAP_CACHE does not move it: a caller that keeps its maps apart, a test say, runs
+ * the versions already installed rather than installing them again beside its maps.
+ */
+export const installDirectory = (env: NodeJS.ProcessEnv = process.env): string =>
+  env.LAYERMAP_HOME ? path.resolve(env.LAYERMAP_HOME) : userCache(env);
 
 /**
  * The project an agent works in: the Git work tree around the directory. Maps are built from
@@ -169,8 +184,8 @@ const DAY = 24 * 60 * 60 * 1000;
  * Keeps the cache to what is in use: a project's map goes with its directory (a removed worktree's
  * map is as large as the repository's own) or after 30 days unused, a superseded analyzer build
  * after a day (a server started before an update may still run it), and an interrupted build after
- * an hour. Installed versions of LayerMap, about 100 MB apiece, are kept to those in use too
- * (installed is this package's directory).
+ * an hour. The versions of LayerMap in installDirectory, about 100 MB apiece, are kept to those in
+ * use too (installed is this package's directory).
  */
 export async function pruneCache(
   cache: string,
@@ -203,7 +218,7 @@ export async function pruneCache(
       await rm(path.join(builds, name), { recursive: true, force: true });
   }
   const own = path.dirname(path.dirname(installed));
-  const versions = path.join(cache, "versions");
+  const versions = path.join(installDirectory(env), "versions");
   const launched = path.dirname(own) === versions;
   if (launched) await pruneVersions(versions, own, now);
   // npx installed the versions agents started before the launcher, and still does for clients

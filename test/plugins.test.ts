@@ -69,7 +69,7 @@ test("the Claude Code plugin's server script runs the installed version in its o
   await writeFile(server, generatedFiles("1.2.3")["plugins/claude/server.mjs"] ?? "");
   await standIn(directory);
   const started = spawn(process.execPath, [server], {
-    env: { ...process.env, LAYERMAP_CACHE: path.join(directory, "cache") },
+    env: { ...process.env, LAYERMAP_HOME: path.join(directory, "cache") },
   });
   let stdout = "";
   started.stdout.on("data", (chunk) => (stdout += chunk));
@@ -93,7 +93,7 @@ test("the Claude Code plugin's layermap command runs the installed version's com
   await writeFile(path.join(directory, "plugin", "cli.mjs"), files["plugins/claude/cli.mjs"] ?? "");
   await standIn(directory);
   const started = spawn(command, ["check", "--json", "--base", "HEAD~1"], {
-    env: { ...process.env, LAYERMAP_CACHE: path.join(directory, "cache") },
+    env: { ...process.env, LAYERMAP_HOME: path.join(directory, "cache") },
   });
   let stdout = "";
   started.stdout.on("data", (chunk) => (stdout += chunk));

@@ -183,6 +183,9 @@ setup 只配置当前这台机器；整个团队要用，请每人各装一次�
 [隐私说明](https://github.com/coffeecoproject/layermap/blob/main/PRIVACY.md)、
 [安全说明](https://github.com/coffeecoproject/layermap/blob/main/SECURITY.md)）。
 
+各 agent 启动的 LayerMap 版本也装在同一个用户缓存目录里。`LAYERMAP_CACHE` 只改地图放在哪，不改别的：
+程序把自己测试用的地图放到单独的目录时，运行的仍是已经装好的版本。要改版本装在哪，用 `LAYERMAP_HOME`。
+
 MCP 服务会把耗时较长的检查正在做哪一步，以进度通知告诉要求进度的客户端；每次工具调用还会在缓存的
 `logs/calls.jsonl` 里记一行：工具、参数、仓库、每一步的耗时和回答的第一行，用来回顾工具怎么被使用、时间花在哪里。
 
@@ -205,7 +208,7 @@ npx layermap check --json                 # 输出 JSON：按远近排的相关�
 npx layermap imports --json               # 输出整个项目当前的全部 import（测试文件除外）：所在文件和行、导入的文件，以及没对上项目文件的 import 和原因
 ```
 
-**`layermap` 命令**：Claude Code 插件会把它放进 Claude 执行命令时的 PATH。Codex 的命令、终端和 Git 钩子里没有，在那里运行的程序要调用 `layermap`（比如用 `layermap check --json` 挑测试）就找不到。运行一次 `npx layermap setup command`：它在 `~/.local/bin` 放一个 `layermap` 命令，每次运行 LayerMap 缓存里装着的最新版本（各 agent 的插件启动哪个版本，就把哪个版本装在那里）。插件更新后它自动跟上，不联网；`~/.local/bin` 在 PATH 里排在插件目录前面时，Claude 执行的命令也用它。那里已有同名的别的文件时不覆盖。`npx layermap remove command` 删掉它。只支持 macOS 和 Linux。
+**`layermap` 命令**：Claude Code 插件会把它放进 Claude 执行命令时的 PATH。Codex 的命令、终端和 Git 钩子里没有，在那里运行的程序要调用 `layermap`（比如用 `layermap check --json` 挑测试）就找不到。运行一次 `npx layermap setup command`：它在 `~/.local/bin` 放一个 `layermap` 命令，每次运行本机装着的最新版本（各 agent 的插件启动哪个版本，就把哪个版本装在本机）。插件更新后它自动跟上，不联网；`~/.local/bin` 在 PATH 里排在插件目录前面时，Claude 执行的命令也用它。那里已有同名的别的文件时不覆盖。`npx layermap remove command` 删掉它。只支持 macOS 和 Linux。
 
 ## 常见问题
 

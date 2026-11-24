@@ -256,6 +256,7 @@ test("the cache drops a version the launcher installed a week after its last sta
   const current = path.join(await sandbox(), "current");
   await mkdir(current);
   await pruneCache(cache, current, now, path.join(own, "node_modules", "layermap"), {
+    LAYERMAP_HOME: cache,
     npm_config_cache: npm,
   });
   const exists = async (target: string) => !!(await stat(target).catch(() => undefined));

@@ -1,33 +1,35 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { generatedFiles } from "../scripts/plugins";
 import { commandFile, commandScript, removeCommand, setupCommand } from "../src/agent/command";
 import { sandbox } from "./support";
 
 // The command is a file a shell runs by its first line, which Windows has no way to do.
 const skip = process.platform === "win32";
 
-// A home and a cache of their own, and the node running the tests first on PATH.
+// A home directory and a directory LayerMap is installed in of their own, and the node running the
+// tests first on PATH.
 async function machine() {
   const directory = await sandbox();
-  const cache = path.join(directory, "cache");
+  const home = path.join(directory, "layermap");
   const env = {
     HOME: path.join(directory, "home"),
-    LAYERMAP_CACHE: cache,
+    LAYERMAP_HOME: home,
     PATH: [path.dirname(process.execPath), process.env.PATH].join(path.delimiter),
   };
   const lines: string[] = [];
   const options = { dryRun: false, env, log: (line: string) => lines.push(line) };
-  return { directory, cache, env, lines, options, file: commandFile(env) };
+  return { directory, home, env, lines, options, file: commandFile(env) };
 }
 
 // A version as the launcher installs it, whose command prints what ran and exits with 3.
-async function install(cache: string, version: string, manifest = true) {
-  const installed = path.join(cache, "versions", version, "node_modules", "layermap");
+async function install(home: string, version: string, manifest = true) {
+  const installed = path.join(home, "versions", version, "node_modules", "layermap");
   await mkdir(installed, { recursive: true });
   await writeFile(
     path.join(installed, "cli.mjs"),
@@ -47,12 +49,12 @@ const run = (file: string, args: string[], env: NodeJS.ProcessEnv) =>
     );
   });
 
-test("setup writes a command that runs the newest version in the cache, with its arguments and exit code", {
+test("setup writes a command that runs the newest version installed, with its arguments and exit code", {
   skip,
 }, async () => {
-  const { cache, env, file, options, lines, directory } = await machine();
+  const { home, env, file, options, lines } = await machine();
   assert.equal(await setupCommand(options), true);
-  assert.equal(await readFile(file, "utf8"), commandScript(cache));
+  assert.equal(await readFile(file, "utf8"), commandScript(home));
   assert.ok((await stat(file)).mode & 0o100, "a shell can run it");
   assert.equal(file, path.join(env.HOME, ".local", "bin", "layermap"));
   assert.ok(
@@ -64,13 +66,13 @@ test("setup writes a command that runs the newest version in the cache, with its
   const none = await run(file, ["--version"], env);
   assert.equal(none.code, 1);
   assert.match(none.stderr, /^layermap: no LayerMap version is installed in /u);
-  assert.ok(none.stderr.includes(path.join(cache, "versions")), none.stderr);
+  assert.ok(none.stderr.includes(path.join(home, "versions")), none.stderr);
 
-  await install(cache, "0.1.9");
-  await install(cache, "0.1.10");
+  await install(home, "0.1.9");
+  await install(home, "0.1.10");
   // npm has not finished these: no manifest in place, or still under the name of an install.
-  await install(cache, "0.2.0", false);
-  await install(cache, ".0.3.0-Ab12Cd");
+  await install(home, "0.2.0", false);
+  await install(home, ".0.3.0-Ab12Cd");
   const newest = await run(file, ["check", "--json", "a b"], env);
   assert.deepEqual(JSON.parse(newest.stdout), {
     version: "0.1.10",
@@ -80,21 +82,50 @@ test("setup writes a command that runs the newest version in the cache, with its
   assert.equal(newest.stderr, "");
 
   // A plugin that updates installs its version, and the command follows without another setup.
-  await install(cache, "0.2.0");
+  await install(home, "0.2.0");
   assert.equal(JSON.parse((await run(file, [], env)).stdout).version, "0.2.0");
+});
 
-  // LAYERMAP_CACHE moves the cache for the command as it does for LayerMap.
-  const moved = path.join(directory, "moved");
-  await install(moved, "0.0.1");
-  const elsewhere = await run(file, [], { ...env, LAYERMAP_CACHE: moved });
-  assert.equal(JSON.parse(elsewhere.stdout).version, "0.0.1");
+// To a program that calls `layermap` the two are one command, so they run the same version in the
+// same shell: one that keeps its maps in a directory of its own, as a program's tests do, is still
+// on the machine the versions are installed on.
+test("the command and the Claude Code plugin's command run the installed version wherever maps are kept", {
+  skip,
+}, async () => {
+  const { directory, home, env, file, options } = await machine();
+  await install(home, "1.2.3");
+  await setupCommand(options);
+  const plugin = path.join(directory, "cli.mjs");
+  await writeFile(plugin, generatedFiles("1.2.3")["plugins/claude/cli.mjs"] ?? "");
+  const maps = path.join(directory, "maps");
+  for (const shell of [
+    env,
+    { ...env, LAYERMAP_CACHE: maps },
+    { ...env, LAYERMAP_CACHE: maps, HOME: path.join(directory, "another-home") },
+  ]) {
+    // No registry is there: installing a version would fail.
+    const calling = { ...shell, npm_config_registry: "http://127.0.0.1:9/" };
+    for (const result of [
+      await run(file, ["imports", "--json"], calling),
+      await run(process.execPath, [plugin, "imports", "--json"], calling),
+    ]) {
+      assert.equal(result.stderr, "");
+      assert.deepEqual(JSON.parse(result.stdout), {
+        version: "1.2.3",
+        args: ["imports", "--json"],
+      });
+      assert.equal(result.code, 3);
+    }
+  }
+  assert.equal(existsSync(maps), false, "no version is installed beside the maps");
+  assert.deepEqual(await readdir(path.join(home, "versions")), ["1.2.3"]);
 });
 
 test("the command runs whichever module type node reads a file without an extension as", {
   skip,
 }, async () => {
-  const { cache, env, file, options } = await machine();
-  await install(cache, "1.0.0");
+  const { home, env, file, options } = await machine();
+  await install(home, "1.0.0");
   await setupCommand(options);
   assert.equal(JSON.parse((await run(file, [], env)).stdout).version, "1.0.0");
   await writeFile(path.join(env.HOME, ".local", "package.json"), '{ "type": "module" }');
@@ -105,7 +136,7 @@ test("the command runs whichever module type node reads a file without an extens
 test("setup replaces the command it wrote and leaves another file or a link alone; remove deletes only its own", {
   skip,
 }, async () => {
-  const { cache, env, file, lines } = await machine();
+  const { home, env, file, lines } = await machine();
   const options = {
     dryRun: false,
     env: { ...env, PATH: [path.dirname(file), env.PATH].join(path.delimiter) },
@@ -137,11 +168,11 @@ test("setup replaces the command it wrote and leaves another file or a link alon
   assert.equal(await readFile(target, "utf8"), commandScript("/an/older/cache"));
   await rm(file);
 
-  // The command of an earlier setup, for another cache.
+  // The command of an earlier setup, for another directory.
   await writeFile(file, commandScript("/an/older/cache"), { mode: 0o755 });
   lines.length = 0;
   assert.equal(await setupCommand(options), true);
-  assert.equal(await readFile(file, "utf8"), commandScript(cache));
+  assert.equal(await readFile(file, "utf8"), commandScript(home));
   assert.ok(!lines.some((line) => line.includes("PATH")), "its directory is on PATH");
 
   assert.equal(await removeCommand({ ...options, dryRun: true }), true);
@@ -162,7 +193,7 @@ test("layermap setup command and remove command write and delete the file from t
   assert.equal(existsSync(file), false);
   const setup = await layermap("setup", "command");
   assert.equal(setup.code, 0, setup.stderr);
-  assert.equal(await readFile(file, "utf8"), commandScript(env.LAYERMAP_CACHE));
+  assert.equal(await readFile(file, "utf8"), commandScript(env.LAYERMAP_HOME));
   assert.equal((await layermap("allow", "command")).code, 1, "allow takes an agent");
   assert.equal((await layermap("remove", "command")).code, 0);
   assert.equal(existsSync(file), false);

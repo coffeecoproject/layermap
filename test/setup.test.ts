@@ -230,10 +230,10 @@ test("setup registers the server through each agent's own command and approves i
   assert.ok(!launch.includes(" tsx "), "loaders are passed as absolute URLs");
 });
 
-test("a published LayerMap registers the launcher it writes into the cache, with its version", () => {
+test("a published LayerMap registers the launcher it writes where it is installed, with its version", () => {
   // An absolute path on each system: on Windows a root without a drive is relative to the drive.
   const cache = path.resolve(path.sep, "cache");
-  assert.deepEqual(mcpLaunchCommand({ LAYERMAP_CACHE: cache }, true), [
+  assert.deepEqual(mcpLaunchCommand({ LAYERMAP_HOME: cache }, true), [
     "node",
     path.join(cache, "server.mjs"),
   ]);

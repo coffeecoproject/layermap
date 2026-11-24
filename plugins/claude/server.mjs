@@ -1,8 +1,8 @@
 // Generated from scripts/launcher.mjs.
 // Runs one LayerMap version in this process: its MCP server, or, for the layermap command of the
-// Claude Code plugin, its command line with the arguments given. The version is installed once into
-// LayerMap's cache, from where every later start runs without npm or a network. The agent starts
-// this in the project, which stays the working directory the server maps; npm runs in the cache,
+// Claude Code plugin, its command line with the arguments given. The version is installed once on
+// this machine, from where every later start runs without npm or a network. The agent starts this
+// in the project, which stays the working directory the server maps; npm runs where it installs,
 // so the project's own npm settings and packages play no part in what gets installed.
 import { spawn } from "node:child_process";
 import {
@@ -21,16 +21,17 @@ import { pathToFileURL } from "node:url";
 const VERSION = "0.1.54";
 const ARGUMENTS = ["mcp"];
 
-// The same directory as cacheDirectory in src/agent/environment.ts.
+// The same directory as installDirectory in src/agent/environment.ts: the user's cache, unless
+// LAYERMAP_HOME names another. LAYERMAP_CACHE, which names where maps are kept, does not move it.
 const env = process.env;
-const cache = env.LAYERMAP_CACHE
-  ? path.resolve(env.LAYERMAP_CACHE)
+const directory = env.LAYERMAP_HOME
+  ? path.resolve(env.LAYERMAP_HOME)
   : process.platform === "darwin"
     ? path.join(homedir(), "Library", "Caches", "layermap")
     : process.platform === "win32"
       ? path.join(env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local"), "layermap", "Cache")
       : path.join(env.XDG_CACHE_HOME || path.join(homedir(), ".cache"), "layermap");
-const versions = path.join(cache, "versions");
+const versions = path.join(directory, "versions");
 const home = path.join(versions, VERSION);
 const installed = path.join(home, "node_modules", "layermap");
 const manifest = path.join(installed, "package.json");
@@ -95,7 +96,7 @@ async function install() {
 
 try {
   if (!existsSync(manifest)) await install();
-  // LayerMap removes a version from its cache once nothing has started it for a week.
+  // LayerMap removes a version once nothing has started it for a week.
   writeFileSync(path.join(home, "last-used"), "");
   const entry = path.join(installed, JSON.parse(readFileSync(manifest, "utf8")).bin.layermap);
   process.argv = [process.argv[0], entry, ...ARGUMENTS];

@@ -22,7 +22,7 @@ export type SetupOptions = Readonly<{
 }>;
 
 import { commandInvocation } from "../platform";
-import { cacheDirectory, packageRoot } from "./environment";
+import { installDirectory, packageRoot } from "./environment";
 import { AGENT_MAP_NOTE } from "./notes";
 
 const SERVER = "layermap";
@@ -33,7 +33,7 @@ const BEGIN = "<!-- layermap:begin -->";
 const END = "<!-- layermap:end -->";
 
 /**
- * scripts/launcher.mjs for one version: it starts that version's server, installed in the cache, or
+ * scripts/launcher.mjs for one version: it starts that version's server, which it installs once, or
  * given the code of other arguments, runs its command line with them.
  */
 export const launcherScript = (template: string, version: string, args = '["mcp"]'): string =>
@@ -46,11 +46,11 @@ const PUBLISHED_LAUNCHER = path.join(packageRoot, "dist", "launcher.mjs");
 
 /** Where setup writes the launcher of the version it set up. */
 const launcherFile = (env: NodeJS.ProcessEnv = process.env) =>
-  path.join(cacheDirectory(env), "server.mjs");
+  path.join(installDirectory(env), "server.mjs");
 
 /**
  * How an agent starts this LayerMap's MCP server. A published package, run through npx say, starts
- * the launcher setup writes into the cache, which installs this version there once, so the agents'
+ * the launcher setup writes into installDirectory, which installs this version there once, so the agents'
  * starts need neither npx nor a network; node is a real executable on every system, where npx is a
  * .cmd script on Windows that only a shell runs. A checkout starts itself.
  */
@@ -306,7 +306,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
   const quoted = command.map((part) => (/^[\w./:@=-]+$/u.test(part) ? part : JSON.stringify(part)));
   const { settings, instructions } = agentFiles(options);
   const note = options.instructions !== false;
-  // The launcher setup registers; it installs this version into the cache at its first start.
+  // The launcher setup registers; it installs this version beside itself at its first start.
   const writeLauncher = async () => {
     if (!published) return;
     const file = launcherFile(env);

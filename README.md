@@ -210,6 +210,11 @@ Maps stay in your user cache (`~/Library/Caches/layermap`, `~/.cache/layermap` o
 nothing anywhere ([privacy](https://github.com/coffeecoproject/layermap/blob/main/PRIVACY.md),
 [security](https://github.com/coffeecoproject/layermap/blob/main/SECURITY.md)).
 
+The versions of LayerMap your agents start are installed in the same user cache directory.
+`LAYERMAP_CACHE` moves the maps and nothing else: a program that keeps the maps of its own tests in
+a directory apart still runs the versions already installed. `LAYERMAP_HOME` names another
+directory for the versions.
+
 The MCP server tells a client that asks for progress which step a long check is on, and keeps a
 line for each tool call in `logs/calls.jsonl` in the cache: the tool, its arguments, the
 repository, how long each step took and the first line of the answer, to review how the tools are
@@ -238,7 +243,7 @@ npx layermap imports --json               # every import of the project as it is
 Codex's commands, a terminal and Git hooks have none, so a program run there that calls `layermap`,
 such as one choosing tests from `layermap check --json`, does not find it. Run `npx layermap setup
 command` once: it writes a `layermap` command into `~/.local/bin`, which runs the newest version
-installed in LayerMap's cache, where each agent's plugin installs the version it starts. It follows
+installed on your machine, where each agent's plugin installs the version it starts. It follows
 the plugins as they update and uses no network; where `~/.local/bin` comes before the plugin's
 directory on PATH, Claude's shell commands run it too. A file of that name that is not LayerMap's
 is left as it is. `npx layermap remove command` deletes it. macOS and Linux only.

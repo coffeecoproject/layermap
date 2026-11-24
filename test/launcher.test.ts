@@ -9,7 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { generatedFiles } from "../scripts/plugins";
-import { cacheDirectory } from "../src/agent/environment";
+import { installDirectory } from "../src/agent/environment";
 import { sandbox } from "./support";
 
 const run = promisify(execFile);
@@ -101,7 +101,7 @@ test("the launcher installs its version into the cache once, then starts it ther
   await writeFile(path.join(project, ".npmrc"), "registry=http://127.0.0.1:9/\n");
   const env = {
     ...process.env,
-    LAYERMAP_CACHE: cache,
+    LAYERMAP_HOME: cache,
     npm_config_cache: path.join(directory, "npm"),
     npm_config_userconfig: userconfig,
   };
@@ -156,7 +156,7 @@ test("two launchers starting a new version at once both start it, from one insta
   await writeFile(server, generatedFiles("2.0.0")["plugins/claude/server.mjs"] ?? "");
   const env = {
     ...process.env,
-    LAYERMAP_CACHE: cache,
+    LAYERMAP_HOME: cache,
     npm_config_cache: path.join(directory, "npm"),
     npm_config_registry: served.url,
   };
@@ -190,7 +190,7 @@ test("a version being installed is not in the cache until npm has installed all 
     cwd: directory,
     env: {
       ...process.env,
-      LAYERMAP_CACHE: cache,
+      LAYERMAP_HOME: cache,
       npm_config_cache: path.join(directory, "npm"),
       npm_config_registry: served.url,
       MARKER: path.join(directory, "marker.json"),
@@ -215,7 +215,7 @@ test("a launcher that cannot install its version says why and exits", async () =
     cwd: directory,
     env: {
       ...process.env,
-      LAYERMAP_CACHE: path.join(directory, "cache"),
+      LAYERMAP_HOME: path.join(directory, "cache"),
       npm_config_cache: path.join(directory, "npm"),
       npm_config_registry: "http://127.0.0.1:9/",
       npm_config_fetch_retries: "0",
@@ -233,14 +233,15 @@ test("a launcher that cannot install its version says why and exits", async () =
   assert.deepEqual(await readdir(path.join(directory, "cache", "versions")), []);
 });
 
-// The launcher cannot import LayerMap before it is installed, so it finds the cache by itself.
-test("the launcher finds its versions in the cache LayerMap uses", async () => {
+// The launcher cannot import LayerMap before it is installed, so it finds the directory by itself.
+// The directory maps are kept in is another matter: LAYERMAP_CACHE does not move the versions.
+test("the launcher finds its versions in the directory LayerMap is installed in, wherever maps are kept", async () => {
   const home = await sandbox();
   const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(home, "local") };
-  // cacheDirectory finds the home directory from the process's own variables.
+  // installDirectory finds the home directory from the process's own variables.
   const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   Object.assign(process.env, { HOME: home, USERPROFILE: home });
-  const cache = cacheDirectory(env);
+  const cache = installDirectory(env);
   for (const [name, value] of Object.entries(saved))
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -260,14 +261,17 @@ test("the launcher finds its versions in the cache LayerMap uses", async () => {
   await writeFile(server, generatedFiles("4.0.0")["plugins/claude/server.mjs"] ?? "");
   const variables = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !["LAYERMAP_CACHE", "XDG_CACHE_HOME"].includes(name),
+      ([name]) => !["LAYERMAP_HOME", "LAYERMAP_CACHE", "XDG_CACHE_HOME"].includes(name),
     ),
   );
-  const status = await new Promise((resolve) =>
-    spawn(process.execPath, [server], {
-      env: { ...variables, ...env, npm_config_registry: "http://127.0.0.1:9/" },
-      stdio: "ignore",
-    }).on("close", resolve),
-  );
-  assert.equal(status, 7);
+  for (const kept of [{}, { LAYERMAP_CACHE: path.join(home, "maps") }]) {
+    const status = await new Promise((resolve) =>
+      spawn(process.execPath, [server], {
+        env: { ...variables, ...env, ...kept, npm_config_registry: "http://127.0.0.1:9/" },
+        stdio: "ignore",
+      }).on("close", resolve),
+    );
+    assert.equal(status, 7);
+  }
+  assert.equal(existsSync(path.join(home, "maps")), false);
 });
