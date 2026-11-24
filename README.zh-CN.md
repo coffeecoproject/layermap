@@ -205,6 +205,8 @@ npx layermap check --json                 # 输出 JSON：按远近排的相关�
 npx layermap imports --json               # 输出整个项目当前的全部 import（测试文件除外）：所在文件和行、导入的文件，以及没对上项目文件的 import 和原因
 ```
 
+**`layermap` 命令**：Claude Code 插件会把它放进 Claude 执行命令时的 PATH。Codex 的命令、终端和 Git 钩子里没有，在那里运行的程序要调用 `layermap`（比如用 `layermap check --json` 挑测试）就找不到。运行一次 `npx layermap setup command`：它在 `~/.local/bin` 放一个 `layermap` 命令，每次运行 LayerMap 缓存里装着的最新版本（各 agent 的插件启动哪个版本，就把哪个版本装在那里）。插件更新后它自动跟上，不联网；`~/.local/bin` 在 PATH 里排在插件目录前面时，Claude 执行的命令也用它。那里已有同名的别的文件时不覆盖。`npx layermap remove command` 删掉它。只支持 macOS 和 Linux。
+
 ## 常见问题
 
 **第一次建地图要多久？** 在较新的 Mac 上：
@@ -234,6 +236,7 @@ claude -p "..." --mcp-config '{"mcpServers":{"layermap":{"command":"npx","args":
 - Codex：`codex plugin remove layermap@layermap`
 - CodeBuddy Code：`codebuddy plugin uninstall layermap@layermap`
 - Pi：`pi remove npm:layermap`
+- 放过 `layermap` 命令的：`npx layermap remove command`
 
 卸载后再删掉缓存目录即可。
 

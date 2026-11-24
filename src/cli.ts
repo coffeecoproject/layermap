@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { mapCallLog } from "./agent/call-log";
+import { removeCommand, setupCommand } from "./agent/command";
 import {
   cacheDirectory,
   packageVersion,
@@ -23,6 +24,10 @@ Usage:
   layermap allow claude [--scope user|project|local] [--dry-run]
                                           let the plugin's read-only tools run without a prompt
   layermap remove claude|codex|dsh [--scope user|project|local] [--dry-run]
+  layermap setup command [--dry-run]      put a layermap command in ~/.local/bin, for shells with no
+                                          plugin's on their PATH (Codex's commands, a terminal): it
+                                          runs the newest version the agents' plugins have installed
+  layermap remove command [--dry-run]
   layermap mcp [--project DIR]            serve the map tools over MCP (stdio)
   layermap index [--project DIR]          build or update the map now
   layermap explore [PATH] [--name NAME] [--line N] [--direction INCOMING|OUTGOING|BOTH]
@@ -116,6 +121,13 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "setup" || command === "allow" || command === "remove") {
     const agent = rest[0];
+    if (agent === "command" && command !== "allow")
+      return (await (command === "setup" ? setupCommand : removeCommand)({
+        dryRun: values["dry-run"],
+        log,
+      }))
+        ? 0
+        : 1;
     if (agent !== "claude" && agent !== "codex" && agent !== "dsh") return usage(1);
     if (!["user", "project", "local"].includes(values.scope)) return usage(1);
     const done = await { setup: setupAgent, allow: allowAgent, remove: removeAgent }[command]({

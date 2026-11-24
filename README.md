@@ -234,6 +234,15 @@ npx layermap check --json                 # as JSON: related tests by rank, what
 npx layermap imports --json               # every import of the project as it is now, test files apart: file and line, the file imported, and why the rest reach no file
 ```
 
+**A `layermap` command.** The Claude Code plugin puts one on the PATH of Claude's shell commands.
+Codex's commands, a terminal and Git hooks have none, so a program run there that calls `layermap`,
+such as one choosing tests from `layermap check --json`, does not find it. Run `npx layermap setup
+command` once: it writes a `layermap` command into `~/.local/bin`, which runs the newest version
+installed in LayerMap's cache, where each agent's plugin installs the version it starts. It follows
+the plugins as they update and uses no network; where `~/.local/bin` comes before the plugin's
+directory on PATH, Claude's shell commands run it too. A file of that name that is not LayerMap's
+is left as it is. `npx layermap remove command` deletes it. macOS and Linux only.
+
 ## FAQ
 
 **How long does the first map take?** On a recent Mac:
@@ -268,6 +277,7 @@ claude -p "..." --mcp-config '{"mcpServers":{"layermap":{"command":"npx","args":
 - Codex: `codex plugin remove layermap@layermap`.
 - CodeBuddy Code: `codebuddy plugin uninstall layermap@layermap`.
 - Pi: `pi remove npm:layermap`.
+- The `layermap` command, if you set it up: `npx layermap remove command`.
 - Then delete the cache directory.
 
 ## Development
