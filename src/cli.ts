@@ -11,7 +11,7 @@ import {
   resolveAnalyzers,
 } from "./agent/environment";
 import { serveMcp } from "./agent/mcp";
-import { allowAgent, removeAgent, type SetupAgent, setupAgent } from "./agent/setup";
+import { allowAgent, removeAgent, SETUP_AGENTS, type SetupAgent, setupAgent } from "./agent/setup";
 import { describeMapError, parseMapToolCall, runMapTool } from "./agent/tools";
 import { ProjectEvidenceError } from "./core";
 import { LayerMap } from "./layermap";
@@ -20,10 +20,10 @@ import { MAP_TOOL_NAMES } from "./tools";
 const USAGE = `LayerMap — a layered map of a codebase for coding agents.
 
 Usage:
-  layermap setup claude|codex|dsh [--scope user|local] [--no-instructions] [--dry-run]
+  layermap setup ${SETUP_AGENTS.join("|")} [--scope user|local] [--no-instructions] [--dry-run]
   layermap allow claude [--scope user|project|local] [--dry-run]
                                           let the plugin's read-only tools run without a prompt
-  layermap remove claude|codex|dsh [--scope user|project|local] [--dry-run]
+  layermap remove ${SETUP_AGENTS.join("|")} [--scope user|project|local] [--dry-run]
   layermap setup command [--dry-run]      put a layermap command in ~/.local/bin, for shells with no
                                           plugin's on their PATH (Codex's commands, a terminal): it
                                           runs the newest version the agents' plugins have installed
@@ -128,7 +128,7 @@ async function main(argv: string[]): Promise<number> {
       }))
         ? 0
         : 1;
-    if (agent !== "claude" && agent !== "codex" && agent !== "dsh") return usage(1);
+    if (!SETUP_AGENTS.includes(agent as SetupAgent)) return usage(1);
     if (!["user", "project", "local"].includes(values.scope)) return usage(1);
     const done = await { setup: setupAgent, allow: allowAgent, remove: removeAgent }[command]({
       agent: agent as SetupAgent,

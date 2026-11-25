@@ -10,10 +10,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
 import { AGENT_MAP_NOTE } from "../src/agent/notes";
-import { CODEX_TOOL_TIMEOUT_SEC, launcherScript } from "../src/agent/setup";
+import {
+  CODEX_TOOL_TIMEOUT_SEC,
+  PLUGIN_DESCRIPTION as DESCRIPTION,
+  launcherScript,
+  REPOSITORY,
+} from "../src/agent/setup";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
-const REPOSITORY = "https://github.com/coffeecoproject/layermap";
 /** The server's MCP Registry name; npm's `mcpName` must match it for the registry to verify. */
 export const MCP_NAME = "io.github.coffeecoproject/layermap";
 const LINKS = {
@@ -27,8 +31,6 @@ const PROMPTS = [
   "Where is this function used across the codebase?",
   "Give me a map of how this repository is organized.",
 ];
-const DESCRIPTION =
-  "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.";
 // The MCP Registry allows at most 100 characters.
 const REGISTRY_DESCRIPTION =
   "Call graph for coding agents: callers up to HTTP routes, callees, usages for TS/JS, Go, Python, Java";

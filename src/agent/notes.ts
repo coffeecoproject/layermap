@@ -10,6 +10,17 @@ export const AGENT_MAP_NOTE =
   "The layermap MCP server is available here. When a task needs to know what calls a function, what a change could affect beyond the code you are editing, or where code is used, use its project_explore_map tool (direction INCOMING, depth up to 8) instead of grep, then confirm in source; a change confined to code you have read does not need it. When the edits are done, call its project_check_changes tool once before reporting the work done.";
 
 /**
+ * The rule of LayerMap's Antigravity plugin: AGENT_MAP_NOTE, and how the tools are reached there.
+ * Antigravity puts a plugin's rules in every session and keeps a server's own instructions in a file
+ * its agents need not read; it names a plugin's server <plugin>_<server>, which an agent told of
+ * "the layermap server" gets wrong; and it starts the server in the plugin's directory and lists no
+ * roots, so the server cannot tell which project a session is in (runs in Antigravity 2.34.0,
+ * 2026-11-24).
+ */
+export const antigravityMapNote = (server: string) =>
+  `${AGENT_MAP_NOTE} In Antigravity, call its tools through call_mcp_tool with ServerName ${server}. The server does not start in the project, so give every call an absolute path, and give project_check_changes the project's root as its path.`;
+
+/**
  * What the Claude Code plugin's stop hook and the Pi extension tell the agent, once per set of code
  * changes made in a session: check what they affect before finishing. The check itself is the map
  * tool; the hooks only ask git which of the session's edits are still there.

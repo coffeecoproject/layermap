@@ -17,7 +17,7 @@
 <p align="center"><sub>A real Claude Code session on <a href="https://github.com/miniflux/v2">Miniflux</a>, replayed: one map call finds every endpoint, then the agent confirms them in source.</sub></p>
 
 A layered map of your codebase for coding agents. LayerMap gives Claude Code, Codex, CodeBuddy
-Code, Pi, DeepSeek Harness and other MCP clients read-only tools that answer, in one call, what an agent otherwise works out
+Code, Pi, DeepSeek Harness, Antigravity and other MCP clients read-only tools that answer, in one call, what an agent otherwise works out
 with dozens of searches:
 
 - **What calls this, and what does changing it affect?** Callers traced up to 8 levels, to the
@@ -150,6 +150,18 @@ npx layermap setup dsh
 This adds LayerMap to every dsh profile. Each session maps the project dsh was started in, and
 `npx layermap remove dsh` undoes it.
 
+**Antigravity**
+
+```
+npx layermap setup antigravity
+```
+
+Antigravity has no command that installs a plugin, so this writes LayerMap's plugin into
+`~/.gemini/config/plugins/layermap`, which Antigravity loads by itself; `npx layermap remove
+antigravity` deletes it. Antigravity asks before each map tool's first use; choose to always allow
+it. It starts the server outside the project, so the plugin's rule tells the agent to give absolute
+paths.
+
 In every agent, start a new session in a Git repository and ask as usual. LayerMap tells the agent
 when the map helps. A session started in a folder holding several repositories, or one that moves
 to another repository, works too: each map tool call maps the repository its path names. The first
@@ -180,7 +192,7 @@ CodeBuddy Code the plugin asks the agent once, before it finishes, to run this c
 and has not checked since, whether through its edit tools or shell commands, which count for the code files they name
 (changes another session makes in the same work tree do not count); the Pi extension does the same after the agent's own
 edits. Set `LAYERMAP_STOP_CHECK=0` to turn that
-off. Codex and DeepSeek Harness are told to run it.
+off. Codex, DeepSeek Harness and Antigravity are told to run it.
 
 **Without plugins:** run `npx layermap setup claude` or `npx layermap setup codex`. Setup does three
 things:

@@ -16,7 +16,7 @@
 <p align="center"><img src="https://raw.githubusercontent.com/coffeecoproject/layermap/main/assets/demo.svg" alt="Claude Code 询问改动 Storage.MarkFeedAsRead 会影响哪些 HTTP 接口，一次 LayerMap 调用返回全部 4 个调用方和路由" width="100%"></p>
 <p align="center"><sub>在 <a href="https://github.com/miniflux/v2">Miniflux</a> 上的一次真实 Claude Code 会话回放：一次地图调用找全接口，agent 再到源码里逐一确认。</sub></p>
 
-给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、CodeBuddy Code、Pi、DeepSeek Harness 和其他 MCP 客户端提供几个只读工具，一次调用
+给编程 agent 用的分层代码地图。LayerMap 给 Claude Code、Codex、CodeBuddy Code、Pi、DeepSeek Harness、Antigravity 和其他 MCP 客户端提供几个只读工具，一次调用
 就能回答 agent 平时要搜几十次才弄清的问题：
 
 - **谁调用了它，改它会影响什么？** 调用方最多追 8 层，一直追到作为起点的 HTTP 路由、处理函数、定时任务和
@@ -144,6 +144,16 @@ npx layermap setup dsh
 这条命令会把 LayerMap 加到 dsh 的所有配置里。每个会话分析的是启动 dsh 时所在的项目。`npx layermap remove dsh`
 可以撤销。
 
+**Antigravity**
+
+```
+npx layermap setup antigravity
+```
+
+Antigravity 没有安装插件的命令，所以这条命令把 LayerMap 的插件写到 `~/.gemini/config/plugins/layermap`，
+Antigravity 会自己加载；`npx layermap remove antigravity` 把它删掉。每个地图工具第一次用时 Antigravity 会问一次，
+选"总是允许"即可。Antigravity 不在项目目录里启动地图服务，所以插件带的规则会让 agent 传绝对路径。
+
 不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。在装着多个仓库的总文件夹里开会话，或会话中途换到别的仓库，也能用：每次调用地图工具，都按传入的路径找到对应的仓库。第一次
 启动某个版本时，npm 会把锁定版本的 `layermap` 装进 LayerMap 的缓存；之后直接从那里启动，断网也能用。
 
@@ -155,7 +165,7 @@ Claude Code 在每个项目里第一次用到某个地图工具时会问一次�
 共用，它会逐一列出每块功能和守护它的测试；改动了原有测试时，它也会点名这些测试，避免只想改一处、却悄悄改动了别的功能。环境变量和配置项只靠名字关联，编译器看不到，所以改动从某个文件里去掉一个环境变量名或配置键时，
 它会列出还在读或写这个旧名字的文件。同样，改动碰到接口的处理函数或改了接口路径时，它会列出请求这个地址的代码和模板：前端的 fetch、生成的 API 客户端、跳转和链接。改动在两个模块（地图总览里的模块）之间新加了引用时，它会列出来，并指出两个模块是否因此互相依赖；这个方向是否符合项目的分层，由 agent 判断。改动新写的代码和项目里已有的代码几乎一样时，它会把两处都列出来，方便 agent 改用已有的代码，而不是留一份副本。它不会写测试，也不会运行测试。在
 Claude Code 和 CodeBuddy Code 里，agent 改了哪个仓库的代码（用编辑工具改，或用命令行改了命令里写明的文件，都算）、之后还没检查那个仓库，插件就会在它结束前提醒一次，改了几个仓库就让它逐个检查（同一工作目录里其他会话的改动不算）；Pi 扩展在 agent 自己改了代码后也会这样提醒。设置 `LAYERMAP_STOP_CHECK=0`
-可以关掉。Codex 和 DeepSeek Harness 通过说明文字提示 agent 去做。
+可以关掉。Codex、DeepSeek Harness 和 Antigravity 通过说明文字提示 agent 去做。
 
 **不用插件**：运行 `npx layermap setup claude` 或 `npx layermap setup codex`，它会：
 

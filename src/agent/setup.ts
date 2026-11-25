@@ -4,7 +4,9 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-export type SetupAgent = "claude" | "codex" | "dsh";
+/** The agents setup and remove take. */
+export const SETUP_AGENTS = ["claude", "codex", "dsh", "antigravity"] as const;
+export type SetupAgent = (typeof SETUP_AGENTS)[number];
 export type SetupOptions = Readonly<{
   agent: SetupAgent;
   /**
@@ -23,7 +25,12 @@ export type SetupOptions = Readonly<{
 
 import { commandInvocation } from "../platform";
 import { installDirectory, packageRoot } from "./environment";
-import { AGENT_MAP_NOTE } from "./notes";
+import { AGENT_MAP_NOTE, antigravityMapNote } from "./notes";
+
+export const REPOSITORY = "https://github.com/coffeecoproject/layermap";
+/** What the plugins' manifests say LayerMap is. */
+export const PLUGIN_DESCRIPTION =
+  "A layered map of your codebase for coding agents: what calls a function, what a change affects up to the HTTP routes, handlers and jobs, and what each module contains, for TypeScript, JavaScript, Go, Python and Java. Built and kept locally; read-only.";
 
 const SERVER = "layermap";
 /** Claude Code names a server's tools mcp__<server>__*, and a plugin's server plugin_<plugin>_<server>. */
@@ -256,11 +263,53 @@ export async function removeDshPatch(file: string): Promise<void> {
   await writeFile(file, content ? rest : `${rest}${rest.endsWith("\n") ? "" : "\n"}[]\n`);
 }
 
+/**
+ * Where Antigravity looks for LayerMap's plugin: it has no command that installs one, and loads each
+ * directory of plugins in its configuration by itself.
+ */
+export const antigravityPlugin = (env: NodeJS.ProcessEnv = process.env): string =>
+  path.join(env.HOME || homedir(), ".gemini", "config", "plugins", SERVER);
+
+/**
+ * LayerMap's plugin for Antigravity, by file: the manifest, the server, and the rule that brings
+ * its agents to the map (antigravityMapNote says why a rule). No hooks, and nothing that approves
+ * the tools: Antigravity asks before each one's first use, where the user can allow it for good.
+ */
+export const antigravityPluginFiles = (
+  command: readonly string[],
+  version: string,
+  note = true,
+): Record<string, string> => {
+  const [program = "", ...args] = command;
+  const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+  return {
+    "plugin.json": json({
+      name: SERVER,
+      displayName: "LayerMap",
+      version,
+      description: PLUGIN_DESCRIPTION,
+      homepage: REPOSITORY,
+      repository: REPOSITORY,
+    }),
+    "mcp_config.json": json({ mcpServers: { [SERVER]: { command: program, args } } }),
+    ...(note
+      ? { [path.join("rules", "AGENTS.md")]: `${antigravityMapNote(`${SERVER}_${SERVER}`)}\n` }
+      : {}),
+  };
+};
+
 /** Where each agent keeps the files setup touches, for a Claude Code scope. */
 export const agentFiles = (
   options: Pick<SetupOptions, "agent" | "scope" | "project" | "env">,
 ): Readonly<{ settings: string; instructions: string }> => {
   const env = options.env ?? process.env;
+  if (options.agent === "antigravity") {
+    const plugin = antigravityPlugin(env);
+    return {
+      settings: path.join(plugin, "mcp_config.json"),
+      instructions: path.join(plugin, "rules", "AGENTS.md"),
+    };
+  }
   if (options.agent === "dsh") {
     // Its home patch layer applies to every profile; dsh reads an empty DSH_HOME as unset.
     const home = env.DSH_HOME || path.join(homedir(), ".dsh");
@@ -318,6 +367,29 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
     await rename(`${file}.${process.pid}`, file);
   };
   if (published) log(`write the launcher of LayerMap ${options.version} to ${launcherFile(env)}`);
+  if (options.agent === "antigravity") {
+    if (options.scope !== "user") {
+      log("Antigravity loads LayerMap's plugin in every project; --scope does not apply.");
+      return false;
+    }
+    const plugin = antigravityPlugin(env);
+    log(`write LayerMap's plugin for Antigravity to ${plugin}`);
+    if (note) log(`with a rule naming the map tools, ${instructions}`);
+    if (options.dryRun) return true;
+    await writeLauncher();
+    // The directory is setup's own: an earlier setup's rule goes when this one writes none.
+    await rm(plugin, { recursive: true, force: true });
+    for (const [name, content] of Object.entries(
+      antigravityPluginFiles(command, options.version, note),
+    )) {
+      await mkdir(path.dirname(path.join(plugin, name)), { recursive: true });
+      await writeFile(path.join(plugin, name), content);
+    }
+    log(
+      `Done. Start a new Antigravity conversation; its map tools come from the ${SERVER}_${SERVER} server, and Antigravity asks before each one's first use.`,
+    );
+    return true;
+  }
   if (options.agent === "dsh") {
     if (options.scope !== "user") {
       log("DeepSeek Harness is set up for all its profiles at once; --scope does not apply.");
@@ -375,9 +447,12 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
 export async function allowAgent(options: SetupOptions): Promise<boolean> {
   if (options.agent !== "claude") {
     options.log(
-      options.agent === "codex"
-        ? "The Codex plugin already runs LayerMap's read-only tools without a prompt."
-        : "DeepSeek Harness runs MCP tools without a prompt.",
+      {
+        codex: "The Codex plugin already runs LayerMap's read-only tools without a prompt.",
+        dsh: "DeepSeek Harness runs MCP tools without a prompt.",
+        antigravity:
+          "Antigravity asks before each map tool's first use; choose to always allow it there.",
+      }[options.agent],
     );
     return true;
   }
@@ -393,6 +468,14 @@ export async function allowAgent(options: SetupOptions): Promise<boolean> {
 export async function removeAgent(options: SetupOptions): Promise<boolean> {
   const env = options.env ?? process.env;
   const { settings, instructions } = agentFiles(options);
+  if (options.agent === "antigravity") {
+    const plugin = antigravityPlugin(env);
+    options.log(`remove LayerMap's plugin for Antigravity, ${plugin}`);
+    if (options.dryRun) return true;
+    await rm(plugin, { recursive: true, force: true });
+    options.log("Removed.");
+    return true;
+  }
   if (options.agent === "dsh") {
     options.log(
       `remove the ${SERVER} MCP server from ${settings} and its note from ${instructions}`,

@@ -120,6 +120,42 @@ test("a missing dsh layer is created and removed whole; a flow-style list is lef
   assert.equal(await readFile(layer, "utf8"), "[{ id: mine, name: other }]\n");
 });
 
+test("Antigravity gets LayerMap as a plugin in its configuration, and remove deletes it", async () => {
+  const home = await sandbox();
+  const plugin = path.join(home, ".gemini", "config", "plugins", "layermap");
+  const options = {
+    agent: "antigravity" as const,
+    scope: "user" as const,
+    project: home,
+    version: "1.2.3",
+    dryRun: false,
+    env: { ...process.env, HOME: home },
+    log: () => {},
+  };
+  assert.equal(await setupAgent({ ...options, dryRun: true }), true);
+  await assert.rejects(readdir(plugin));
+  assert.equal(await setupAgent(options), true);
+  assert.deepEqual((await readdir(plugin)).sort(), ["mcp_config.json", "plugin.json", "rules"]);
+  const manifest = JSON.parse(await readFile(path.join(plugin, "plugin.json"), "utf8"));
+  assert.deepEqual([manifest.name, manifest.version], ["layermap", "1.2.3"]);
+  const [command, ...args] = mcpLaunchCommand(options.env);
+  assert.deepEqual(JSON.parse(await readFile(path.join(plugin, "mcp_config.json"), "utf8")), {
+    mcpServers: { layermap: { command, args } },
+  });
+  // Antigravity names the plugin's server <plugin>_<server> and starts it outside the project.
+  const rule = await readFile(path.join(plugin, "rules", "AGENTS.md"), "utf8");
+  assert.ok(rule.startsWith(AGENT_MAP_NOTE), rule);
+  assert.match(rule, /ServerName layermap_layermap\b/u);
+  assert.match(rule, /absolute path/u);
+  assert.equal(await allowAgent(options), true);
+  // A setup without the note leaves no rule of an earlier one.
+  assert.equal(await setupAgent({ ...options, instructions: false }), true);
+  assert.deepEqual((await readdir(plugin)).sort(), ["mcp_config.json", "plugin.json"]);
+  assert.equal(await setupAgent({ ...options, scope: "local" }), false);
+  assert.equal(await removeAgent(options), true);
+  assert.deepEqual(await readdir(path.dirname(plugin)), []);
+});
+
 test("the Codex server table gains approval and timeout keys once, other lines untouched", async () => {
   const file = path.join(await sandbox(), "config.toml");
   const before = [
