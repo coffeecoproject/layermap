@@ -156,7 +156,7 @@ This adds LayerMap to every dsh profile. Each session maps the project dsh was s
 npx layermap setup antigravity
 ```
 
-Antigravity has no command that installs a plugin, so this writes LayerMap's plugin into
+Antigravity's app installs plugins only from its marketplace, so this writes LayerMap's plugin into
 `~/.gemini/config/plugins/layermap`, which Antigravity loads by itself; `npx layermap remove
 antigravity` deletes it. Antigravity asks before each map tool's first use; choose to always allow
 it. It starts the server outside the project, so the plugin's rule tells the agent to give absolute

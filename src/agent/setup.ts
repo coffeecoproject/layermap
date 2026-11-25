@@ -264,8 +264,8 @@ export async function removeDshPatch(file: string): Promise<void> {
 }
 
 /**
- * Where Antigravity looks for LayerMap's plugin: it has no command that installs one, and loads each
- * directory of plugins in its configuration by itself.
+ * Where Antigravity looks for LayerMap's plugin: its app installs plugins only from its marketplace, and loads
+ * each directory of plugins in its configuration by itself.
  */
 export const antigravityPlugin = (env: NodeJS.ProcessEnv = process.env): string =>
   path.join(env.HOME || homedir(), ".gemini", "config", "plugins", SERVER);

@@ -150,7 +150,7 @@ npx layermap setup dsh
 npx layermap setup antigravity
 ```
 
-Antigravity 没有安装插件的命令，所以这条命令把 LayerMap 的插件写到 `~/.gemini/config/plugins/layermap`，
+Antigravity 的桌面 App 只能从它的插件市场装插件，所以这条命令把 LayerMap 的插件写到 `~/.gemini/config/plugins/layermap`，
 Antigravity 会自己加载；`npx layermap remove antigravity` 把它删掉。每个地图工具第一次用时 Antigravity 会问一次，
 选"总是允许"即可。Antigravity 不在项目目录里启动地图服务，所以插件带的规则会让 agent 传绝对路径。
 
