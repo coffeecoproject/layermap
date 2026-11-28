@@ -1,6 +1,7 @@
 # Privacy
 
-LayerMap collects no personal data and makes no network requests.
+LayerMap collects no personal data. Its only network requests are to the npm registry, to install
+and update LayerMap itself.
 
 - **What it reads:** the files of the Git repository it runs in. When mapping TypeScript and
   JavaScript, it also reads, on your machine, the packages installed under the project's
@@ -18,11 +19,12 @@ LayerMap collects no personal data and makes no network requests.
   of the answer, with no source. Past 2 MB the log is moved to `calls.1.jsonl`, replacing the one
   there, so it keeps at most about 4 MB.
 - **How long:** each project keeps its three latest map versions, and a map unused for 30 days is
-  deleted; an installed version of LayerMap that nothing started for a week is deleted too. You can
-  delete the cache directory at any time.
-- **What leaves your machine:** nothing, through LayerMap. The first time the plugins start a
-  version of LayerMap, npm installs that pinned `layermap` package from the npm registry into the
-  cache; later starts run it from there. LayerMap's tool results go to the AI agent that called them, under
+  deleted; of the installed versions of LayerMap the one the machine runs stays, and another is
+  deleted a week after anything last ran it. You can delete the cache directory at any time.
+- **What leaves your machine:** nothing of yours. LayerMap's launcher, which its plugins and
+  `layermap setup` start, has npm install the latest `layermap` package from the npm registry into
+  the cache, and while a session runs asks npm once an hour, with npm's own settings, which version
+  is the latest; npm sends the registry only what any install or `npm view layermap` sends. LayerMap's tool results go to the AI agent that called them, under
   that agent provider's terms, like any file the agent reads.
 
 Questions: [GitHub Issues](https://github.com/coffeecoproject/layermap/issues). Security reports:

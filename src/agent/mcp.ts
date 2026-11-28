@@ -27,6 +27,11 @@ type Message = {
 
 // How long the session's start waits for the client to list its roots.
 const ROOTS_WAIT_MS = 5_000;
+/**
+ * The notification LayerMap's launcher sends a server it has moved the session from: it takes no
+ * more requests, and ends once the calls it has are answered or cancelled.
+ */
+export const RETIRE = "notifications/layermap/retire";
 // A client that asked for progress hears it at least this often during a long step, so it can tell
 // a slow call from a stuck one.
 const PROGRESS_EVERY_MS = 15_000;
@@ -76,6 +81,11 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
   const send = (message: Record<string, unknown>) =>
     output.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const calls = new Map<string | number, AbortController>();
+  let retiring = false;
+  let end = () => {};
+  const settle = () => {
+    if (retiring && !calls.size) end();
+  };
   // Each repository's map, opened and built on its first call. A build ends with the session, so a
   // client that connects only to probe the server is not kept waiting. A map that could not be
   // opened is opened again by the next call; one that could not be built is updated by each call.
@@ -237,6 +247,7 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
       clearInterval(beat);
       if (!answered) finish("", false, true);
       calls.delete(id);
+      settle();
     }
   };
 
@@ -254,6 +265,10 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
       if (method === "notifications/roots/list_changed" && listsRoots) void readRoots();
       if (method === "notifications/cancelled")
         calls.get(params.requestId as string | number)?.abort();
+      if (method === RETIRE) {
+        retiring = true;
+        settle();
+      }
       return;
     }
     switch (method) {
@@ -299,7 +314,13 @@ export function serveMcp(options: McpServerOptions): Promise<void> {
   };
 
   return new Promise((resolve) => {
-    const lines = createInterface({ input: options.input ?? process.stdin, crlfDelay: Infinity });
+    const input = options.input ?? process.stdin;
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    // Closing the lines only pauses the input, whose pipe would keep the process running.
+    end = () => {
+      lines.close();
+      (input as { destroy?: () => void }).destroy?.();
+    };
     lines.on("line", (line) => {
       if (!line.trim()) return;
       let message: Message;

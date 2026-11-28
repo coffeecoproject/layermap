@@ -78,6 +78,8 @@ const HINTS: Readonly<Record<string, string>> = {
     "The diff against base is too large for one check. Compare with a closer base, or check the change in parts.",
   LAYERMAP_NOT_A_GIT_REPOSITORY:
     "LayerMap maps Git repositories. Run it in one, or name one with --project.",
+  LAYERMAP_DATABASE_NEWER:
+    "A newer LayerMap version has updated this map, which this one cannot read. Call again: a server LayerMap's launcher started, as its plugins and setup do, moves to the machine's version before its next call; one started otherwise has to be restarted at that version.",
 };
 
 /** A failure as an agent should read it: the code, and what to do about it when known. */

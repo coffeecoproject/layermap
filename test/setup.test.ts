@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { launcherScript } from "../src/agent/launcher";
 import { AGENT_MAP_NOTE } from "../src/agent/notes";
 import {
   allowAgent,
@@ -9,7 +10,6 @@ import {
   configureCodexServer,
   disallowInClaudeSettings,
   dshPatchBlock,
-  launcherScript,
   mcpLaunchCommand,
   removeAgent,
   removeInstructionNote,
@@ -266,15 +266,15 @@ test("setup registers the server through each agent's own command and approves i
   assert.ok(!launch.includes(" tsx "), "loaders are passed as absolute URLs");
 });
 
-test("a published LayerMap registers the launcher it writes where it is installed, with its version", () => {
+test("a published LayerMap registers the launcher it writes where it is installed", () => {
   // An absolute path on each system: on Windows a root without a drive is relative to the drive.
   const cache = path.resolve(path.sep, "cache");
   assert.deepEqual(mcpLaunchCommand({ LAYERMAP_HOME: cache }, true), [
     "node",
     path.join(cache, "server.mjs"),
   ]);
-  const launcher = launcherScript("const VERSION = __VERSION__;\n", "1.2.3");
-  assert.equal(launcher, '// Generated from scripts/launcher.mjs.\nconst VERSION = "1.2.3";\n');
+  const launcher = launcherScript("const ARGUMENTS = __ARGUMENTS__;\n");
+  assert.equal(launcher, '// Generated from scripts/launcher.mjs.\nconst ARGUMENTS = ["mcp"];\n');
 });
 
 test("DeepSeek Harness starts the launcher with the absolute node it finds on PATH", async () => {

@@ -14,17 +14,20 @@ import {
 import { gitRoot, project, sandbox } from "./support";
 
 const run = promisify(execFile);
-const script = fileURLToPath(new URL("../plugins/claude/hooks/layermap.mjs", import.meta.url));
+// The plugin's hooks run `layermap hook claude` of the machine's version; this runs
+// the command of this checkout.
+const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const tsx = import.meta.resolve("tsx");
 const CHECK = "mcp__plugin_layermap_layermap__project_check_changes";
 
-// Runs the Claude Code plugin's hook script the way Claude Code does: its input JSON on stdin, with
-// the system's temporary directory in temp.
+// Runs the Claude Code plugin's hook the way Claude Code does: its input JSON on stdin, with the
+// system's temporary directory in temp.
 async function hook(
   input: Record<string, unknown>,
   temp: string,
   env: Record<string, string> = {},
 ): Promise<string> {
-  const child = execFile(process.execPath, [script], {
+  const child = execFile(process.execPath, ["--import", tsx, cli, "hook", "claude"], {
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", TMPDIR: temp, TEMP: temp, TMP: temp, ...env },
   });
   child.stdin?.end(JSON.stringify(input));

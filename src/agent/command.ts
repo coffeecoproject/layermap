@@ -1,14 +1,16 @@
 // The layermap command for shells with no plugin's on their PATH. Claude Code puts its plugin's
 // command on the PATH of its shell commands; Codex's commands, a terminal and Git hooks have none,
 // so a program run there that calls `layermap`, such as one choosing tests from
-// `layermap check --json`, finds nothing. `layermap setup command` writes one file into
-// ~/.local/bin, which those shells have on their PATH. It holds no version: each time it runs the
-// newest one installed on this machine, where every agent's plugin installs the version it starts,
-// so it follows the plugins as they update and never asks npm or a network for anything.
+// `layermap check --json`, finds nothing. `layermap setup command` writes LayerMap's launcher into
+// installDirectory as cli.mjs, which the machine's version keeps up to date, and one file into
+// ~/.local/bin, which those shells have on their PATH, that runs it. It holds no version: each time
+// it runs the machine's, the one every agent's plugin runs, installing it from npm only when there is
+// none.
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { installDirectory } from "./environment";
+import { installDirectory, packageRoot } from "./environment";
+import { launcherTemplate, writeLauncher } from "./launcher";
 
 export type CommandOptions = Readonly<{
   dryRun: boolean;
@@ -21,47 +23,25 @@ const MARK = "// LayerMap's command, written by `layermap setup command`.";
 
 /**
  * The command for the directory LayerMap is installed in: installDirectory, as setup found it. It
- * looks for versions nowhere else, whatever the shell calling it has set, a test's own home
- * directory say, or LAYERMAP_CACHE for its maps: it installs nothing, so a directory with no
- * version in it would leave it nothing to run. It runs as whichever module type node reads a file
- * without an extension as: built-in modules come from process, and the version is loaded with
+ * names that directory to the launcher there, whatever the shell calling it has set, a test's own
+ * home directory say, or LAYERMAP_CACHE for its maps. It runs as whichever module type node reads a
+ * file without an extension as: built-in modules come from process, and the launcher is loaded with
  * import().
  */
 export const commandScript = (directory: string): string => `#!/usr/bin/env node
 ${MARK}
-// It runs the newest LayerMap version installed in the directory below, where each agent's LayerMap
-// plugin installs the version it starts. \`layermap remove command\` deletes this file.
+// It runs LayerMap's launcher in the directory below, which runs the LayerMap version each agent's
+// LayerMap plugin runs. \`layermap remove command\` deletes this file.
 if (typeof process.getBuiltinModule !== "function") {
   process.stderr.write("layermap: LayerMap needs Node.js 22.22 or later; this is " + process.version + "\\n");
   process.exit(1);
 }
-const fs = process.getBuiltinModule("node:fs");
 const path = process.getBuiltinModule("node:path");
 const { pathToFileURL } = process.getBuiltinModule("node:url");
-const versions = path.join(${JSON.stringify(directory)}, "versions");
-const installed = (version) => path.join(versions, version, "node_modules", "layermap");
-// A version being installed is a directory named .<version>-…, and has no manifest in place yet.
-const numbers = (version) => version.split(".").map(Number);
-const newest = (fs.existsSync(versions) ? fs.readdirSync(versions) : [])
-  .filter((name) => /^\\d+\\.\\d+\\.\\d+$/.test(name) && fs.existsSync(path.join(installed(name), "package.json")))
-  .sort((a, b) => {
-    const [left, right] = [numbers(a), numbers(b)];
-    return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
-  })
-  .at(-1);
-if (!newest) {
-  process.stderr.write(
-    "layermap: no LayerMap version is installed in " + versions + ". Start a session of an agent that has the LayerMap plugin, which installs its version there, then run this again.\\n",
-  );
-  process.exit(1);
-}
-const entry = path.join(
-  installed(newest),
-  JSON.parse(fs.readFileSync(path.join(installed(newest), "package.json"), "utf8")).bin.layermap,
-);
-process.argv = [process.argv[0], entry, ...process.argv.slice(2)];
-import(pathToFileURL(entry).href).catch((error) => {
-  process.stderr.write("layermap: could not start LayerMap " + newest + ": " + (error?.message ?? error) + "\\n");
+const directory = ${JSON.stringify(directory)};
+process.env.LAYERMAP_HOME = directory;
+import(pathToFileURL(path.join(directory, "cli.mjs")).href).catch((error) => {
+  process.stderr.write("layermap: could not start LayerMap: " + (error?.message ?? error) + "\\n");
   process.exit(1);
 });
 `;
@@ -101,25 +81,35 @@ export async function setupCommand(options: CommandOptions): Promise<boolean> {
     );
     return false;
   }
+  const directory = installDirectory(env);
+  log(`write LayerMap's launcher to ${path.join(directory, "cli.mjs")}`);
   log(`write LayerMap's command to ${file}`);
   if (options.dryRun) return true;
+  const template = launcherTemplate(packageRoot);
+  if (!template) throw new Error(`${packageRoot} has no launcher`);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeLauncher(directory, "cli.mjs", await readFile(template, "utf8"));
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(`${file}.${process.pid}`, commandScript(installDirectory(env)));
+  await writeFile(`${file}.${process.pid}`, commandScript(directory));
   await chmod(`${file}.${process.pid}`, 0o755);
   await rename(`${file}.${process.pid}`, file);
   if (!(env.PATH ?? "").split(path.delimiter).includes(path.dirname(file)))
     log(`${path.dirname(file)} is not on this shell's PATH: add it for the command to be found.`);
   log(
-    `Done. \`layermap\` runs the newest LayerMap version installed in ${path.join(installDirectory(env), "versions")}, where each agent's LayerMap plugin installs the version it starts.`,
+    `Done. \`layermap\` runs the LayerMap version each agent's LayerMap plugin runs, installed in ${path.join(directory, "versions")}.`,
   );
   return true;
 }
 
-/** Deletes the command setup wrote; a file there that is not LayerMap's is left as it is. */
+/**
+ * Deletes the command setup wrote, and the launcher it ran; a file there that is not LayerMap's is
+ * left as it is.
+ */
 export async function removeCommand(options: CommandOptions): Promise<boolean> {
   const { log } = options;
   if (process.platform === "win32") return unsupported(log);
-  const file = commandFile(options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const file = commandFile(env);
   const found = await state(file);
   if (found === "other") {
     log(`${file} is not LayerMap's command: left as it is.`);
@@ -132,6 +122,7 @@ export async function removeCommand(options: CommandOptions): Promise<boolean> {
   log(`remove LayerMap's command from ${file}`);
   if (options.dryRun) return true;
   await rm(file);
+  await rm(path.join(installDirectory(env), "cli.mjs"), { force: true });
   log("Removed.");
   return true;
 }

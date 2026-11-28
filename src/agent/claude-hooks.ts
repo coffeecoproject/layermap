@@ -1,9 +1,9 @@
-// The Claude Code plugin's hooks, which CodeBuddy Code runs too: one script for every event, its
-// input JSON on stdin. Each session keeps a ledger in the system's temporary directory, a line per
-// entry: the code its edit tools and shell commands changed and the checks it ran, as each tool
-// call ended, including those of its subagents, which hooks name by the same session. The stop
-// hook asks the agent once per set of those changes to check them; LAYERMAP_STOP_CHECK=0 leaves
-// only the note the session starts with.
+// The Claude Code plugin's hooks, which CodeBuddy Code runs too: `layermap hook claude` for every
+// event, its input JSON on stdin. Each session keeps a ledger in the system's temporary directory,
+// a line per entry: the code its edit tools and shell commands changed and the checks it ran, as
+// each tool call ended, including those of its subagents, which hooks name by the same session. The
+// stop hook asks the agent once per set of those changes to check them; LAYERMAP_STOP_CHECK=0
+// leaves only the note the session starts with.
 import { appendFile, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -193,7 +193,12 @@ async function sweep() {
   await rm(path.join(os.tmpdir(), "layermap-claude"), { recursive: true, force: true });
 }
 
-// A hook that fails says nothing: the session goes on as if it had not run.
-try {
-  await main(JSON.parse(await stdin()) as Input);
-} catch {}
+/**
+ * Runs the hook for the event on stdin, as `layermap hook claude`. A hook that fails says nothing:
+ * the session goes on as if it had not run.
+ */
+export async function claudeHook(): Promise<void> {
+  try {
+    await main(JSON.parse(await stdin()) as Input);
+  } catch {}
+}

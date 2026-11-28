@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "@photostructure/sqlite";
 import { pruneCache } from "../src/agent/environment";
+import { launcherScript } from "../src/agent/launcher";
 import { mapDatabasePath, openMapDatabase } from "../src/layermap";
 import { FILES, openMap, project, sandbox, signal } from "./support";
 
@@ -81,7 +83,7 @@ test("a database from before versions were held gets the tables that hold them",
   assert.match(overview.text, /src\//u);
 });
 
-test("the cache drops maps unused for 30 days and analyzer builds superseded for a day", async () => {
+test("the cache drops maps unused for 30 days, and a checkout drops other builds unused for a day", async () => {
   const cache = path.join(await sandbox(), "cache");
   const now = Date.now();
   const age = async (target: string, days: number) => {
@@ -106,6 +108,10 @@ test("the cache drops maps unused for 30 days and analyzer builds superseded for
     await mkdir(path.join(builds, name), { recursive: true });
     await age(path.join(builds, name), days);
   }
+  // Built long ago, and marked by a server that still runs it.
+  await mkdir(path.join(builds, "running"));
+  await writeFile(path.join(builds, "running", "last-used"), "");
+  await age(path.join(builds, "running"), 3);
   const current = path.join(await sandbox(), "current");
   await mkdir(current);
   await pruneCache(cache, current, now);
@@ -115,7 +121,11 @@ test("the cache drops maps unused for 30 days and analyzer builds superseded for
   assert.equal(await exists(path.dirname(mapDatabasePath(cache, current))), true);
   assert.equal(await exists(path.join(builds, "superseded")), false);
   assert.equal(await exists(path.join(builds, "fresh")), true);
+  assert.equal(await exists(path.join(builds, "running")), true);
   assert.equal(await exists(path.join(builds, "interrupted.123")), false);
+  // A published package ships its analyzers, and leaves the builds of checkouts to them.
+  await pruneCache(cache, current, now + 10 * DAY, undefined, { LAYERMAP_ANALYZERS: builds });
+  assert.equal(await exists(path.join(builds, "fresh")), true);
 });
 
 test("the cache drops a project's map once its directory is removed", async (t) => {
@@ -211,7 +221,7 @@ test("the cache drops versions npx installed beside this one a week after it ins
   assert.equal(await exists(shared), true, "npx installed it with another package");
 });
 
-test("the cache drops a version the launcher installed a week after its last start, and npx's older copies", async () => {
+test("the cache keeps the machine's version, drops another a week after its last use, and npx's older copies", async () => {
   const cache = path.join(await sandbox(), "cache");
   const versions = path.join(cache, "versions");
   const now = Date.now();
@@ -232,9 +242,17 @@ test("the cache drops a version the launcher installed a week after its last sta
   };
   const own = await install("0.1.25", 30, true);
   const unused = await install("0.1.24", 8, true);
-  const recent = await install("0.1.23", 2, true);
+  const recent = await install("0.1.23", 6, true);
+  const machine = await install("0.1.20", 30, true);
+  const newest = await install("0.1.30", 30, true);
   const interrupted = await install(".0.1.26-a", 0.1, false);
   const installing = await install(".0.1.26-b", 0.01, false);
+  await writeFile(path.join(versions, "latest-checked"), "");
+  await utimes(
+    path.join(versions, "latest-checked"),
+    (now - 30 * DAY) / 1000,
+    (now - 30 * DAY) / 1000,
+  );
   // npx's copies from before the launcher, in npm's cache.
   const npm = path.join(await sandbox(), "npm");
   const npx = async (name: string, version: string, days: number) => {
@@ -255,17 +273,60 @@ test("the cache drops a version the launcher installed a week after its last sta
   const npxRecent = await npx("recent", "0.1.24", 2);
   const current = path.join(await sandbox(), "current");
   await mkdir(current);
-  await pruneCache(cache, current, now, path.join(own, "node_modules", "layermap"), {
-    LAYERMAP_HOME: cache,
-    npm_config_cache: npm,
-  });
+  const prune = () =>
+    pruneCache(cache, current, now, path.join(own, "node_modules", "layermap"), {
+      LAYERMAP_HOME: cache,
+      npm_config_cache: npm,
+    });
   const exists = async (target: string) => !!(await stat(target).catch(() => undefined));
+
+  // With no version named the machine's, as before any launcher named one, none goes.
+  await prune();
+  assert.equal(await exists(unused), true);
+  assert.equal(await exists(interrupted), true);
+
+  await writeFile(path.join(versions, "current"), "0.1.20\n");
+  await prune();
   assert.equal(await exists(own), true);
   assert.ok(now - (await stat(path.join(own, "last-used"))).mtimeMs < DAY, "the running one");
   assert.equal(await exists(unused), false);
-  assert.equal(await exists(recent), true, "a session started in the last week may still run it");
+  assert.equal(await exists(recent), true, "a server may still run it");
+  assert.equal(await exists(machine), true, "every start runs it");
+  assert.equal(await exists(newest), false, "a newer one the machine is not on is not kept for it");
+  assert.equal(await exists(path.join(versions, "latest-checked")), true);
+  assert.equal(await exists(path.join(versions, "current")), true);
   assert.equal(await exists(interrupted), false);
   assert.equal(await exists(installing), true, "another launcher may be installing it");
   assert.equal(await exists(npxOld), false);
   assert.equal(await exists(npxRecent), true);
+});
+
+// A setup run on another version wrote its own launchers; the machine's version keeps them to its
+// own, and writes none setup did not.
+test("the machine's version rewrites the launchers setup wrote from its own", async () => {
+  const cache = path.join(await sandbox(), "cache");
+  const install = async (version: string) => {
+    const installed = path.join(cache, "versions", version, "node_modules", "layermap");
+    await mkdir(path.join(installed, "dist"), { recursive: true });
+    await writeFile(
+      path.join(installed, "dist", "launcher.mjs"),
+      `const ARGUMENTS = __ARGUMENTS__; // ${version}\n`,
+    );
+    return installed;
+  };
+  const old = await install("1.0.0");
+  const machine = await install("1.0.1");
+  await writeFile(path.join(cache, "versions", "current"), "1.0.1\n");
+  await writeFile(path.join(cache, "server.mjs"), "// an older launcher\n");
+  const project = path.join(await sandbox(), "project");
+  await mkdir(project);
+  const env = { LAYERMAP_HOME: cache };
+  await pruneCache(cache, project, Date.now(), old, env);
+  assert.equal(await readFile(path.join(cache, "server.mjs"), "utf8"), "// an older launcher\n");
+  await pruneCache(cache, project, Date.now(), machine, env);
+  assert.equal(
+    await readFile(path.join(cache, "server.mjs"), "utf8"),
+    launcherScript(`const ARGUMENTS = __ARGUMENTS__; // 1.0.1\n`),
+  );
+  assert.equal(existsSync(path.join(cache, "cli.mjs")), false);
 });

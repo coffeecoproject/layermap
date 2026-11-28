@@ -164,9 +164,14 @@ paths.
 
 In every agent, start a new session in a Git repository and ask as usual. LayerMap tells the agent
 when the map helps. A session started in a folder holding several repositories, or one that moves
-to another repository, works too: each map tool call maps the repository its path names. The first
-time a session starts a version of LayerMap, npm installs that pinned `layermap` package into
-LayerMap's cache; later sessions start it from there, even offline.
+to another repository, works too: each map tool call maps the repository its path names. Your
+machine runs one LayerMap, the version installed in LayerMap's cache that its plugins, `layermap
+setup` and the `layermap` command all start: the first session installs the latest `layermap`
+package there with npm, later ones start it without npm, even offline. While a session runs,
+LayerMap asks npm once an hour for the latest version, installs it, and switches the machine to it
+once it has started; every session moves to it between tool calls, so no plugin needs updating for
+LayerMap to update, and a version that does not start is never switched to. Pi runs the package it
+installed itself, and `npx layermap mcp` the one npx fetches.
 
 Claude Code asks once before each map tool runs in a project. Choose "don't ask again", or run
 `npx layermap allow claude` to allow the plugin's read-only tools everywhere.
@@ -254,9 +259,8 @@ npx layermap imports --json               # every import of the project as it is
 **A `layermap` command.** The Claude Code plugin puts one on the PATH of Claude's shell commands.
 Codex's commands, a terminal and Git hooks have none, so a program run there that calls `layermap`,
 such as one choosing tests from `layermap check --json`, does not find it. Run `npx layermap setup
-command` once: it writes a `layermap` command into `~/.local/bin`, which runs the newest version
-installed on your machine, where each agent's plugin installs the version it starts. It follows
-the plugins as they update and uses no network; where `~/.local/bin` comes before the plugin's
+command` once: it writes a `layermap` command into `~/.local/bin`, which runs the version every
+agent's plugin runs on your machine, and installs it with npm only when there is none; where `~/.local/bin` comes before the plugin's
 directory on PATH, Claude's shell commands run it too. A file of that name that is not LayerMap's
 is left as it is. `npx layermap remove command` deletes it. macOS and Linux only.
 

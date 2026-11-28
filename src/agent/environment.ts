@@ -9,6 +9,7 @@ import { GitRunner } from "../git-runner";
 import { type LayerMapAnalyzers, mapDatabasePath } from "../layermap";
 import { executableName } from "../platform";
 import { discoverJavaRuntime } from "../project-map-process";
+import { launcherTemplate, refreshLaunchers } from "./launcher";
 
 /** The layermap package around this module, whether run from its sources or from its bundle. */
 export const packageRoot = (() => {
@@ -157,7 +158,10 @@ export async function resolveAnalyzers(
   }
   const directory = path.join(cache, "analyzers", await sourceDigest());
   const built = await readAnalyzers(directory);
-  if (built) return built;
+  if (built) {
+    await markInUse(directory);
+    return built;
+  }
   log("Building the language analyzers (once per LayerMap version)...");
   const staging = `${directory}.${process.pid}`;
   await rm(staging, { recursive: true, force: true });
@@ -175,17 +179,41 @@ export async function resolveAnalyzers(
   await writeFile(path.join(staging, "analyzers.json"), `${JSON.stringify(stored, null, 2)}\n`);
   // Another process may have finished the same build first; either result is the same.
   await rename(staging, directory).catch(() => rm(staging, { recursive: true, force: true }));
+  await markInUse(directory);
   return (await readAnalyzers(directory)) as LayerMapAnalyzers;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
+const MARK_EVERY_MS = 10 * 60 * 1000;
+const marked = new Set<string>();
+
+const touch = async (file: string, now = Date.now()) => {
+  await writeFile(file, "");
+  await utimes(file, now / 1000, now / 1000);
+};
+// A checkout's build stays while a process runs it, which marks it as used every few minutes: a
+// server started before its sources changed runs the build it started with for as long as it runs.
+async function markInUse(build: string) {
+  const file = path.join(build, "last-used");
+  await touch(file);
+  if (marked.has(build)) return;
+  marked.add(build);
+  setInterval(() => void touch(file).catch(() => undefined), MARK_EVERY_MS).unref();
+}
+
+// When a directory was last used: its marker's time, or for one with none its own.
+const lastUsed = async (directory: string) => {
+  const marker = path.join(directory, "last-used");
+  return (await stat(existsSync(marker) ? marker : directory).catch(() => undefined))?.mtimeMs;
+};
 
 /**
  * Keeps the cache to what is in use: a project's map goes with its directory (a removed worktree's
- * map is as large as the repository's own) or after 30 days unused, a superseded analyzer build
- * after a day (a server started before an update may still run it), and an interrupted build after
- * an hour. The versions of LayerMap in installDirectory, about 100 MB apiece, are kept to those in
- * use too (installed is this package's directory).
+ * map is as large as the repository's own) or after 30 days unused. Only a checkout builds its
+ * analyzers into the cache, so only one tidies them: another checkout's build goes a day after the
+ * last process running it marked it, and an interrupted build after an hour. The versions of
+ * LayerMap in installDirectory, about 100 MB apiece, are kept to the current one and those in use
+ * (installed is this package's directory).
  */
 export async function pruneCache(
   cache: string,
@@ -202,25 +230,25 @@ export async function pruneCache(
   const projects = path.join(cache, "projects");
   for (const name of await readdir(projects).catch(() => [])) {
     const directory = path.join(projects, name);
-    const marker = path.join(directory, "last-used");
-    const last = (await stat(existsSync(marker) ? marker : directory).catch(() => undefined))
-      ?.mtimeMs;
-    const owner = await readFile(marker, "utf8").catch(() => "");
+    const last = await lastUsed(directory);
+    const owner = await readFile(path.join(directory, "last-used"), "utf8").catch(() => "");
     if ((last !== undefined && now - last > 30 * DAY) || (owner !== "" && (await gone(owner))))
       await rm(directory, { recursive: true, force: true });
   }
-  const builds = path.join(cache, "analyzers");
-  const current = await sourceDigest();
-  for (const name of await readdir(builds).catch(() => [])) {
-    if (name === current) continue;
-    const built = (await stat(path.join(builds, name)).catch(() => undefined))?.mtimeMs;
-    if (built !== undefined && now - built > (name.includes(".") ? DAY / 24 : DAY))
-      await rm(path.join(builds, name), { recursive: true, force: true });
+  if (!env.LAYERMAP_ANALYZERS && !existsSync(path.join(packageRoot, "analyzers"))) {
+    const builds = path.join(cache, "analyzers");
+    const current = await sourceDigest();
+    for (const name of await readdir(builds).catch(() => [])) {
+      if (name === current) continue;
+      const last = await lastUsed(path.join(builds, name));
+      if (last !== undefined && now - last > (name.includes(".") ? DAY / 24 : DAY))
+        await rm(path.join(builds, name), { recursive: true, force: true });
+    }
   }
   const own = path.dirname(path.dirname(installed));
   const versions = path.join(installDirectory(env), "versions");
   const launched = path.dirname(own) === versions;
-  if (launched) await pruneVersions(versions, own, now);
+  if (launched) await pruneVersions(versions, installed, now);
   // npx installed the versions agents started before the launcher, and still does for clients
   // given `npx layermap mcp`: in npm's cache, which a .npmrc may move where this does not look.
   const npx = launched
@@ -243,20 +271,27 @@ const gone = (directory: string) =>
     (error: NodeJS.ErrnoException) => error.code === "ENOENT",
   );
 
-// The launcher installs each version agents start as versions/<version>, marking its last-used at
-// each start; another version goes a week after its last start, and an interrupted install, a
-// directory named .<version>-…, after an hour. The running one is marked too, as it may outlive a
-// week while nothing starts it again.
-async function pruneVersions(versions: string, own: string, now: number) {
-  const used = path.join(own, "last-used");
-  await writeFile(used, "");
-  await utimes(used, now / 1000, now / 1000);
+// The launcher installs versions as versions/<version> and names the machine's in versions/current,
+// and marks the one it runs as used at each start and every few minutes while it runs it. The
+// current one stays; another goes a week after its last use, by when each server running it has
+// moved to the current one, and an interrupted install, a directory named .<version>-…, after an
+// hour. With no version named there is no telling which to keep, so none goes. The running one is
+// marked too, and when it is the current one it rewrites the launchers setup wrote from its own.
+async function pruneVersions(versions: string, installed: string, now: number) {
+  const own = path.dirname(path.dirname(installed));
+  await touch(path.join(own, "last-used"), now);
+  const current = (await readFile(path.join(versions, "current"), "utf8").catch(() => "")).trim();
+  if (!current) return;
+  if (path.basename(own) === current) {
+    const template = launcherTemplate(installed);
+    if (template) await refreshLaunchers(path.dirname(versions), template);
+  }
   for (const name of await readdir(versions).catch(() => [])) {
+    const installing = name.startsWith(".");
+    if (name === current || (!installing && !/^\d+\.\d+\.\d+$/u.test(name))) continue;
     const directory = path.join(versions, name);
-    const marker = path.join(directory, "last-used");
-    const last = (await stat(existsSync(marker) ? marker : directory).catch(() => undefined))
-      ?.mtimeMs;
-    if (last !== undefined && now - last > (name.startsWith(".") ? DAY / 24 : 7 * DAY))
+    const last = await lastUsed(directory);
+    if (last !== undefined && now - last > (installing ? DAY / 24 : 7 * DAY))
       await rm(directory, { recursive: true, force: true });
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { MapCallRecord } from "../src/agent/call-log";
 import { projectDirectory } from "../src/agent/environment";
-import { serveMcp } from "../src/agent/mcp";
+import { RETIRE, serveMcp } from "../src/agent/mcp";
 import type { SessionStart } from "../src/agent/projects";
 import type { LayerMap } from "../src/layermap";
 import { FILES, gitRoot, openMap, project, sandbox } from "./support";
@@ -64,7 +64,7 @@ const session = (
     input.end();
     return served;
   };
-  return { request, notify, close, records, notifications };
+  return { request, notify, close, served, records, notifications };
 };
 
 test("an MCP client lists the read-only map tools and explores the project", async () => {
@@ -524,4 +524,54 @@ test("a call the client cancels is recorded as cancelled", async () => {
   } finally {
     await client.close();
   }
+});
+
+// LayerMap's launcher retires a server once it has moved the session to another: the server answers
+// the calls it has, and ends, though the launcher keeps its input open for their cancellations.
+test("a retired server answers the calls it has and then ends", async () => {
+  let release: () => void = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { root } = await project(FILES);
+  const client = session(
+    { directory: root, git: true },
+    async (directory) => {
+      await blocked;
+      return openMap(directory);
+    },
+    10 * 60_000,
+  );
+  let ended = false;
+  void client.served.then(() => (ended = true));
+  await client.request("initialize", { protocolVersion: "2025-06-18", capabilities: {} });
+  const answered = client.request("tools/call", {
+    name: "project_search_map",
+    arguments: { query: "x" },
+  });
+  client.notify(RETIRE);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(ended, false, "a call is still going");
+  release();
+  assert.ok(((await answered) as { result?: unknown }).result);
+  await client.served;
+  assert.equal(ended, true);
+});
+
+test("a retired server's process ends with nothing left to answer", async () => {
+  const cli = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src", "cli.ts");
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli, "mcp"], {
+    cwd: await sandbox(),
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  const lines = createInterface({ input: child.stdout });
+  const first = new Promise((resolve) => lines.once("line", resolve));
+  child.stdin.write(
+    `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {} } })}\n`,
+  );
+  await first;
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: RETIRE })}\n`);
+  const status = await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(status, 0);
+  child.stdin.destroy();
 });

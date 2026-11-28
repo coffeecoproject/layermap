@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -25,6 +25,7 @@ export type SetupOptions = Readonly<{
 
 import { commandInvocation } from "../platform";
 import { installDirectory, packageRoot } from "./environment";
+import { writeLauncher } from "./launcher";
 import { AGENT_MAP_NOTE, antigravityMapNote } from "./notes";
 
 export const REPOSITORY = "https://github.com/coffeecoproject/layermap";
@@ -39,27 +40,18 @@ const PLUGIN_RULE = `mcp__plugin_${SERVER}_${SERVER}`;
 const BEGIN = "<!-- layermap:begin -->";
 const END = "<!-- layermap:end -->";
 
-/**
- * scripts/launcher.mjs for one version: it starts that version's server, which it installs once, or
- * given the code of other arguments, runs its command line with them.
- */
-export const launcherScript = (template: string, version: string, args = '["mcp"]'): string =>
-  `// Generated from scripts/launcher.mjs.\n${template
-    .replace("__VERSION__", JSON.stringify(version))
-    .replace("__ARGUMENTS__", args)}`;
-
 /** The launcher a published package ships; a checkout has none. */
 const PUBLISHED_LAUNCHER = path.join(packageRoot, "dist", "launcher.mjs");
 
-/** Where setup writes the launcher of the version it set up. */
+/** Where setup writes the launcher. */
 const launcherFile = (env: NodeJS.ProcessEnv = process.env) =>
   path.join(installDirectory(env), "server.mjs");
 
 /**
- * How an agent starts this LayerMap's MCP server. A published package, run through npx say, starts
- * the launcher setup writes into installDirectory, which installs this version there once, so the agents'
- * starts need neither npx nor a network; node is a real executable on every system, where npx is a
- * .cmd script on Windows that only a shell runs. A checkout starts itself.
+ * How an agent starts LayerMap's MCP server. A published package, run through npx say, starts the
+ * launcher setup writes into installDirectory, which runs the machine's version installed there, so the
+ * agents' starts need no npx; node is a real executable on every system, where npx is a .cmd script
+ * on Windows that only a shell runs. A checkout starts itself.
  */
 export const mcpLaunchCommand = (
   env: NodeJS.ProcessEnv = process.env,
@@ -355,18 +347,14 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
   const quoted = command.map((part) => (/^[\w./:@=-]+$/u.test(part) ? part : JSON.stringify(part)));
   const { settings, instructions } = agentFiles(options);
   const note = options.instructions !== false;
-  // The launcher setup registers; it installs this version beside itself at its first start.
-  const writeLauncher = async () => {
+  // The launcher setup registers, which runs the machine's version installed beside it.
+  const placeLauncher = async () => {
     if (!published) return;
-    const file = launcherFile(env);
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    await writeFile(
-      `${file}.${process.pid}`,
-      launcherScript(await readFile(PUBLISHED_LAUNCHER, "utf8"), options.version),
-    );
-    await rename(`${file}.${process.pid}`, file);
+    const directory = installDirectory(env);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeLauncher(directory, "server.mjs", await readFile(PUBLISHED_LAUNCHER, "utf8"));
   };
-  if (published) log(`write the launcher of LayerMap ${options.version} to ${launcherFile(env)}`);
+  if (published) log(`write LayerMap's launcher to ${launcherFile(env)}`);
   if (options.agent === "antigravity") {
     if (options.scope !== "user") {
       log("Antigravity loads LayerMap's plugin in every project; --scope does not apply.");
@@ -376,7 +364,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
     log(`write LayerMap's plugin for Antigravity to ${plugin}`);
     if (note) log(`with a rule naming the map tools, ${instructions}`);
     if (options.dryRun) return true;
-    await writeLauncher();
+    await placeLauncher();
     // The directory is setup's own: an earlier setup's rule goes when this one writes none.
     await rm(plugin, { recursive: true, force: true });
     for (const [name, content] of Object.entries(
@@ -398,7 +386,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
     log(`add the ${SERVER} MCP server to ${settings}`);
     if (note) log(`add a note naming the map tools to ${instructions}`);
     if (options.dryRun) return true;
-    await writeLauncher();
+    await placeLauncher();
     await writeDshPatch(settings, dshPatchBlock(command, env));
     if (note) await writeInstructionNote(instructions);
     log(
@@ -418,7 +406,7 @@ export async function setupAgent(options: SetupOptions): Promise<boolean> {
   }
   if (note) log(`add a note naming the map tools to ${instructions}`);
   if (options.dryRun) return true;
-  await writeLauncher();
+  await placeLauncher();
   const agentCommand = options.agent;
   const scope = options.agent === "claude" ? ["--scope", options.scope] : [];
   await run(agentCommand, ["mcp", "remove", SERVER, ...scope], env);

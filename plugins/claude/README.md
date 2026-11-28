@@ -16,15 +16,17 @@ Start a session in a Git repository and ask as usual, for example:
 
 ## What it runs, fetches and sends
 
-- It runs the LayerMap MCP server on your machine, from the pinned `layermap@0.1.56` package.
-  Java analysis uses your local JDK 21 or later.
-- The first time a session starts this version, npm installs the pinned `layermap` package and its
-  dependencies from the npm registry into LayerMap's cache; later sessions start it from there.
-- LayerMap itself makes no network requests. Maps stay in your user cache, never in the repository.
-  Your agent sends tool results to its model, as it does with any file it reads.
+- It runs the LayerMap MCP server on your machine, from the `layermap` package installed in
+  LayerMap's cache that every agent on the machine runs. Java analysis uses your local JDK 21 or later.
+- npm installs the `layermap` package and its dependencies from the npm registry into that cache.
+  While a session runs, the plugin asks npm once an hour for the latest version, installs it, and
+  switches the machine to it once it has started; each session moves to it between tool calls.
+- LayerMap itself makes no other network requests. Maps stay in your user cache, never in the
+  repository. Your agent sends tool results to its model, as it does with any file it reads.
 - A session-start hook adds one sentence telling the agent when the map helps.
-- The plugin puts a `layermap` command on the PATH of Claude's shell commands, the same version
-  and cache as the server, for programs run there, such as `layermap check --json` to choose tests.
+- The plugin puts a `layermap` command on the PATH of Claude's shell commands, the version the
+  server runs, for programs run there, such as `layermap check --json` to choose tests. The hooks
+  run that version too, and do nothing until it is installed.
 - When Claude is about to finish after editing code in a repository it has not checked since, a stop hook asks it
   once to run `project_check_changes` for each such repository and check what the changes affect. Edits made by shell
   commands count too, for the code files a command names: a hook notes which of them it changed. It only asks git whether

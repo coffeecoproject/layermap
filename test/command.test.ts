@@ -42,6 +42,10 @@ async function install(home: string, version: string, manifest = true) {
     );
 }
 
+// Names the version the machine's, as an update does.
+const choose = (home: string, version: string) =>
+  writeFile(path.join(home, "versions", "current"), `${version}\n`);
+
 const run = (file: string, args: string[], env: NodeJS.ProcessEnv) =>
   new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
     const child = execFile(file, args, { env }, (_error, stdout, stderr) =>
@@ -49,7 +53,7 @@ const run = (file: string, args: string[], env: NodeJS.ProcessEnv) =>
     );
   });
 
-test("setup writes a command that runs the newest version installed, with its arguments and exit code", {
+test("setup writes a command that runs the machine's version, with its arguments and exit code", {
   skip,
 }, async () => {
   const { home, env, file, options, lines } = await machine();
@@ -61,29 +65,40 @@ test("setup writes a command that runs the newest version installed, with its ar
     lines.some((line) => line.includes("is not on this shell's PATH")),
     lines.join("\n"),
   );
+  // It runs the launcher setup wrote beside the versions, which the machine's version rewrites.
+  assert.equal(
+    await readFile(path.join(home, "cli.mjs"), "utf8"),
+    generatedFiles("0.0.0")["plugins/claude/cli.mjs"],
+  );
 
-  // Nothing installed yet: it says where it looked, and installs nothing itself.
-  const none = await run(file, ["--version"], env);
+  // Nothing installed yet: it installs the latest, here from a registry that is not there.
+  const none = await run(file, ["--version"], {
+    ...env,
+    npm_config_registry: "http://127.0.0.1:9/",
+    npm_config_fetch_retries: "0",
+  });
   assert.equal(none.code, 1);
-  assert.match(none.stderr, /^layermap: no LayerMap version is installed in /u);
-  assert.ok(none.stderr.includes(path.join(home, "versions")), none.stderr);
+  assert.match(none.stderr, /^layermap: could not start LayerMap: npm exited with/u);
 
-  await install(home, "0.1.9");
-  await install(home, "0.1.10");
-  // npm has not finished these: no manifest in place, or still under the name of an install.
-  await install(home, "0.2.0", false);
-  await install(home, ".0.3.0-Ab12Cd");
-  const newest = await run(file, ["check", "--json", "a b"], env);
-  assert.deepEqual(JSON.parse(newest.stdout), {
-    version: "0.1.10",
+  await install(home, "1.0.9");
+  await install(home, "1.0.10");
+  await install(home, "2.0.0");
+  await choose(home, "1.0.10");
+  const chosen = await run(file, ["check", "--json", "a b"], env);
+  assert.deepEqual(JSON.parse(chosen.stdout), {
+    version: "1.0.10",
     args: ["check", "--json", "a b"],
   });
-  assert.equal(newest.code, 3);
-  assert.equal(newest.stderr, "");
+  assert.equal(chosen.code, 3);
+  assert.equal(chosen.stderr, "");
 
-  // A plugin that updates installs its version, and the command follows without another setup.
-  await install(home, "0.2.0");
-  assert.equal(JSON.parse((await run(file, [], env)).stdout).version, "0.2.0");
+  // An update moves the machine to another version, and the command follows without another setup.
+  await choose(home, "2.0.0");
+  assert.equal(JSON.parse((await run(file, [], env)).stdout).version, "2.0.0");
+
+  assert.equal(await removeCommand(options), true);
+  assert.equal(existsSync(file), false);
+  assert.equal(existsSync(path.join(home, "cli.mjs")), false, "nothing keeps its launcher");
 });
 
 // To a program that calls `layermap` the two are one command, so they run the same version in the
@@ -94,6 +109,7 @@ test("the command and the Claude Code plugin's command run the installed version
 }, async () => {
   const { directory, home, env, file, options } = await machine();
   await install(home, "1.2.3");
+  await choose(home, "1.2.3");
   await setupCommand(options);
   const plugin = path.join(directory, "cli.mjs");
   await writeFile(plugin, generatedFiles("1.2.3")["plugins/claude/cli.mjs"] ?? "");
@@ -118,7 +134,7 @@ test("the command and the Claude Code plugin's command run the installed version
     }
   }
   assert.equal(existsSync(maps), false, "no version is installed beside the maps");
-  assert.deepEqual(await readdir(path.join(home, "versions")), ["1.2.3"]);
+  assert.deepEqual((await readdir(path.join(home, "versions"))).sort(), ["1.2.3", "current"]);
 });
 
 test("the command runs whichever module type node reads a file without an extension as", {
@@ -126,6 +142,7 @@ test("the command runs whichever module type node reads a file without an extens
 }, async () => {
   const { home, env, file, options } = await machine();
   await install(home, "1.0.0");
+  await choose(home, "1.0.0");
   await setupCommand(options);
   assert.equal(JSON.parse((await run(file, [], env)).stdout).version, "1.0.0");
   await writeFile(path.join(env.HOME, ".local", "package.json"), '{ "type": "module" }');

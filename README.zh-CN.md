@@ -154,8 +154,8 @@ Antigravity 的桌面 App 只能从它的插件市场装插件，所以这条命
 Antigravity 会自己加载；`npx layermap remove antigravity` 把它删掉。每个地图工具第一次用时 Antigravity 会问一次，
 选"总是允许"即可。Antigravity 不在项目目录里启动地图服务，所以插件带的规则会让 agent 传绝对路径。
 
-不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。在装着多个仓库的总文件夹里开会话，或会话中途换到别的仓库，也能用：每次调用地图工具，都按传入的路径找到对应的仓库。第一次
-启动某个版本时，npm 会把锁定版本的 `layermap` 装进 LayerMap 的缓存；之后直接从那里启动，断网也能用。
+不管用哪个 agent，装好后在 Git 仓库里新开会话，照常提问即可。LayerMap 会告诉 agent 什么时候该用地图。在装着多个仓库的总文件夹里开会话，或会话中途换到别的仓库，也能用：每次调用地图工具，都按传入的路径找到对应的仓库。一台机器只跑一个 LayerMap：插件、`layermap setup` 和 `layermap` 命令启动的都是缓存里的同一个版本。
+第一个会话用 npm 把最新的 `layermap` 装进 LayerMap 的缓存，之后的会话直接启动它，不经过 npm，断网也能用。会话运行时，LayerMap 每小时问一次 npm 有没有新版本，有就装上，确认能启动后整台机器切到它，各会话在两次工具调用之间换过去，所以 LayerMap 更新不用等插件更新，起不来的版本也不会被切过去。Pi 运行它自己装的包，`npx layermap mcp` 运行 npx 取到的那个。
 
 Claude Code 在每个项目里第一次用到某个地图工具时会问一次，选"不再询问"即可；
 也可以运行一次 `npx layermap allow claude`，在所有项目里放行这些只读工具。
@@ -218,7 +218,7 @@ npx layermap check --json                 # 输出 JSON：按远近排的相关�
 npx layermap imports --json               # 输出整个项目当前的全部 import（测试文件除外）：所在文件和行、导入的文件，以及没对上项目文件的 import 和原因
 ```
 
-**`layermap` 命令**：Claude Code 插件会把它放进 Claude 执行命令时的 PATH。Codex 的命令、终端和 Git 钩子里没有，在那里运行的程序要调用 `layermap`（比如用 `layermap check --json` 挑测试）就找不到。运行一次 `npx layermap setup command`：它在 `~/.local/bin` 放一个 `layermap` 命令，每次运行本机装着的最新版本（各 agent 的插件启动哪个版本，就把哪个版本装在本机）。插件更新后它自动跟上，不联网；`~/.local/bin` 在 PATH 里排在插件目录前面时，Claude 执行的命令也用它。那里已有同名的别的文件时不覆盖。`npx layermap remove command` 删掉它。只支持 macOS 和 Linux。
+**`layermap` 命令**：Claude Code 插件会把它放进 Claude 执行命令时的 PATH。Codex 的命令、终端和 Git 钩子里没有，在那里运行的程序要调用 `layermap`（比如用 `layermap check --json` 挑测试）就找不到。运行一次 `npx layermap setup command`：它在 `~/.local/bin` 放一个 `layermap` 命令，运行各 agent 的插件在本机运行的那个版本，本机一个都没有时才用 npm 装；`~/.local/bin` 在 PATH 里排在插件目录前面时，Claude 执行的命令也用它。那里已有同名的别的文件时不覆盖。`npx layermap remove command` 删掉它。只支持 macOS 和 Linux。
 
 ## 常见问题
 

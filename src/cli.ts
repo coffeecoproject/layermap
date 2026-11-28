@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { mapCallLog } from "./agent/call-log";
+import { claudeHook } from "./agent/claude-hooks";
 import { removeCommand, setupCommand } from "./agent/command";
 import {
   cacheDirectory,
@@ -26,9 +27,10 @@ Usage:
   layermap remove ${SETUP_AGENTS.join("|")} [--scope user|project|local] [--dry-run]
   layermap setup command [--dry-run]      put a layermap command in ~/.local/bin, for shells with no
                                           plugin's on their PATH (Codex's commands, a terminal): it
-                                          runs the newest version the agents' plugins have installed
+                                          runs the version the plugins run
   layermap remove command [--dry-run]
   layermap mcp [--project DIR]            serve the map tools over MCP (stdio)
+  layermap hook claude                    run the Claude Code plugin's hook for the event on stdin
   layermap index [--project DIR]          build or update the map now
   layermap explore [PATH] [--name NAME] [--line N] [--direction INCOMING|OUTGOING|BOTH]
                    [--depth N] [--tests] [--unresolved] [--offset N]
@@ -104,6 +106,11 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (values.help || !command) return usage(command ? 0 : 1);
+  if (command === "hook") {
+    if (rest[0] !== "claude" || rest.length !== 1) return usage(1);
+    await claudeHook();
+    return 0;
+  }
   if (values.json && command !== "check" && command !== "imports") return usage(1);
   const { directory: project, git } = await projectDirectory(values.project ?? process.cwd());
   const cache = cacheDirectory();
